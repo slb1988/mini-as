@@ -1,6 +1,7 @@
 #include "mini_as/engine.hpp"
 
 #include <utility>
+#include <algorithm>
 
 namespace mini_as {
 
@@ -34,10 +35,16 @@ bool ScriptModule::Build() {
     const bool typed = !diagnostics.HasErrors() && checker.Check(tree.root);
     if (!typed) { bytecode_ = {}; return false; }
     BytecodeCompiler compiler(diagnostics);
-    BytecodeModule candidate = compiler.Compile(tree.root, checker.Functions());
+    BytecodeModule candidate = compiler.Compile(tree.root, checker.Functions(), checker.Classes());
     if (diagnostics.HasErrors()) { bytecode_ = {}; return false; }
+    std::vector<const TypeInfo*> concreteTypes;
+    for (const auto& type : checker.Classes()) {
+        const TypeInfo* linked = engine_.RegisterScriptType(type);
+        if (!type.interfaceType) concreteTypes.push_back(linked);
+    }
     for (auto& function : candidate.functions) {
         for (const auto& host : engine_.hostFunctions_) function.hostTargets.push_back(&host);
+        function.objectTypes = concreteTypes;
     }
     bytecode_ = std::move(candidate);
     sections_.clear();
@@ -105,7 +112,16 @@ bool ScriptContext::SetArgument(std::size_t index, Value value) {
     if (!function_ || index >= arguments_.size() || result_.state != ExecutionState::Prepared) return false;
     const DataType expected = function_->signature.parameters[index];
     if (value.Type() == DataType::Int() && expected == DataType::Float()) value = Value(static_cast<float>(value.As<std::int32_t>()));
-    else if (value.Type() != expected) return false;
+    else if (value.Type() != expected) {
+        if (value.Type().kind == TypeKind::Object && value.Type().objectName == "<null>" && expected.isHandle) {
+            arguments_[index] = std::move(value);
+            return true;
+        }
+        if (value.Type().kind != TypeKind::Object || expected.kind != TypeKind::Object ||
+            !value.As<ObjectHandle>()) return false;
+        const auto* scriptObject = dynamic_cast<ScriptObject*>(value.As<ObjectHandle>().Get());
+        if (!scriptObject || !scriptObject->Implements(expected.objectName)) return false;
+    }
     arguments_[index] = std::move(value);
     return true;
 }
@@ -139,6 +155,32 @@ const TypeInfo* ScriptEngine::RegisterObjectType(std::string name) {
 const TypeInfo* ScriptEngine::GetTypeInfo(std::string_view name) const {
     const auto found = objectTypes_.find(std::string(name));
     return found == objectTypes_.end() ? nullptr : found->second.get();
+}
+
+const TypeInfo* ScriptEngine::RegisterScriptType(const ClassSignature& signature) {
+    TypeInfo* type = nullptr;
+    const auto found = objectTypes_.find(signature.name);
+    if (found == objectTypes_.end()) {
+        auto created = std::make_unique<TypeInfo>();
+        created->name = signature.name;
+        type = created.get();
+        objectTypes_.emplace(signature.name, std::move(created));
+    } else type = found->second.get();
+    type->script = !signature.interfaceType;
+    type->fields = signature.fields;
+    type->interfaces = signature.interfaces;
+    type->interfaceMethodTable.clear();
+    for (const auto& interfaceName : signature.interfaces) {
+        const auto interfaceFound = std::find_if(
+            objectTypes_.begin(), objectTypes_.end(),
+            [&](const auto& entry) { return entry.first == interfaceName; });
+        (void)interfaceFound;
+        for (const auto& method : signature.methods) {
+            type->interfaceMethodTable[interfaceName + "::" + method.Declaration()] =
+                signature.name + "::" + method.Declaration();
+        }
+    }
+    return type;
 }
 
 ScriptModule* ScriptEngine::GetModule(std::string name, ModulePolicy policy) {

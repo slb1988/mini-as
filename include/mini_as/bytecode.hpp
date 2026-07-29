@@ -1,6 +1,7 @@
 #pragma once
 
 #include "mini_as/type_checker.hpp"
+#include "mini_as/object.hpp"
 
 #include <cstdint>
 #include <string>
@@ -19,7 +20,7 @@ enum class OpCode : std::uint8_t {
     Concat, NegInt, NegFloat, LogicalNot,
     Equal, NotEqual, Less, LessEqual, Greater, GreaterEqual,
     Jump, JumpIfFalse,
-    Call, CallHost, Return
+    Call, CallHost, NewObject, LoadField, StoreField, Return
 };
 
 struct Instruction {
@@ -35,6 +36,7 @@ struct BytecodeFunction {
     std::size_t localCount = 0;
     std::vector<const BytecodeFunction*> callTargets;
     std::vector<const RegisteredHostFunction*> hostTargets;
+    std::vector<const TypeInfo*> objectTypes;
 };
 
 struct BytecodeModule {
@@ -47,7 +49,8 @@ std::string Disassemble(const BytecodeFunction& function);
 class BytecodeCompiler {
 public:
     explicit BytecodeCompiler(DiagnosticSink& diagnostics);
-    BytecodeModule Compile(AstNode* root, const std::vector<FunctionSignature>& signatures);
+    BytecodeModule Compile(AstNode* root, const std::vector<FunctionSignature>& signatures,
+                           const std::vector<ClassSignature>& classes = {});
 
 private:
     void CompileFunction(AstNode* node, std::size_t functionIndex);
@@ -57,6 +60,7 @@ private:
     void CompileBinary(AstNode* node);
     void CompileLogical(AstNode* node);
     void CompileCall(AstNode* node);
+    std::optional<std::pair<std::size_t, DataType>> FindField(const AstNode* member) const;
     std::size_t Emit(OpCode opcode, std::int32_t operand, const AstNode* node);
     void PatchJump(std::size_t instruction, std::size_t target);
     std::int32_t AddConstant(Value value);
@@ -72,6 +76,8 @@ private:
     std::vector<FunctionSignature> signatures_;
     std::unordered_map<std::string, std::size_t> functionIndices_;
     std::unordered_map<std::string, std::size_t> hostIndices_;
+    std::vector<ClassSignature> classes_;
+    std::unordered_map<std::string, std::size_t> classIndices_;
 };
 
 } // namespace mini_as

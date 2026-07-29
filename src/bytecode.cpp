@@ -30,7 +30,8 @@ std::string_view OpCodeName(OpCode opcode) {
         "NOP", "SUSPEND", "PUSH_CONST", "PUSH_VOID", "LOAD_LOCAL", "STORE_LOCAL", "DUP", "POP",
         "TO_FLOAT", "TO_STRING", "ADD_I", "SUB_I", "MUL_I", "DIV_I", "MOD_I",
         "ADD_F", "SUB_F", "MUL_F", "DIV_F", "CONCAT", "NEG_I", "NEG_F", "NOT",
-        "EQ", "NE", "LT", "LE", "GT", "GE", "JMP", "JZ", "CALL", "CALL_HOST", "RET"
+        "EQ", "NE", "LT", "LE", "GT", "GE", "JMP", "JZ", "CALL", "CALL_HOST",
+        "NEW_OBJECT", "LOAD_FIELD", "STORE_FIELD", "RET"
     };
     return names[static_cast<std::size_t>(opcode)];
 }
@@ -45,7 +46,8 @@ std::string Disassemble(const BytecodeFunction& function) {
         if (instruction.opcode == OpCode::PushConst || instruction.opcode == OpCode::LoadLocal ||
             instruction.opcode == OpCode::StoreLocal || instruction.opcode == OpCode::Jump ||
             instruction.opcode == OpCode::JumpIfFalse || instruction.opcode == OpCode::Call ||
-            instruction.opcode == OpCode::CallHost) out << instruction.operand;
+            instruction.opcode == OpCode::CallHost || instruction.opcode == OpCode::NewObject ||
+            instruction.opcode == OpCode::LoadField || instruction.opcode == OpCode::StoreField) out << instruction.operand;
         out << "  ; " << instruction.location.row << ':' << instruction.location.column << '\n';
     }
     return out.str();
@@ -53,11 +55,15 @@ std::string Disassemble(const BytecodeFunction& function) {
 
 BytecodeCompiler::BytecodeCompiler(DiagnosticSink& diagnostics) : diagnostics_(diagnostics) {}
 
-BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<FunctionSignature>& signatures) {
+BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<FunctionSignature>& signatures,
+                                         const std::vector<ClassSignature>& classes) {
     module_ = {};
     signatures_ = signatures;
     functionIndices_.clear();
     hostIndices_.clear();
+    classes_ = classes;
+    classIndices_.clear();
+    for (const auto& type : classes_) if (!type.interfaceType) classIndices_[type.name] = classIndices_.size();
     if (!root) return module_;
     for (const auto& signature : signatures_) {
         if (signature.host) {
@@ -89,6 +95,7 @@ void BytecodeCompiler::CompileFunction(AstNode* node, std::size_t functionIndex)
     function_->constants.clear();
     function_->callTargets.clear();
     function_->hostTargets.clear();
+    function_->objectTypes.clear();
     scopes_.clear();
     scopes_.emplace_back();
     nextLocal_ = 0;
@@ -184,14 +191,30 @@ void BytecodeCompiler::CompileExpression(AstNode* node) {
     }
     case NodeKind::Assign: {
         const auto children = node->Children();
-        CompileExpression(children[1]);
-        if (children[1]->inferredType == DataType::Int() && children[0]->inferredType == DataType::Float()) {
-            Emit(OpCode::ToFloat, 0, node);
+        if (children[0]->kind == NodeKind::Member) {
+            CompileExpression(children[0]->firstChild);
+            CompileExpression(children[1]);
+            if (children[1]->inferredType == DataType::Int() && children[0]->inferredType == DataType::Float())
+                Emit(OpCode::ToFloat, 0, node);
+            const auto field = FindField(children[0]);
+            if (!field) Error(node, "unknown field assignment target");
+            else Emit(OpCode::StoreField, static_cast<std::int32_t>(field->first), node);
+        } else {
+            CompileExpression(children[1]);
+            if (children[1]->inferredType == DataType::Int() && children[0]->inferredType == DataType::Float())
+                Emit(OpCode::ToFloat, 0, node);
+            Emit(OpCode::Dup, 0, node);
+            const auto slot = LookupLocal(children[0]->token.lexeme);
+            if (!slot) Error(node, "unknown assignment target");
+            else Emit(OpCode::StoreLocal, *slot, node);
         }
-        Emit(OpCode::Dup, 0, node);
-        const auto slot = LookupLocal(children[0]->token.lexeme);
-        if (!slot) Error(node, "unknown assignment target");
-        else Emit(OpCode::StoreLocal, *slot, node);
+        break;
+    }
+    case NodeKind::Member: {
+        CompileExpression(node->firstChild);
+        const auto field = FindField(node);
+        if (!field) Error(node, "unknown field");
+        else Emit(OpCode::LoadField, static_cast<std::int32_t>(field->first), node);
         break;
     }
     case NodeKind::Binary:
@@ -262,6 +285,12 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
     if (!callee || callee->kind != NodeKind::Identifier) {
         Error(node, "only named calls can be compiled"); return;
     }
+    const auto classFound = classIndices_.find(callee->token.lexeme);
+    if (classFound != classIndices_.end()) {
+        if (callee->nextSibling) { Error(node, "class factory expects no arguments"); return; }
+        Emit(OpCode::NewObject, static_cast<std::int32_t>(classFound->second), node);
+        return;
+    }
     std::vector<AstNode*> arguments;
     for (AstNode* argument = callee->nextSibling; argument; argument = argument->nextSibling) arguments.push_back(argument);
     const FunctionSignature* target = nullptr;
@@ -292,6 +321,18 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
         if (found == functionIndices_.end()) { Error(node, "script call target is missing"); return; }
         Emit(OpCode::Call, static_cast<std::int32_t>(found->second), node);
     }
+}
+
+std::optional<std::pair<std::size_t, DataType>> BytecodeCompiler::FindField(const AstNode* member) const {
+    if (!member || !member->firstChild) return std::nullopt;
+    const std::string& typeName = member->firstChild->inferredType.objectName;
+    for (const auto& type : classes_) {
+        if (type.name != typeName) continue;
+        for (std::size_t i = 0; i < type.fields.size(); ++i) {
+            if (type.fields[i].first == member->token.lexeme) return std::make_pair(i, type.fields[i].second);
+        }
+    }
+    return std::nullopt;
 }
 
 std::size_t BytecodeCompiler::Emit(OpCode opcode, std::int32_t operand, const AstNode* node) {

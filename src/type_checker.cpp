@@ -30,9 +30,49 @@ bool TypeChecker::Check(AstNode* root) {
 }
 
 const std::vector<FunctionSignature>& TypeChecker::Functions() const { return functions_; }
+const std::vector<ClassSignature>& TypeChecker::Classes() const { return classes_; }
 
 void TypeChecker::Predeclare(AstNode* root) {
     if (!root) return;
+    classes_.clear();
+    for (AstNode* node = root->firstChild; node; node = node->nextSibling) {
+        if (node->kind != NodeKind::ClassDecl && node->kind != NodeKind::InterfaceDecl) continue;
+        ClassSignature type;
+        type.name = node->token.lexeme;
+        type.interfaceType = node->kind == NodeKind::InterfaceDecl;
+        AstNode* child = node->firstChild;
+        if (node->kind == NodeKind::ClassDecl && child && child->kind == NodeKind::Identifier) {
+            type.interfaces.push_back(child->token.lexeme);
+            child = child->nextSibling;
+        }
+        for (; child; child = child->nextSibling) {
+            if (child->kind == NodeKind::FieldDecl) type.fields.push_back({child->token.lexeme, child->declaredType});
+            else if (child->kind == NodeKind::FunctionDecl) {
+                FunctionSignature method{child->token.lexeme, child->declaredType, {}, false};
+                for (AstNode* parameter = child->firstChild;
+                     parameter && parameter->kind == NodeKind::Parameter; parameter = parameter->nextSibling)
+                    method.parameters.push_back(parameter->declaredType);
+                type.methods.push_back(std::move(method));
+            }
+        }
+        classes_.push_back(std::move(type));
+    }
+    for (const auto& type : classes_) {
+        if (type.interfaceType) continue;
+        for (const auto& interfaceName : type.interfaces) {
+            const ClassSignature* interfaceType = FindClass(interfaceName);
+            if (!interfaceType || !interfaceType->interfaceType) continue;
+            for (const auto& required : interfaceType->methods) {
+                bool found = false;
+                for (const auto& method : type.methods) {
+                    if (method.name == required.name && method.returnType == required.returnType &&
+                        method.parameters == required.parameters) found = true;
+                }
+                if (!found) Error(root, "class '" + type.name + "' does not implement " +
+                                        interfaceName + "::" + required.Declaration());
+            }
+        }
+    }
     for (AstNode* node = root->firstChild; node; node = node->nextSibling) {
         if (node->kind != NodeKind::FunctionDecl) continue;
         FunctionSignature signature{node->token.lexeme, node->declaredType, {}, false};
@@ -124,6 +164,16 @@ DataType TypeChecker::CheckExpression(AstNode* node) {
         else result = *type;
         break;
     }
+    case NodeKind::Member: {
+        DataType object = CheckExpression(node->firstChild);
+        const ClassSignature* type = FindClass(object.objectName);
+        if (!type) Error(node, "unknown object type '" + object.objectName + "'");
+        else {
+            for (const auto& field : type->fields) if (field.first == node->token.lexeme) result = field.second;
+            if (!result.IsValid()) Error(node, "type '" + type->name + "' has no field '" + node->token.lexeme + "'");
+        }
+        break;
+    }
     case NodeKind::Binary: result = CheckBinary(node); break;
     case NodeKind::Unary: result = CheckUnary(node); break;
     case NodeKind::Call: result = CheckCall(node); break;
@@ -181,7 +231,17 @@ DataType TypeChecker::CheckUnary(AstNode* node) {
 
 DataType TypeChecker::CheckCall(AstNode* node) {
     AstNode* callee = node->firstChild;
-    if (!callee || callee->kind != NodeKind::Identifier) {
+    if (!callee) return DataType::Invalid();
+    if (callee->kind == NodeKind::Identifier) {
+        if (const ClassSignature* type = FindClass(callee->token.lexeme)) {
+            if (type->interfaceType || callee->nextSibling) {
+                Error(node, "only zero-argument concrete class factories are supported");
+                return DataType::Invalid();
+            }
+            return DataType::Object(type->name, true);
+        }
+    }
+    if (callee->kind != NodeKind::Identifier) {
         Error(node, "method calls are not available yet"); return DataType::Invalid();
     }
     std::vector<DataType> arguments;
@@ -216,6 +276,11 @@ std::optional<DataType> TypeChecker::Lookup(std::string_view name) const {
     return std::nullopt;
 }
 
+const ClassSignature* TypeChecker::FindClass(std::string_view name) const {
+    for (const auto& type : classes_) if (type.name == name) return &type;
+    return nullptr;
+}
+
 void TypeChecker::Declare(const Token& name, const DataType& type) {
     auto& scope = scopes_.back();
     if (scope.find(name.lexeme) != scope.end()) {
@@ -227,6 +292,11 @@ bool TypeChecker::CanConvert(const DataType& from, const DataType& to) const {
     if (from == to) return true;
     if (from == DataType::Int() && to == DataType::Float()) return true;
     if (from.kind == TypeKind::Object && from.objectName == "<null>" && to.isHandle) return true;
+    if (from.kind == TypeKind::Object && to.kind == TypeKind::Object && from.isHandle && to.isHandle) {
+        if (const auto* type = FindClass(from.objectName)) {
+            for (const auto& interfaceName : type->interfaces) if (interfaceName == to.objectName) return true;
+        }
+    }
     return false;
 }
 

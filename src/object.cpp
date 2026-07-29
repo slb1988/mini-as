@@ -1,6 +1,7 @@
 #include "mini_as/object.hpp"
 
 #include <utility>
+#include <algorithm>
 
 namespace mini_as {
 
@@ -39,5 +40,44 @@ std::size_t RefObject::RefCount() const { return refCount_.load(std::memory_orde
 const TypeInfo* RefObject::GetTypeInfo() const { return type_; }
 void RefObject::EnumerateReferences(const std::function<void(RefObject*)>&) const {}
 
-} // namespace mini_as
+ScriptObject::ScriptObject(const TypeInfo* type) : RefObject(type) {
+    if (!type) return;
+    fields_.reserve(type->fields.size());
+    for (const auto& field : type->fields) {
+        switch (field.second.kind) {
+        case TypeKind::Bool: fields_.emplace_back(false); break;
+        case TypeKind::Int: fields_.emplace_back(std::int32_t{0}); break;
+        case TypeKind::Float: fields_.emplace_back(0.0f); break;
+        case TypeKind::String: fields_.emplace_back(std::string{}); break;
+        case TypeKind::Object: fields_.emplace_back(ObjectHandle{}); break;
+        default: fields_.emplace_back(); break;
+        }
+    }
+}
 
+const Value& ScriptObject::GetField(std::size_t index) const { return fields_.at(index); }
+void ScriptObject::SetField(std::size_t index, Value value) { fields_.at(index) = std::move(value); }
+std::size_t ScriptObject::FieldCount() const { return fields_.size(); }
+
+bool ScriptObject::Implements(std::string_view interfaceName) const {
+    const auto* type = GetTypeInfo();
+    return type && std::find(type->interfaces.begin(), type->interfaces.end(), interfaceName) != type->interfaces.end();
+}
+
+std::string ScriptObject::ResolveInterfaceMethod(std::string_view interfaceName,
+                                                 std::string_view declaration) const {
+    if (!Implements(interfaceName)) return {};
+    const auto& table = GetTypeInfo()->interfaceMethodTable;
+    const auto found = table.find(std::string(interfaceName) + "::" + std::string(declaration));
+    return found == table.end() ? std::string{} : found->second;
+}
+
+void ScriptObject::EnumerateReferences(const std::function<void(RefObject*)>& visitor) const {
+    for (const auto& value : fields_) {
+        if (value.Type().kind != TypeKind::Object) continue;
+        const auto& handle = value.As<ObjectHandle>();
+        if (handle) visitor(handle.Get());
+    }
+}
+
+} // namespace mini_as

@@ -81,6 +81,7 @@ private:
     friend class ScriptModule;
     void ForwardDiagnostic(const Diagnostic& diagnostic) const;
     std::vector<FunctionSignature> HostSignatures() const;
+    const TypeInfo* RegisterScriptType(const ClassSignature& type);
     MessageCallback messageCallback_;
     std::unordered_map<std::string, std::unique_ptr<ScriptModule>> modules_;
     std::deque<RegisteredHostFunction> hostFunctions_;

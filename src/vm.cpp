@@ -165,6 +165,33 @@ bool VirtualMachine::Step() {
         Push(call.ReturnValue());
         break;
     }
+    case OpCode::NewObject:
+        if (instruction.operand < 0 || static_cast<std::size_t>(instruction.operand) >= function.objectTypes.size())
+            throw std::runtime_error("object type index out of range");
+        Push(Value(ObjectHandle(new ScriptObject(function.objectTypes[static_cast<std::size_t>(instruction.operand)]))));
+        break;
+    case OpCode::LoadField: {
+        Value objectValue = Pop();
+        const auto& handle = objectValue.As<ObjectHandle>();
+        auto* object = handle ? dynamic_cast<ScriptObject*>(handle.Get()) : nullptr;
+        if (!object) throw std::runtime_error("null or non-script object field access");
+        if (instruction.operand < 0 || static_cast<std::size_t>(instruction.operand) >= object->FieldCount())
+            throw std::runtime_error("field index out of range");
+        Push(object->GetField(static_cast<std::size_t>(instruction.operand)));
+        break;
+    }
+    case OpCode::StoreField: {
+        Value fieldValue = Pop();
+        Value objectValue = Pop();
+        const auto& handle = objectValue.As<ObjectHandle>();
+        auto* object = handle ? dynamic_cast<ScriptObject*>(handle.Get()) : nullptr;
+        if (!object) throw std::runtime_error("null or non-script object field assignment");
+        if (instruction.operand < 0 || static_cast<std::size_t>(instruction.operand) >= object->FieldCount())
+            throw std::runtime_error("field index out of range");
+        object->SetField(static_cast<std::size_t>(instruction.operand), fieldValue);
+        Push(std::move(fieldValue));
+        break;
+    }
     }
     return result_.state == ExecutionState::Active;
 }

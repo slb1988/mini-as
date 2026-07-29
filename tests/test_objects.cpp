@@ -66,3 +66,57 @@ TEST_CASE(context_rejects_wrong_object_type) {
     (void)thing;
 }
 
+TEST_CASE(script_classes_allocate_fields_and_cross_context_boundaries) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("script-objects");
+    module->AddScriptSection("classes",
+        "class Box { int value; string label; }"
+        "Box@ makeBox(int value) { Box@ box = Box(); box.value = value; box.label = \"answer\"; return box; }"
+        "int readBox(Box@ box) { return box.value; }");
+    CHECK(module->Build());
+    auto make = engine->CreateContext();
+    CHECK(make->Prepare(module->GetFunctionByName("makeBox")));
+    CHECK(make->SetArgInt(0, 42));
+    CHECK(make->Execute() == mini_as::ExecutionState::Finished);
+    mini_as::ObjectHandle box = make->GetReturnValue().As<mini_as::ObjectHandle>();
+    auto* scriptBox = dynamic_cast<mini_as::ScriptObject*>(box.Get());
+    CHECK(scriptBox != nullptr);
+    CHECK(scriptBox->FieldCount() == 2);
+    CHECK(scriptBox->GetField(1).As<std::string>() == "answer");
+
+    auto read = engine->CreateContext();
+    CHECK(read->Prepare(module->GetFunctionByName("readBox")));
+    CHECK(read->SetArgObject(0, box));
+    CHECK(read->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(read->GetReturnInt() == 42);
+}
+
+TEST_CASE(script_class_interface_table_is_validated_and_resolvable) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("interfaces");
+    module->AddScriptSection("interfaces",
+        "interface IValue { int get(); }"
+        "class Box : IValue { int value; int get() { return value; } }"
+        "Box@ make() { return Box(); }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByName("make")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    auto box = context->GetReturnValue().As<mini_as::ObjectHandle>();
+    auto* object = dynamic_cast<mini_as::ScriptObject*>(box.Get());
+    CHECK(object != nullptr);
+    CHECK(object->Implements("IValue"));
+    CHECK(object->ResolveInterfaceMethod("IValue", "int get()") == "Box::int get()");
+}
+
+TEST_CASE(script_class_missing_interface_method_is_compile_error) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& message) { diagnostics.push_back(message); });
+    auto* module = engine->GetModule("bad-interface");
+    module->AddScriptSection("bad-interface",
+        "interface IValue { int get(); } class Empty : IValue { int value; }");
+    CHECK(!module->Build());
+    CHECK(!diagnostics.empty());
+}
+

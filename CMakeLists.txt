@@ -8,6 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_library(mini_angelscript
   src/core.cpp
   src/engine.cpp
+  src/tokenizer.cpp
 )
 target_include_directories(mini_angelscript PUBLIC include)
 

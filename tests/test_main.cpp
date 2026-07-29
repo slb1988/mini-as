@@ -2,6 +2,7 @@
 #include "mini_as/core.hpp"
 #include "mini_as/tokenizer.hpp"
 #include "mini_as/parser.hpp"
+#include "mini_as/interpreter.hpp"
 
 #include <iostream>
 
@@ -31,6 +32,14 @@ int main() {
     if (function->kind != mini_as::NodeKind::FunctionDecl || function->Children().size() != 3) return 10;
     auto* block = function->Children()[2];
     if (block->kind != mini_as::NodeKind::Block || block->firstChild->kind != mini_as::NodeKind::ReturnStmt) return 11;
+    mini_as::DiagnosticSink m0Diagnostics;
+    mini_as::TreeInterpreter m0(m0Diagnostics);
+    std::string printed;
+    m0.RegisterFunction("Print", [&](const std::vector<mini_as::Value>& arguments) {
+        printed = arguments.at(0).ToString();
+        return mini_as::Value{};
+    });
+    if (!mini_as::RunTreeScript("Print(6 * 7);", m0, m0Diagnostics) || printed != "42") return 12;
     std::cout << "all tests passed\n";
     return 0;
 }

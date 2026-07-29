@@ -11,6 +11,7 @@ add_library(mini_angelscript
   src/interpreter.cpp
   src/parser.cpp
   src/tokenizer.cpp
+  src/type_checker.cpp
 )
 target_include_directories(mini_angelscript PUBLIC include)
 
@@ -21,7 +22,14 @@ else()
 endif()
 
 enable_testing()
-add_executable(mini_as_tests tests/test_main.cpp)
+add_executable(mini_as_tests
+  tests/test_main.cpp
+  tests/test_core.cpp
+  tests/test_tokenizer.cpp
+  tests/test_parser.cpp
+  tests/test_interpreter.cpp
+  tests/test_types.cpp
+)
 target_link_libraries(mini_as_tests PRIVATE mini_angelscript)
 add_test(NAME mini_as_tests COMMAND mini_as_tests)
 

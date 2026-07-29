@@ -8,6 +8,8 @@
 
 namespace mini_as {
 
+struct RegisteredHostFunction;
+
 enum class OpCode : std::uint8_t {
     Nop, Suspend,
     PushConst, PushVoid, LoadLocal, StoreLocal, Dup, Pop,
@@ -32,6 +34,7 @@ struct BytecodeFunction {
     std::vector<Value> constants;
     std::size_t localCount = 0;
     std::vector<const BytecodeFunction*> callTargets;
+    std::vector<const RegisteredHostFunction*> hostTargets;
 };
 
 struct BytecodeModule {
@@ -68,6 +71,7 @@ private:
     std::int32_t nextLocal_ = 0;
     std::vector<FunctionSignature> signatures_;
     std::unordered_map<std::string, std::size_t> functionIndices_;
+    std::unordered_map<std::string, std::size_t> hostIndices_;
 };
 
 } // namespace mini_as

@@ -1,0 +1,45 @@
+#include "test.hpp"
+#include "mini_as/engine.hpp"
+
+TEST_CASE(generic_host_bridge_moves_typed_arguments_and_return) {
+    auto engine = mini_as::CreateScriptEngine();
+    CHECK(engine->RegisterGlobalFunction("float Scale(float value)", [](mini_as::GenericCall& call) {
+        CHECK(call.GetArgCount() == 1);
+        call.SetReturnFloat(call.GetArgFloat(0) * 2.5f);
+    }));
+    auto* module = engine->GetModule("host");
+    module->AddScriptSection("host", "float run(int x) { return Scale(x) + 1; }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByName("run")));
+    CHECK(context->SetArgInt(0, 4));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnFloat() == 11.0f);
+}
+
+TEST_CASE(generic_host_exception_becomes_script_exception) {
+    auto engine = mini_as::CreateScriptEngine();
+    CHECK(engine->RegisterGlobalFunction("int Fail()", [](mini_as::GenericCall& call) {
+        call.SetException("host rejected the operation");
+    }));
+    auto* module = engine->GetModule("host-error");
+    module->AddScriptSection("host-error", "int run() { return Fail(); }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByName("run")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Exception);
+    CHECK(context->GetExceptionString() == "host rejected the operation");
+    CHECK(context->GetExceptionLocation().section == "host-error");
+}
+
+TEST_CASE(registration_parser_rejects_invalid_and_duplicate_declarations) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> messages;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& message) { messages.push_back(message); });
+    auto callback = [](mini_as::GenericCall&) {};
+    CHECK(!engine->RegisterGlobalFunction("not a declaration", callback));
+    CHECK(engine->RegisterGlobalFunction("void Print(string &in)", callback));
+    CHECK(!engine->RegisterGlobalFunction("void Print(string)", callback));
+    CHECK(messages.size() >= 2);
+}
+

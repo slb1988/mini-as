@@ -1,8 +1,10 @@
 #pragma once
 
 #include "mini_as/vm.hpp"
+#include "mini_as/generic.hpp"
 
 #include <functional>
+#include <deque>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -66,6 +68,7 @@ public:
     using MessageCallback = std::function<void(const Diagnostic&)>;
 
     void SetMessageCallback(MessageCallback callback);
+    bool RegisterGlobalFunction(std::string declaration, GenericFunction callback);
     ScriptModule* GetModule(std::string name = {},
                             ModulePolicy policy = ModulePolicy::CreateIfMissing);
     std::unique_ptr<ScriptContext> CreateContext();
@@ -73,11 +76,12 @@ public:
 private:
     friend class ScriptModule;
     void ForwardDiagnostic(const Diagnostic& diagnostic) const;
+    std::vector<FunctionSignature> HostSignatures() const;
     MessageCallback messageCallback_;
     std::unordered_map<std::string, std::unique_ptr<ScriptModule>> modules_;
+    std::deque<RegisteredHostFunction> hostFunctions_;
 };
 
 std::unique_ptr<ScriptEngine> CreateScriptEngine();
 
 } // namespace mini_as
-

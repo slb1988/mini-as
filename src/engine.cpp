@@ -30,11 +30,15 @@ bool ScriptModule::Build() {
     Parser parser(std::move(tokens), diagnostics);
     auto tree = parser.Parse();
     TypeChecker checker(diagnostics);
+    for (const auto& signature : engine_.HostSignatures()) checker.RegisterFunction(signature);
     const bool typed = !diagnostics.HasErrors() && checker.Check(tree.root);
     if (!typed) { bytecode_ = {}; return false; }
     BytecodeCompiler compiler(diagnostics);
     BytecodeModule candidate = compiler.Compile(tree.root, checker.Functions());
     if (diagnostics.HasErrors()) { bytecode_ = {}; return false; }
+    for (auto& function : candidate.functions) {
+        for (const auto& host : engine_.hostFunctions_) function.hostTargets.push_back(&host);
+    }
     bytecode_ = std::move(candidate);
     sections_.clear();
     return true;
@@ -107,6 +111,21 @@ bool ScriptContext::SetArgument(std::size_t index, Value value) {
 
 void ScriptEngine::SetMessageCallback(MessageCallback callback) { messageCallback_ = std::move(callback); }
 
+bool ScriptEngine::RegisterGlobalFunction(std::string declaration, GenericFunction callback) {
+    DiagnosticSink diagnostics([this](const Diagnostic& diagnostic) { ForwardDiagnostic(diagnostic); });
+    auto signature = ParseFunctionDeclaration(declaration, diagnostics);
+    if (!signature || !callback) return false;
+    for (const auto& existing : hostFunctions_) {
+        if (existing.signature.Declaration() == signature->Declaration()) {
+            diagnostics.Report({"registration"}, Severity::Error,
+                               "duplicate global function '" + signature->Declaration() + "'");
+            return false;
+        }
+    }
+    hostFunctions_.push_back({std::move(*signature), std::move(callback)});
+    return true;
+}
+
 ScriptModule* ScriptEngine::GetModule(std::string name, ModulePolicy policy) {
     const auto found = modules_.find(name);
     if (policy == ModulePolicy::AlwaysCreate) {
@@ -131,7 +150,13 @@ void ScriptEngine::ForwardDiagnostic(const Diagnostic& diagnostic) const {
     if (messageCallback_) messageCallback_(diagnostic);
 }
 
+std::vector<FunctionSignature> ScriptEngine::HostSignatures() const {
+    std::vector<FunctionSignature> signatures;
+    signatures.reserve(hostFunctions_.size());
+    for (const auto& host : hostFunctions_) signatures.push_back(host.signature);
+    return signatures;
+}
+
 std::unique_ptr<ScriptEngine> CreateScriptEngine() { return std::make_unique<ScriptEngine>(); }
 
 } // namespace mini_as
-

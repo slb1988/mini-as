@@ -1,4 +1,5 @@
 #include "mini_as/vm.hpp"
+#include "mini_as/generic.hpp"
 
 #include <cmath>
 #include <stdexcept>
@@ -147,7 +148,23 @@ bool VirtualMachine::Step() {
         for (std::size_t i = 0; i < arguments.size(); ++i) locals_[i] = std::move(arguments[i]);
         break;
     }
-    case OpCode::CallHost: throw std::runtime_error("host calls are not linked yet");
+    case OpCode::CallHost: {
+        if (instruction.operand < 0 || static_cast<std::size_t>(instruction.operand) >= function.hostTargets.size())
+            throw std::runtime_error("host call target out of range");
+        const auto* target = function.hostTargets[static_cast<std::size_t>(instruction.operand)];
+        std::vector<Value> arguments(target->signature.parameters.size());
+        for (std::size_t i = arguments.size(); i > 0; --i) arguments[i - 1] = Pop();
+        GenericCall call(arguments);
+        try { target->callback(call); }
+        catch (const std::exception& error) { throw std::runtime_error(std::string("host exception: ") + error.what()); }
+        if (!call.Exception().empty()) throw std::runtime_error(call.Exception());
+        if (call.ReturnValue().Type() != target->signature.returnType) {
+            throw std::runtime_error("host function returned " + call.ReturnValue().Type().Name() +
+                                     " but declared " + target->signature.returnType.Name());
+        }
+        Push(call.ReturnValue());
+        break;
+    }
     }
     return result_.state == ExecutionState::Active;
 }

@@ -57,9 +57,13 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
     module_ = {};
     signatures_ = signatures;
     functionIndices_.clear();
+    hostIndices_.clear();
     if (!root) return module_;
     for (const auto& signature : signatures_) {
-        if (signature.host) continue;
+        if (signature.host) {
+            hostIndices_[signature.Declaration()] = hostIndices_.size();
+            continue;
+        }
         const auto index = module_.functions.size();
         module_.functions.push_back({signature});
         functionIndices_[signature.Declaration()] = index;
@@ -84,6 +88,7 @@ void BytecodeCompiler::CompileFunction(AstNode* node, std::size_t functionIndex)
     function_->code.clear();
     function_->constants.clear();
     function_->callTargets.clear();
+    function_->hostTargets.clear();
     scopes_.clear();
     scopes_.emplace_back();
     nextLocal_ = 0;
@@ -262,7 +267,7 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
     const FunctionSignature* target = nullptr;
     int bestCost = 1000000;
     for (const auto& signature : signatures_) {
-        if (signature.host || signature.name != callee->token.lexeme || signature.parameters.size() != arguments.size()) continue;
+        if (signature.name != callee->token.lexeme || signature.parameters.size() != arguments.size()) continue;
         int cost = 0;
         bool viable = true;
         for (std::size_t i = 0; i < arguments.size(); ++i) {
@@ -278,9 +283,15 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
         if (arguments[i]->inferredType == DataType::Int() && target->parameters[i] == DataType::Float())
             Emit(OpCode::ToFloat, 0, arguments[i]);
     }
-    const auto found = functionIndices_.find(target->Declaration());
-    if (found == functionIndices_.end()) { Error(node, "script call target is missing"); return; }
-    Emit(OpCode::Call, static_cast<std::int32_t>(found->second), node);
+    if (target->host) {
+        const auto found = hostIndices_.find(target->Declaration());
+        if (found == hostIndices_.end()) { Error(node, "host call target is missing"); return; }
+        Emit(OpCode::CallHost, static_cast<std::int32_t>(found->second), node);
+    } else {
+        const auto found = functionIndices_.find(target->Declaration());
+        if (found == functionIndices_.end()) { Error(node, "script call target is missing"); return; }
+        Emit(OpCode::Call, static_cast<std::int32_t>(found->second), node);
+    }
 }
 
 std::size_t BytecodeCompiler::Emit(OpCode opcode, std::int32_t operand, const AstNode* node) {

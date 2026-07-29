@@ -1,4 +1,5 @@
 #include "mini_as/core.hpp"
+#include "mini_as/object.hpp"
 
 #include <iomanip>
 #include <sstream>
@@ -64,6 +65,7 @@ Value::Value(std::int32_t value) : storage_(value) {}
 Value::Value(float value) : storage_(value) {}
 Value::Value(std::string value) : storage_(std::move(value)) {}
 Value::Value(const char* value) : storage_(std::string(value)) {}
+Value::Value(ObjectHandle value) : storage_(std::move(value)) {}
 
 DataType Value::Type() const {
     switch (storage_.index()) {
@@ -72,6 +74,11 @@ DataType Value::Type() const {
     case 2: return DataType::Int();
     case 3: return DataType::Float();
     case 4: return DataType::String();
+    case 5: {
+        const auto& handle = std::get<ObjectHandle>(storage_);
+        return handle ? DataType::Object(handle.Get()->GetTypeInfo()->name, true)
+                      : DataType::Object("<null>", true);
+    }
     default: return DataType::Invalid();
     }
 }
@@ -88,10 +95,11 @@ std::string Value::ToString() const {
         stream << std::setprecision(7) << *value;
         return stream.str();
     }
-    return std::get<std::string>(storage_);
+    if (const auto* value = std::get_if<std::string>(&storage_)) return *value;
+    const auto& handle = std::get<ObjectHandle>(storage_);
+    return handle ? "<" + handle.Get()->GetTypeInfo()->name + "@>" : "null";
 }
 
 bool operator==(const Value& left, const Value& right) { return left.Raw() == right.Raw(); }
 
 } // namespace mini_as
-

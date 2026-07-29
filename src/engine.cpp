@@ -75,6 +75,7 @@ bool ScriptContext::SetArgInt(std::size_t index, std::int32_t value) { return Se
 bool ScriptContext::SetArgFloat(std::size_t index, float value) { return SetArgument(index, Value(value)); }
 bool ScriptContext::SetArgBool(std::size_t index, bool value) { return SetArgument(index, Value(value)); }
 bool ScriptContext::SetArgString(std::size_t index, std::string value) { return SetArgument(index, Value(std::move(value))); }
+bool ScriptContext::SetArgObject(std::size_t index, ObjectHandle value) { return SetArgument(index, Value(std::move(value))); }
 
 ExecutionState ScriptContext::Execute() {
     if (!function_) {
@@ -124,6 +125,20 @@ bool ScriptEngine::RegisterGlobalFunction(std::string declaration, GenericFuncti
     }
     hostFunctions_.push_back({std::move(*signature), std::move(callback)});
     return true;
+}
+
+const TypeInfo* ScriptEngine::RegisterObjectType(std::string name) {
+    if (name.empty() || objectTypes_.find(name) != objectTypes_.end()) return nullptr;
+    auto type = std::make_unique<TypeInfo>();
+    type->name = name;
+    const TypeInfo* result = type.get();
+    objectTypes_.emplace(std::move(name), std::move(type));
+    return result;
+}
+
+const TypeInfo* ScriptEngine::GetTypeInfo(std::string_view name) const {
+    const auto found = objectTypes_.find(std::string(name));
+    return found == objectTypes_.end() ? nullptr : found->second.get();
 }
 
 ScriptModule* ScriptEngine::GetModule(std::string name, ModulePolicy policy) {

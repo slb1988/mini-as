@@ -235,4 +235,3 @@ void TypeChecker::Error(const AstNode* node, std::string message) {
 }
 
 } // namespace mini_as
-

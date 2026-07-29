@@ -2,6 +2,7 @@
 
 #include "mini_as/vm.hpp"
 #include "mini_as/generic.hpp"
+#include "mini_as/object.hpp"
 
 #include <functional>
 #include <deque>
@@ -44,6 +45,7 @@ public:
     bool SetArgFloat(std::size_t index, float value);
     bool SetArgBool(std::size_t index, bool value);
     bool SetArgString(std::size_t index, std::string value);
+    bool SetArgObject(std::size_t index, ObjectHandle value);
     ExecutionState Execute();
     void Suspend();
     void Abort();
@@ -69,6 +71,8 @@ public:
 
     void SetMessageCallback(MessageCallback callback);
     bool RegisterGlobalFunction(std::string declaration, GenericFunction callback);
+    const TypeInfo* RegisterObjectType(std::string name);
+    const TypeInfo* GetTypeInfo(std::string_view name) const;
     ScriptModule* GetModule(std::string name = {},
                             ModulePolicy policy = ModulePolicy::CreateIfMissing);
     std::unique_ptr<ScriptContext> CreateContext();
@@ -80,6 +84,7 @@ private:
     MessageCallback messageCallback_;
     std::unordered_map<std::string, std::unique_ptr<ScriptModule>> modules_;
     std::deque<RegisteredHostFunction> hostFunctions_;
+    std::unordered_map<std::string, std::unique_ptr<TypeInfo>> objectTypes_;
 };
 
 std::unique_ptr<ScriptEngine> CreateScriptEngine();

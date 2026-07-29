@@ -33,11 +33,13 @@ std::int32_t GenericCall::GetArgInt(std::size_t index) const { return GetArg(ind
 float GenericCall::GetArgFloat(std::size_t index) const { return GetArg(index).As<float>(); }
 bool GenericCall::GetArgBool(std::size_t index) const { return GetArg(index).As<bool>(); }
 const std::string& GenericCall::GetArgString(std::size_t index) const { return GetArg(index).As<std::string>(); }
+const ObjectHandle& GenericCall::GetArgObject(std::size_t index) const { return GetArg(index).As<ObjectHandle>(); }
 void GenericCall::SetReturn(Value value) { returnValue_ = std::move(value); }
 void GenericCall::SetReturnInt(std::int32_t value) { SetReturn(Value(value)); }
 void GenericCall::SetReturnFloat(float value) { SetReturn(Value(value)); }
 void GenericCall::SetReturnBool(bool value) { SetReturn(Value(value)); }
 void GenericCall::SetReturnString(std::string value) { SetReturn(Value(std::move(value))); }
+void GenericCall::SetReturnObject(ObjectHandle value) { SetReturn(Value(std::move(value))); }
 void GenericCall::SetException(std::string message) { exception_ = std::move(message); }
 const Value& GenericCall::ReturnValue() const { return returnValue_; }
 const std::string& GenericCall::Exception() const { return exception_; }
@@ -88,4 +90,3 @@ std::optional<FunctionSignature> ParseFunctionDeclaration(
 }
 
 } // namespace mini_as
-

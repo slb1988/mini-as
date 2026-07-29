@@ -9,6 +9,26 @@
 
 namespace mini_as {
 
+class RefObject;
+
+class ObjectHandle {
+public:
+    ObjectHandle() = default;
+    explicit ObjectHandle(RefObject* object);
+    ObjectHandle(const ObjectHandle& other);
+    ObjectHandle(ObjectHandle&& other) noexcept;
+    ~ObjectHandle();
+    ObjectHandle& operator=(const ObjectHandle& other);
+    ObjectHandle& operator=(ObjectHandle&& other) noexcept;
+    RefObject* Get() const;
+    explicit operator bool() const;
+
+private:
+    RefObject* object_ = nullptr;
+};
+
+bool operator==(const ObjectHandle& left, const ObjectHandle& right);
+
 struct SourceLocation {
     std::string section;
     std::size_t offset = 0;
@@ -64,7 +84,7 @@ bool operator!=(const DataType& left, const DataType& right);
 
 class Value {
 public:
-    using Storage = std::variant<std::monostate, bool, std::int32_t, float, std::string>;
+    using Storage = std::variant<std::monostate, bool, std::int32_t, float, std::string, ObjectHandle>;
 
     Value() = default;
     explicit Value(bool value);
@@ -72,6 +92,7 @@ public:
     explicit Value(float value);
     explicit Value(std::string value);
     explicit Value(const char* value);
+    explicit Value(ObjectHandle value);
 
     DataType Type() const;
     bool IsVoid() const;
@@ -94,4 +115,3 @@ private:
 bool operator==(const Value& left, const Value& right);
 
 } // namespace mini_as
-

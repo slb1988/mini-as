@@ -16,11 +16,13 @@ public:
     float GetArgFloat(std::size_t index) const;
     bool GetArgBool(std::size_t index) const;
     const std::string& GetArgString(std::size_t index) const;
+    const ObjectHandle& GetArgObject(std::size_t index) const;
     void SetReturn(Value value);
     void SetReturnInt(std::int32_t value);
     void SetReturnFloat(float value);
     void SetReturnBool(bool value);
     void SetReturnString(std::string value);
+    void SetReturnObject(ObjectHandle value);
     void SetException(std::string message);
     const Value& ReturnValue() const;
     const std::string& Exception() const;
@@ -42,4 +44,3 @@ std::optional<FunctionSignature> ParseFunctionDeclaration(
     std::string_view declaration, DiagnosticSink& diagnostics);
 
 } // namespace mini_as
-

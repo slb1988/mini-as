@@ -51,7 +51,9 @@ private:
     void CompileStatement(AstNode* node);
     void CompileExpression(AstNode* node);
     void CompileBinary(AstNode* node);
-    void Emit(OpCode opcode, std::int32_t operand, const AstNode* node);
+    void CompileLogical(AstNode* node);
+    std::size_t Emit(OpCode opcode, std::int32_t operand, const AstNode* node);
+    void PatchJump(std::size_t instruction, std::size_t target);
     std::int32_t AddConstant(Value value);
     std::optional<std::int32_t> LookupLocal(std::string_view name) const;
     std::int32_t DeclareLocal(const Token& name);
@@ -65,4 +67,3 @@ private:
 };
 
 } // namespace mini_as
-

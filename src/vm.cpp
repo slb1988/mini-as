@@ -20,30 +20,50 @@ bool ValuesEqual(const Value& left, const Value& right) {
 
 } // namespace
 
-ExecutionResult VirtualMachine::Execute(const BytecodeFunction& function,
-                                        const std::vector<Value>& arguments) {
+bool VirtualMachine::Prepare(const BytecodeFunction& function, const std::vector<Value>& arguments) {
     stack_.clear();
     locals_.assign(function.localCount, Value{});
+    function_ = &function;
     pc_ = 0;
-    result_ = {ExecutionState::Active};
+    suspendRequested_ = false;
+    result_ = {ExecutionState::Prepared};
     if (arguments.size() != function.signature.parameters.size()) {
         result_.state = ExecutionState::Exception;
         result_.exception = "argument count does not match function signature";
-        return result_;
+        return false;
     }
     for (std::size_t i = 0; i < arguments.size(); ++i) locals_[i] = arguments[i];
+    return true;
+}
+
+ExecutionResult VirtualMachine::Continue() {
+    if (!function_ || (result_.state != ExecutionState::Prepared && result_.state != ExecutionState::Suspended)) {
+        result_.state = ExecutionState::Exception;
+        result_.exception = "VM is not prepared or suspended";
+        return result_;
+    }
+    result_.state = ExecutionState::Active;
     while (result_.state == ExecutionState::Active) {
-        if (pc_ >= function.code.size()) {
+        if (pc_ >= function_->code.size()) {
             result_.state = ExecutionState::Exception;
             result_.exception = "program counter escaped function";
             break;
         }
-        try { Step(function); }
+        try { Step(*function_); }
         catch (const std::exception& error) {
-            Fail(function.code[pc_ ? pc_ - 1 : 0], error.what());
+            Fail(function_->code[pc_ ? pc_ - 1 : 0], error.what());
         }
     }
     return result_;
+}
+
+void VirtualMachine::RequestSuspend() { suspendRequested_ = true; }
+void VirtualMachine::Abort() { result_.state = ExecutionState::Aborted; }
+
+ExecutionResult VirtualMachine::Execute(const BytecodeFunction& function,
+                                        const std::vector<Value>& arguments) {
+    if (!Prepare(function, arguments)) return result_;
+    return Continue();
 }
 
 bool VirtualMachine::Step(const BytecodeFunction& function) {
@@ -53,7 +73,10 @@ bool VirtualMachine::Step(const BytecodeFunction& function) {
         return static_cast<std::size_t>(instruction.operand);
     };
     switch (instruction.opcode) {
-    case OpCode::Nop: case OpCode::Suspend: break;
+    case OpCode::Nop: break;
+    case OpCode::Suspend:
+        if (suspendRequested_) { suspendRequested_ = false; result_.state = ExecutionState::Suspended; }
+        break;
     case OpCode::PushConst:
         if (instruction.operand < 0 || static_cast<std::size_t>(instruction.operand) >= function.constants.size())
             throw std::runtime_error("constant index out of range");
@@ -82,8 +105,21 @@ bool VirtualMachine::Step(const BytecodeFunction& function) {
     case OpCode::Greater: case OpCode::GreaterEqual: Compare(instruction); break;
     case OpCode::Return:
         result_.returnValue = Pop(); result_.state = ExecutionState::Finished; break;
-    case OpCode::Jump: case OpCode::JumpIfFalse: case OpCode::Call: case OpCode::CallHost:
-        throw std::runtime_error("opcode is not executable in this VM stage");
+    case OpCode::Jump:
+        if (instruction.operand < 0 || static_cast<std::size_t>(instruction.operand) > function.code.size())
+            throw std::runtime_error("jump target out of range");
+        pc_ = static_cast<std::size_t>(instruction.operand); break;
+    case OpCode::JumpIfFalse: {
+        const bool condition = Pop().As<bool>();
+        if (!condition) {
+            if (instruction.operand < 0 || static_cast<std::size_t>(instruction.operand) > function.code.size())
+                throw std::runtime_error("jump target out of range");
+            pc_ = static_cast<std::size_t>(instruction.operand);
+        }
+        break;
+    }
+    case OpCode::Call: case OpCode::CallHost:
+        throw std::runtime_error("call opcode is not executable in this VM stage");
     }
     return result_.state == ExecutionState::Active;
 }
@@ -146,4 +182,3 @@ void VirtualMachine::Compare(const Instruction& instruction) {
 }
 
 } // namespace mini_as
-

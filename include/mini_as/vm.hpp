@@ -17,6 +17,10 @@ struct ExecutionResult {
 
 class VirtualMachine {
 public:
+    bool Prepare(const BytecodeFunction& function, const std::vector<Value>& arguments = {});
+    ExecutionResult Continue();
+    void RequestSuspend();
+    void Abort();
     ExecutionResult Execute(const BytecodeFunction& function,
                             const std::vector<Value>& arguments = {});
 
@@ -30,9 +34,10 @@ private:
 
     std::vector<Value> stack_;
     std::vector<Value> locals_;
+    const BytecodeFunction* function_ = nullptr;
     std::size_t pc_ = 0;
+    bool suspendRequested_ = false;
     ExecutionResult result_;
 };
 
 } // namespace mini_as
-

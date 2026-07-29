@@ -34,3 +34,28 @@ TEST_CASE(vm_reports_division_by_zero_at_source) {
     CHECK(result.location.row == 2);
 }
 
+TEST_CASE(vm_executes_control_flow_and_short_circuit) {
+    mini_as::DiagnosticSink diagnostics;
+    auto function = CompileFunction(
+        "int sum(int n) { int i = 0; int total = 0; while (i < n) { i = i + 1; "
+        "if (i > 2) total = total + i; } if (false && (1 / 0 > 0)) total = 0; return total; }",
+        diagnostics);
+    mini_as::VirtualMachine vm;
+    auto result = vm.Execute(function, {mini_as::Value(5)});
+    CHECK(result.state == mini_as::ExecutionState::Finished);
+    CHECK(result.returnValue.As<std::int32_t>() == 12);
+}
+
+TEST_CASE(vm_suspends_at_line_cue_and_resumes_same_stack) {
+    mini_as::DiagnosticSink diagnostics;
+    auto function = CompileFunction("int f() { int x = 1; x = x + 1; return x; }", diagnostics);
+    mini_as::VirtualMachine vm;
+    CHECK(vm.Prepare(function));
+    vm.RequestSuspend();
+    auto suspended = vm.Continue();
+    CHECK(suspended.state == mini_as::ExecutionState::Suspended);
+    auto finished = vm.Continue();
+    CHECK(finished.state == mini_as::ExecutionState::Finished);
+    CHECK(finished.returnValue.As<std::int32_t>() == 2);
+}
+

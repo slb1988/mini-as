@@ -97,6 +97,7 @@ void BytecodeCompiler::CompileBlock(AstNode* node, bool createScope) {
 }
 
 void BytecodeCompiler::CompileStatement(AstNode* node) {
+    Emit(OpCode::Suspend, 0, node);
     switch (node->kind) {
     case NodeKind::Block: CompileBlock(node); break;
     case NodeKind::VarDecl: {
@@ -116,8 +117,29 @@ void BytecodeCompiler::CompileStatement(AstNode* node) {
             function_->signature.returnType == DataType::Float()) Emit(OpCode::ToFloat, 0, node);
         Emit(OpCode::Return, 0, node);
         break;
-    case NodeKind::IfStmt: case NodeKind::WhileStmt:
-        Error(node, "control flow is introduced in the next stage"); break;
+    case NodeKind::IfStmt: {
+        const auto children = node->Children();
+        CompileExpression(children[0]);
+        const auto elseJump = Emit(OpCode::JumpIfFalse, -1, node);
+        CompileStatement(children[1]);
+        if (children.size() == 3) {
+            const auto endJump = Emit(OpCode::Jump, -1, node);
+            PatchJump(elseJump, function_->code.size());
+            CompileStatement(children[2]);
+            PatchJump(endJump, function_->code.size());
+        } else PatchJump(elseJump, function_->code.size());
+        break;
+    }
+    case NodeKind::WhileStmt: {
+        const auto children = node->Children();
+        const auto loopStart = function_->code.size();
+        CompileExpression(children[0]);
+        const auto exitJump = Emit(OpCode::JumpIfFalse, -1, node);
+        CompileStatement(children[1]);
+        Emit(OpCode::Jump, static_cast<std::int32_t>(loopStart), node);
+        PatchJump(exitJump, function_->code.size());
+        break;
+    }
     default: Error(node, "statement cannot be compiled"); break;
     }
 }
@@ -156,7 +178,10 @@ void BytecodeCompiler::CompileExpression(AstNode* node) {
         else Emit(OpCode::StoreLocal, *slot, node);
         break;
     }
-    case NodeKind::Binary: CompileBinary(node); break;
+    case NodeKind::Binary:
+        if (node->token.kind == TokenKind::AndAnd || node->token.kind == TokenKind::OrOr) CompileLogical(node);
+        else CompileBinary(node);
+        break;
     case NodeKind::Unary:
         CompileExpression(node->firstChild);
         if (node->token.kind == TokenKind::Bang) Emit(OpCode::LogicalNot, 0, node);
@@ -197,8 +222,33 @@ void BytecodeCompiler::CompileBinary(AstNode* node) {
     Emit(opcode, 0, node);
 }
 
-void BytecodeCompiler::Emit(OpCode opcode, std::int32_t operand, const AstNode* node) {
+void BytecodeCompiler::CompileLogical(AstNode* node) {
+    const auto children = node->Children();
+    CompileExpression(children[0]);
+    const auto branch = Emit(OpCode::JumpIfFalse, -1, node);
+    if (node->token.kind == TokenKind::AndAnd) {
+        CompileExpression(children[1]);
+        const auto end = Emit(OpCode::Jump, -1, node);
+        PatchJump(branch, function_->code.size());
+        Emit(OpCode::PushConst, AddConstant(Value(false)), node);
+        PatchJump(end, function_->code.size());
+    } else {
+        Emit(OpCode::PushConst, AddConstant(Value(true)), node);
+        const auto end = Emit(OpCode::Jump, -1, node);
+        PatchJump(branch, function_->code.size());
+        CompileExpression(children[1]);
+        PatchJump(end, function_->code.size());
+    }
+}
+
+std::size_t BytecodeCompiler::Emit(OpCode opcode, std::int32_t operand, const AstNode* node) {
     function_->code.push_back({opcode, operand, node ? node->token.location : SourceLocation{}});
+    return function_->code.size() - 1;
+}
+
+void BytecodeCompiler::PatchJump(std::size_t instruction, std::size_t target) {
+    if (instruction >= function_->code.size()) return;
+    function_->code[instruction].operand = static_cast<std::int32_t>(target);
 }
 
 std::int32_t BytecodeCompiler::AddConstant(Value value) {

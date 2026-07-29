@@ -13,6 +13,7 @@ add_library(mini_angelscript
   src/parser.cpp
   src/tokenizer.cpp
   src/type_checker.cpp
+  src/vm.cpp
 )
 target_include_directories(mini_angelscript PUBLIC include)
 
@@ -31,6 +32,7 @@ add_executable(mini_as_tests
   tests/test_interpreter.cpp
   tests/test_types.cpp
   tests/test_bytecode.cpp
+  tests/test_vm.cpp
 )
 target_link_libraries(mini_as_tests PRIVATE mini_angelscript)
 add_test(NAME mini_as_tests COMMAND mini_as_tests)

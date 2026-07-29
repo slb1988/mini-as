@@ -112,6 +112,8 @@ void BytecodeCompiler::CompileStatement(AstNode* node) {
     case NodeKind::ReturnStmt:
         if (node->firstChild) CompileExpression(node->firstChild);
         else Emit(OpCode::PushVoid, 0, node);
+        if (node->firstChild && node->firstChild->inferredType == DataType::Int() &&
+            function_->signature.returnType == DataType::Float()) Emit(OpCode::ToFloat, 0, node);
         Emit(OpCode::Return, 0, node);
         break;
     case NodeKind::IfStmt: case NodeKind::WhileStmt:
@@ -223,4 +225,3 @@ void BytecodeCompiler::Error(const AstNode* node, std::string message) {
 }
 
 } // namespace mini_as
-

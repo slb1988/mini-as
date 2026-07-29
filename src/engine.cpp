@@ -157,6 +157,9 @@ const TypeInfo* ScriptEngine::GetTypeInfo(std::string_view name) const {
     return found == objectTypes_.end() ? nullptr : found->second.get();
 }
 
+std::size_t ScriptEngine::CollectGarbage() { return garbageCollector_.Collect(); }
+std::size_t ScriptEngine::GetTrackedObjectCount() const { return garbageCollector_.TrackedCount(); }
+
 const TypeInfo* ScriptEngine::RegisterScriptType(const ClassSignature& signature) {
     TypeInfo* type = nullptr;
     const auto found = objectTypes_.find(signature.name);
@@ -167,6 +170,7 @@ const TypeInfo* ScriptEngine::RegisterScriptType(const ClassSignature& signature
         objectTypes_.emplace(signature.name, std::move(created));
     } else type = found->second.get();
     type->script = !signature.interfaceType;
+    type->collector = signature.interfaceType ? nullptr : &garbageCollector_;
     type->fields = signature.fields;
     type->interfaces = signature.interfaces;
     type->interfaceMethodTable.clear();

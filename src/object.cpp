@@ -32,6 +32,7 @@ ObjectHandle::operator bool() const { return object_ != nullptr; }
 bool operator==(const ObjectHandle& left, const ObjectHandle& right) { return left.Get() == right.Get(); }
 
 RefObject::RefObject(const TypeInfo* type) : type_(type) {}
+RefObject::~RefObject() { if (type_ && type_->collector) type_->collector->Unregister(this); }
 void RefObject::AddRef() { refCount_.fetch_add(1, std::memory_order_relaxed); }
 void RefObject::Release() {
     if (refCount_.fetch_sub(1, std::memory_order_acq_rel) == 1) delete this;
@@ -41,6 +42,7 @@ const TypeInfo* RefObject::GetTypeInfo() const { return type_; }
 void RefObject::EnumerateReferences(const std::function<void(RefObject*)>&) const {}
 
 ScriptObject::ScriptObject(const TypeInfo* type) : RefObject(type) {
+    if (type && type->collector) type->collector->Register(this);
     if (!type) return;
     fields_.reserve(type->fields.size());
     for (const auto& field : type->fields) {
@@ -78,6 +80,54 @@ void ScriptObject::EnumerateReferences(const std::function<void(RefObject*)>& vi
         const auto& handle = value.As<ObjectHandle>();
         if (handle) visitor(handle.Get());
     }
+}
+
+void ScriptObject::ClearReferences() {
+    for (auto& value : fields_) {
+        if (value.Type().kind == TypeKind::Object) value = Value(ObjectHandle{});
+    }
+}
+
+void GarbageCollector::Register(RefObject* object) { if (object) candidates_.insert(object); }
+void GarbageCollector::Unregister(RefObject* object) { candidates_.erase(object); }
+std::size_t GarbageCollector::TrackedCount() const { return candidates_.size(); }
+
+std::size_t GarbageCollector::Collect() {
+    std::vector<RefObject*> candidates(candidates_.begin(), candidates_.end());
+    std::unordered_map<RefObject*, std::size_t> internalIncoming;
+    for (auto* object : candidates) internalIncoming[object] = 0;
+    for (auto* object : candidates) {
+        object->EnumerateReferences([&](RefObject* target) {
+            const auto found = internalIncoming.find(target);
+            if (found != internalIncoming.end()) ++found->second;
+        });
+    }
+
+    std::unordered_set<RefObject*> reachable;
+    std::vector<RefObject*> work;
+    for (auto* object : candidates) {
+        if (object->RefCount() > internalIncoming[object]) {
+            reachable.insert(object);
+            work.push_back(object);
+        }
+    }
+    while (!work.empty()) {
+        RefObject* object = work.back();
+        work.pop_back();
+        object->EnumerateReferences([&](RefObject* target) {
+            if (internalIncoming.find(target) != internalIncoming.end() && reachable.insert(target).second)
+                work.push_back(target);
+        });
+    }
+
+    std::vector<RefObject*> garbage;
+    for (auto* object : candidates) if (reachable.find(object) == reachable.end()) garbage.push_back(object);
+    for (auto* object : garbage) object->AddRef();
+    for (auto* object : garbage) {
+        if (auto* scriptObject = dynamic_cast<ScriptObject*>(object)) scriptObject->ClearReferences();
+    }
+    for (auto* object : garbage) object->Release();
+    return garbage.size();
 }
 
 } // namespace mini_as

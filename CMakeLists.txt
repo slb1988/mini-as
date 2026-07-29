@@ -38,6 +38,7 @@ add_executable(mini_as_tests
   tests/test_engine.cpp
   tests/test_generic.cpp
   tests/test_objects.cpp
+  tests/test_gc.cpp
 )
 target_link_libraries(mini_as_tests PRIVATE mini_angelscript)
 add_test(NAME mini_as_tests COMMAND mini_as_tests)

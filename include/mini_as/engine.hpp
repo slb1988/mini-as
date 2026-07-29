@@ -73,6 +73,8 @@ public:
     bool RegisterGlobalFunction(std::string declaration, GenericFunction callback);
     const TypeInfo* RegisterObjectType(std::string name);
     const TypeInfo* GetTypeInfo(std::string_view name) const;
+    std::size_t CollectGarbage();
+    std::size_t GetTrackedObjectCount() const;
     ScriptModule* GetModule(std::string name = {},
                             ModulePolicy policy = ModulePolicy::CreateIfMissing);
     std::unique_ptr<ScriptContext> CreateContext();
@@ -85,6 +87,7 @@ private:
     MessageCallback messageCallback_;
     std::unordered_map<std::string, std::unique_ptr<ScriptModule>> modules_;
     std::deque<RegisteredHostFunction> hostFunctions_;
+    GarbageCollector garbageCollector_;
     std::unordered_map<std::string, std::unique_ptr<TypeInfo>> objectTypes_;
 };
 

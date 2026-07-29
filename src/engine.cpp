@@ -65,7 +65,11 @@ const BytecodeFunction* ScriptModule::GetFunctionByName(std::string_view name) c
 
 const BytecodeModule& ScriptModule::Bytecode() const { return bytecode_; }
 
-ScriptContext::ScriptContext(ScriptEngine& engine) : engine_(engine) {}
+ScriptContext::ScriptContext(ScriptEngine& engine) : engine_(engine) {
+    vm_.SetLineCallback([this](const SourceLocation& location) {
+        if (lineCallback_) lineCallback_(*this, location);
+    });
+}
 
 bool ScriptContext::Prepare(const BytecodeFunction* function) {
     function_ = function;
@@ -101,12 +105,14 @@ ExecutionState ScriptContext::Execute() {
 
 void ScriptContext::Suspend() { vm_.RequestSuspend(); }
 void ScriptContext::Abort() { vm_.Abort(); result_.state = ExecutionState::Aborted; }
+void ScriptContext::SetLineCallback(LineCallback callback) { lineCallback_ = std::move(callback); }
 ExecutionState ScriptContext::GetState() const { return result_.state; }
 const Value& ScriptContext::GetReturnValue() const { return result_.returnValue; }
 std::int32_t ScriptContext::GetReturnInt() const { return result_.returnValue.As<std::int32_t>(); }
 float ScriptContext::GetReturnFloat() const { return result_.returnValue.As<float>(); }
 const std::string& ScriptContext::GetExceptionString() const { return result_.exception; }
 const SourceLocation& ScriptContext::GetExceptionLocation() const { return result_.location; }
+const std::vector<StackFrameInfo>& ScriptContext::GetCallStack() const { return result_.callStack; }
 
 bool ScriptContext::SetArgument(std::size_t index, Value value) {
     if (!function_ || index >= arguments_.size() || result_.state != ExecutionState::Prepared) return false;

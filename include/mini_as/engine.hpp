@@ -39,6 +39,7 @@ private:
 
 class ScriptContext {
 public:
+    using LineCallback = std::function<void(ScriptContext&, const SourceLocation&)>;
     explicit ScriptContext(ScriptEngine& engine);
     bool Prepare(const BytecodeFunction* function);
     bool SetArgInt(std::size_t index, std::int32_t value);
@@ -49,12 +50,14 @@ public:
     ExecutionState Execute();
     void Suspend();
     void Abort();
+    void SetLineCallback(LineCallback callback);
     ExecutionState GetState() const;
     const Value& GetReturnValue() const;
     std::int32_t GetReturnInt() const;
     float GetReturnFloat() const;
     const std::string& GetExceptionString() const;
     const SourceLocation& GetExceptionLocation() const;
+    const std::vector<StackFrameInfo>& GetCallStack() const;
 
 private:
     bool SetArgument(std::size_t index, Value value);
@@ -63,6 +66,7 @@ private:
     std::vector<Value> arguments_;
     VirtualMachine vm_;
     ExecutionResult result_;
+    LineCallback lineCallback_;
 };
 
 class ScriptEngine {

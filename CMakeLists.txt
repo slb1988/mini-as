@@ -39,9 +39,15 @@ add_executable(mini_as_tests
   tests/test_generic.cpp
   tests/test_objects.cpp
   tests/test_gc.cpp
+  tests/test_tutorial.cpp
 )
 target_link_libraries(mini_as_tests PRIVATE mini_angelscript)
 add_test(NAME mini_as_tests COMMAND mini_as_tests)
 
 add_executable(m0_demo examples/m0/main.cpp)
 target_link_libraries(m0_demo PRIVATE mini_angelscript)
+
+add_executable(tutorial_clone examples/tutorial/main.cpp)
+target_link_libraries(tutorial_clone PRIVATE mini_angelscript)
+add_test(NAME tutorial_clone
+  COMMAND tutorial_clone ${CMAKE_CURRENT_SOURCE_DIR}/examples/tutorial/script.as)

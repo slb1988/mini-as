@@ -8,11 +8,17 @@ namespace mini_as {
 
 enum class ExecutionState { Uninitialized, Prepared, Active, Suspended, Finished, Aborted, Exception };
 
+struct StackFrameInfo {
+    std::string functionDeclaration;
+    SourceLocation location;
+};
+
 struct ExecutionResult {
     ExecutionState state = ExecutionState::Uninitialized;
     Value returnValue;
     std::string exception;
     SourceLocation location;
+    std::vector<StackFrameInfo> callStack;
 };
 
 class VirtualMachine {
@@ -21,6 +27,7 @@ public:
     ExecutionResult Continue();
     void RequestSuspend();
     void Abort();
+    void SetLineCallback(std::function<void(const SourceLocation&)> callback);
     ExecutionResult Execute(const BytecodeFunction& function,
                             const std::vector<Value>& arguments = {});
 
@@ -44,6 +51,7 @@ private:
     const BytecodeFunction* function_ = nullptr;
     std::size_t pc_ = 0;
     bool suspendRequested_ = false;
+    std::function<void(const SourceLocation&)> lineCallback_;
     ExecutionResult result_;
 };
 

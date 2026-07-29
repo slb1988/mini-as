@@ -61,6 +61,9 @@ ExecutionResult VirtualMachine::Continue() {
 
 void VirtualMachine::RequestSuspend() { suspendRequested_ = true; }
 void VirtualMachine::Abort() { result_.state = ExecutionState::Aborted; }
+void VirtualMachine::SetLineCallback(std::function<void(const SourceLocation&)> callback) {
+    lineCallback_ = std::move(callback);
+}
 
 ExecutionResult VirtualMachine::Execute(const BytecodeFunction& function,
                                         const std::vector<Value>& arguments) {
@@ -78,6 +81,8 @@ bool VirtualMachine::Step() {
     switch (instruction.opcode) {
     case OpCode::Nop: break;
     case OpCode::Suspend:
+        if (lineCallback_) lineCallback_(instruction.location);
+        if (result_.state == ExecutionState::Aborted) break;
         if (suspendRequested_) { suspendRequested_ = false; result_.state = ExecutionState::Suspended; }
         break;
     case OpCode::PushConst:
@@ -208,6 +213,15 @@ void VirtualMachine::Fail(const Instruction& instruction, std::string message) {
     result_.state = ExecutionState::Exception;
     result_.exception = std::move(message);
     result_.location = instruction.location;
+    result_.callStack.clear();
+    if (function_) result_.callStack.push_back({function_->signature.Declaration(), instruction.location});
+    for (auto frame = callStack_.rbegin(); frame != callStack_.rend(); ++frame) {
+        SourceLocation location;
+        if (frame->function && frame->pc && frame->pc - 1 < frame->function->code.size())
+            location = frame->function->code[frame->pc - 1].location;
+        result_.callStack.push_back({frame->function ? frame->function->signature.Declaration() : "<unknown>",
+                                     std::move(location)});
+    }
 }
 
 void VirtualMachine::BinaryArithmetic(const Instruction& instruction) {

@@ -33,6 +33,7 @@ add_executable(mini_as_tests
   tests/test_types.cpp
   tests/test_bytecode.cpp
   tests/test_vm.cpp
+  tests/test_engine.cpp
 )
 target_link_libraries(mini_as_tests PRIVATE mini_angelscript)
 add_test(NAME mini_as_tests COMMAND mini_as_tests)

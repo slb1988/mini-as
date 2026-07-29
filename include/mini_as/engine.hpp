@@ -1,10 +1,83 @@
 #pragma once
 
+#include "mini_as/vm.hpp"
+
+#include <functional>
+#include <memory>
+#include <string>
 #include <string_view>
+#include <unordered_map>
 
 namespace mini_as {
 
 std::string_view Version();
+
+enum class ModulePolicy { AlwaysCreate, CreateIfMissing, OnlyIfExists };
+
+class ScriptEngine;
+
+class ScriptModule {
+public:
+    ScriptModule(ScriptEngine& engine, std::string name);
+    const std::string& GetName() const;
+    void AddScriptSection(std::string name, std::string source);
+    bool Build();
+    const BytecodeFunction* GetFunctionByDecl(std::string_view declaration) const;
+    const BytecodeFunction* GetFunctionByName(std::string_view name) const;
+    const BytecodeModule& Bytecode() const;
+
+private:
+    struct Section { std::string name; std::string source; };
+    ScriptEngine& engine_;
+    std::string name_;
+    std::vector<Section> sections_;
+    BytecodeModule bytecode_;
+};
+
+class ScriptContext {
+public:
+    explicit ScriptContext(ScriptEngine& engine);
+    bool Prepare(const BytecodeFunction* function);
+    bool SetArgInt(std::size_t index, std::int32_t value);
+    bool SetArgFloat(std::size_t index, float value);
+    bool SetArgBool(std::size_t index, bool value);
+    bool SetArgString(std::size_t index, std::string value);
+    ExecutionState Execute();
+    void Suspend();
+    void Abort();
+    ExecutionState GetState() const;
+    const Value& GetReturnValue() const;
+    std::int32_t GetReturnInt() const;
+    float GetReturnFloat() const;
+    const std::string& GetExceptionString() const;
+    const SourceLocation& GetExceptionLocation() const;
+
+private:
+    bool SetArgument(std::size_t index, Value value);
+    ScriptEngine& engine_;
+    const BytecodeFunction* function_ = nullptr;
+    std::vector<Value> arguments_;
+    VirtualMachine vm_;
+    ExecutionResult result_;
+};
+
+class ScriptEngine {
+public:
+    using MessageCallback = std::function<void(const Diagnostic&)>;
+
+    void SetMessageCallback(MessageCallback callback);
+    ScriptModule* GetModule(std::string name = {},
+                            ModulePolicy policy = ModulePolicy::CreateIfMissing);
+    std::unique_ptr<ScriptContext> CreateContext();
+
+private:
+    friend class ScriptModule;
+    void ForwardDiagnostic(const Diagnostic& diagnostic) const;
+    MessageCallback messageCallback_;
+    std::unordered_map<std::string, std::unique_ptr<ScriptModule>> modules_;
+};
+
+std::unique_ptr<ScriptEngine> CreateScriptEngine();
 
 } // namespace mini_as
 

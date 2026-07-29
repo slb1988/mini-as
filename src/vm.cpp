@@ -22,6 +22,7 @@ bool ValuesEqual(const Value& left, const Value& right) {
 
 bool VirtualMachine::Prepare(const BytecodeFunction& function, const std::vector<Value>& arguments) {
     stack_.clear();
+    callStack_.clear();
     locals_.assign(function.localCount, Value{});
     function_ = &function;
     pc_ = 0;
@@ -49,7 +50,7 @@ ExecutionResult VirtualMachine::Continue() {
             result_.exception = "program counter escaped function";
             break;
         }
-        try { Step(*function_); }
+        try { Step(); }
         catch (const std::exception& error) {
             Fail(function_->code[pc_ ? pc_ - 1 : 0], error.what());
         }
@@ -66,7 +67,8 @@ ExecutionResult VirtualMachine::Execute(const BytecodeFunction& function,
     return Continue();
 }
 
-bool VirtualMachine::Step(const BytecodeFunction& function) {
+bool VirtualMachine::Step() {
+    const BytecodeFunction& function = *function_;
     const Instruction instruction = function.code[pc_++];
     const auto slot = [&]() -> std::size_t {
         if (instruction.operand < 0) throw std::runtime_error("negative local slot");
@@ -103,8 +105,21 @@ bool VirtualMachine::Step(const BytecodeFunction& function) {
     case OpCode::LogicalNot: Push(Value(!Pop().As<bool>())); break;
     case OpCode::Equal: case OpCode::NotEqual: case OpCode::Less: case OpCode::LessEqual:
     case OpCode::Greater: case OpCode::GreaterEqual: Compare(instruction); break;
-    case OpCode::Return:
-        result_.returnValue = Pop(); result_.state = ExecutionState::Finished; break;
+    case OpCode::Return: {
+        Value returnValue = Pop();
+        if (callStack_.empty()) {
+            result_.returnValue = std::move(returnValue);
+            result_.state = ExecutionState::Finished;
+        } else {
+            CallFrame frame = std::move(callStack_.back());
+            callStack_.pop_back();
+            function_ = frame.function;
+            pc_ = frame.pc;
+            locals_ = std::move(frame.locals);
+            Push(std::move(returnValue));
+        }
+        break;
+    }
     case OpCode::Jump:
         if (instruction.operand < 0 || static_cast<std::size_t>(instruction.operand) > function.code.size())
             throw std::runtime_error("jump target out of range");
@@ -118,8 +133,21 @@ bool VirtualMachine::Step(const BytecodeFunction& function) {
         }
         break;
     }
-    case OpCode::Call: case OpCode::CallHost:
-        throw std::runtime_error("call opcode is not executable in this VM stage");
+    case OpCode::Call: {
+        if (instruction.operand < 0 || static_cast<std::size_t>(instruction.operand) >= function.callTargets.size())
+            throw std::runtime_error("call target out of range");
+        if (callStack_.size() >= 1024) throw std::runtime_error("script call stack overflow");
+        const BytecodeFunction* target = function.callTargets[static_cast<std::size_t>(instruction.operand)];
+        std::vector<Value> arguments(target->signature.parameters.size());
+        for (std::size_t i = arguments.size(); i > 0; --i) arguments[i - 1] = Pop();
+        callStack_.push_back({function_, pc_, std::move(locals_)});
+        function_ = target;
+        pc_ = 0;
+        locals_.assign(target->localCount, Value{});
+        for (std::size_t i = 0; i < arguments.size(); ++i) locals_[i] = std::move(arguments[i]);
+        break;
+    }
+    case OpCode::CallHost: throw std::runtime_error("host calls are not linked yet");
     }
     return result_.state == ExecutionState::Active;
 }

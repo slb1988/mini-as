@@ -31,6 +31,7 @@ struct BytecodeFunction {
     std::vector<Instruction> code;
     std::vector<Value> constants;
     std::size_t localCount = 0;
+    std::vector<const BytecodeFunction*> callTargets;
 };
 
 struct BytecodeModule {
@@ -46,12 +47,13 @@ public:
     BytecodeModule Compile(AstNode* root, const std::vector<FunctionSignature>& signatures);
 
 private:
-    void CompileFunction(AstNode* node, const FunctionSignature& signature);
+    void CompileFunction(AstNode* node, std::size_t functionIndex);
     void CompileBlock(AstNode* node, bool createScope = true);
     void CompileStatement(AstNode* node);
     void CompileExpression(AstNode* node);
     void CompileBinary(AstNode* node);
     void CompileLogical(AstNode* node);
+    void CompileCall(AstNode* node);
     std::size_t Emit(OpCode opcode, std::int32_t operand, const AstNode* node);
     void PatchJump(std::size_t instruction, std::size_t target);
     std::int32_t AddConstant(Value value);
@@ -64,6 +66,8 @@ private:
     BytecodeFunction* function_ = nullptr;
     std::vector<std::unordered_map<std::string, std::int32_t>> scopes_;
     std::int32_t nextLocal_ = 0;
+    std::vector<FunctionSignature> signatures_;
+    std::unordered_map<std::string, std::size_t> functionIndices_;
 };
 
 } // namespace mini_as

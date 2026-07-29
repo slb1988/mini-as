@@ -29,3 +29,30 @@ TEST_CASE(engine_forwards_build_diagnostics_and_honors_module_policy) {
     CHECK(messages[0].location.section == "broken");
 }
 
+TEST_CASE(two_pass_functions_support_forward_calls_and_recursion) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("functions");
+    module->AddScriptSection("functions",
+        "int entry(int n) { return factorial(n); }"
+        "int factorial(int n) { if (n <= 1) return 1; return n * factorial(n - 1); }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int entry(int)")));
+    CHECK(context->SetArgInt(0, 6));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 720);
+}
+
+TEST_CASE(function_call_stack_preserves_caller_locals) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("frames");
+    module->AddScriptSection("frames",
+        "int twice(int x) { return x * 2; } int calc(int x) { int saved = x + 1; return twice(x) + saved; }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByName("calc")));
+    CHECK(context->SetArgInt(0, 10));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 31);
+}
+

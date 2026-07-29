@@ -55,24 +55,35 @@ BytecodeCompiler::BytecodeCompiler(DiagnosticSink& diagnostics) : diagnostics_(d
 
 BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<FunctionSignature>& signatures) {
     module_ = {};
+    signatures_ = signatures;
+    functionIndices_.clear();
     if (!root) return module_;
-    std::size_t scriptIndex = 0;
+    for (const auto& signature : signatures_) {
+        if (signature.host) continue;
+        const auto index = module_.functions.size();
+        module_.functions.push_back({signature});
+        functionIndices_[signature.Declaration()] = index;
+    }
     for (AstNode* node = root->firstChild; node; node = node->nextSibling) {
         if (node->kind != NodeKind::FunctionDecl) continue;
-        while (scriptIndex < signatures.size() && signatures[scriptIndex].host) ++scriptIndex;
-        for (; scriptIndex < signatures.size(); ++scriptIndex) {
-            if (!signatures[scriptIndex].host && signatures[scriptIndex].name == node->token.lexeme) {
-                CompileFunction(node, signatures[scriptIndex++]);
-                break;
-            }
-        }
+        FunctionSignature astSignature{node->token.lexeme, node->declaredType, {}, false};
+        for (AstNode* child = node->firstChild; child && child->kind == NodeKind::Parameter; child = child->nextSibling)
+            astSignature.parameters.push_back(child->declaredType);
+        const auto found = functionIndices_.find(astSignature.Declaration());
+        if (found != functionIndices_.end()) CompileFunction(node, found->second);
+    }
+    for (auto& function : module_.functions) {
+        function.callTargets.reserve(module_.functions.size());
+        for (const auto& target : module_.functions) function.callTargets.push_back(&target);
     }
     return std::move(module_);
 }
 
-void BytecodeCompiler::CompileFunction(AstNode* node, const FunctionSignature& signature) {
-    module_.functions.push_back({signature});
-    function_ = &module_.functions.back();
+void BytecodeCompiler::CompileFunction(AstNode* node, std::size_t functionIndex) {
+    function_ = &module_.functions.at(functionIndex);
+    function_->code.clear();
+    function_->constants.clear();
+    function_->callTargets.clear();
     scopes_.clear();
     scopes_.emplace_back();
     nextLocal_ = 0;
@@ -189,7 +200,7 @@ void BytecodeCompiler::CompileExpression(AstNode* node) {
             Emit(node->inferredType == DataType::Float() ? OpCode::NegFloat : OpCode::NegInt, 0, node);
         }
         break;
-    case NodeKind::Call: Error(node, "calls are introduced with function frames"); break;
+    case NodeKind::Call: CompileCall(node); break;
     default: Error(node, "expression cannot be compiled"); break;
     }
 }
@@ -239,6 +250,37 @@ void BytecodeCompiler::CompileLogical(AstNode* node) {
         CompileExpression(children[1]);
         PatchJump(end, function_->code.size());
     }
+}
+
+void BytecodeCompiler::CompileCall(AstNode* node) {
+    AstNode* callee = node->firstChild;
+    if (!callee || callee->kind != NodeKind::Identifier) {
+        Error(node, "only named calls can be compiled"); return;
+    }
+    std::vector<AstNode*> arguments;
+    for (AstNode* argument = callee->nextSibling; argument; argument = argument->nextSibling) arguments.push_back(argument);
+    const FunctionSignature* target = nullptr;
+    int bestCost = 1000000;
+    for (const auto& signature : signatures_) {
+        if (signature.host || signature.name != callee->token.lexeme || signature.parameters.size() != arguments.size()) continue;
+        int cost = 0;
+        bool viable = true;
+        for (std::size_t i = 0; i < arguments.size(); ++i) {
+            if (arguments[i]->inferredType == signature.parameters[i]) continue;
+            if (arguments[i]->inferredType == DataType::Int() && signature.parameters[i] == DataType::Float()) ++cost;
+            else viable = false;
+        }
+        if (viable && cost < bestCost) { target = &signature; bestCost = cost; }
+    }
+    if (!target) { Error(node, "cannot resolve script call"); return; }
+    for (std::size_t i = 0; i < arguments.size(); ++i) {
+        CompileExpression(arguments[i]);
+        if (arguments[i]->inferredType == DataType::Int() && target->parameters[i] == DataType::Float())
+            Emit(OpCode::ToFloat, 0, arguments[i]);
+    }
+    const auto found = functionIndices_.find(target->Declaration());
+    if (found == functionIndices_.end()) { Error(node, "script call target is missing"); return; }
+    Emit(OpCode::Call, static_cast<std::int32_t>(found->second), node);
 }
 
 std::size_t BytecodeCompiler::Emit(OpCode opcode, std::int32_t operand, const AstNode* node) {

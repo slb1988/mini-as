@@ -25,7 +25,13 @@ public:
                             const std::vector<Value>& arguments = {});
 
 private:
-    bool Step(const BytecodeFunction& function);
+    struct CallFrame {
+        const BytecodeFunction* function = nullptr;
+        std::size_t pc = 0;
+        std::vector<Value> locals;
+    };
+
+    bool Step();
     Value Pop();
     void Push(Value value);
     void Fail(const Instruction& instruction, std::string message);
@@ -34,6 +40,7 @@ private:
 
     std::vector<Value> stack_;
     std::vector<Value> locals_;
+    std::vector<CallFrame> callStack_;
     const BytecodeFunction* function_ = nullptr;
     std::size_t pc_ = 0;
     bool suspendRequested_ = false;

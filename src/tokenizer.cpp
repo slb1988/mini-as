@@ -36,7 +36,7 @@ std::string_view TokenName(TokenKind kind) {
         "void", "bool", "int", "float", "string", "true", "false", "const", "auto",
         "if", "else", "while", "do", "for", "switch", "case", "default",
         "return", "break", "continue", "class", "interface", "is", "null",
-        "(", ")", "{", "}", ",", ".", ";", ":", "@", "+", "-", "*", "/", "%",
+        "(", ")", "{", "}", ",", ".", ";", ":", "?", "@", "+", "-", "*", "/", "%",
         "++", "--",
         "+=", "-=", "*=", "/=", "%=",
         "!", "!=", "=", "==", "<", "<=", ">", ">=", "&&", "||"
@@ -93,6 +93,7 @@ void Tokenizer::ScanToken() {
     case '.': Add(TokenKind::Dot, start, location); return;
     case ';': Add(TokenKind::Semicolon, start, location); return;
     case ':': Add(TokenKind::Colon, start, location); return;
+    case '?': Add(TokenKind::Question, start, location); return;
     case '@': Add(TokenKind::At, start, location); return;
     case '+':
         Add(Match('+') ? TokenKind::PlusPlus : (Match('=') ? TokenKind::PlusEqual : TokenKind::Plus),

@@ -11,7 +11,7 @@ enum class NodeKind {
     Program, FunctionDecl, Parameter, ClassDecl, InterfaceDecl, FieldDecl,
     Block, DeclList, VarDecl, IfStmt, WhileStmt, DoWhileStmt, ForStmt,
     SwitchStmt, CaseClause, DefaultClause, ReturnStmt, BreakStmt, ContinueStmt, ExprStmt, EmptyStmt,
-    Assign, Binary, Unary, Increment, Call, Member, Literal, Identifier
+    Assign, Conditional, Binary, Unary, Increment, Call, Member, Literal, Identifier
 };
 
 struct AstNode {
@@ -63,6 +63,7 @@ private:
     AstNode* ParseReturn();
     AstNode* ParseExpression();
     AstNode* ParseAssignment();
+    AstNode* ParseConditional();
     AstNode* ParseOr();
     AstNode* ParseAnd();
     AstNode* ParseEquality();

@@ -306,6 +306,18 @@ DataType TypeChecker::CheckExpression(AstNode* node) {
         }
         break;
     }
+    case NodeKind::Conditional: {
+        const auto children = node->Children();
+        if (CheckExpression(children[0]) != DataType::Bool())
+            Error(children[0], "conditional expression requires a bool condition");
+        const DataType whenTrue = CheckExpression(children[1]);
+        const DataType whenFalse = CheckExpression(children[2]);
+        if (whenTrue == whenFalse) result = whenTrue;
+        else if (CanConvert(whenTrue, whenFalse)) result = whenFalse;
+        else if (CanConvert(whenFalse, whenTrue)) result = whenTrue;
+        else Error(node, "conditional branches have incompatible types");
+        break;
+    }
     case NodeKind::Binary: result = CheckBinary(node); break;
     case NodeKind::Unary: result = CheckUnary(node); break;
     case NodeKind::Increment: {

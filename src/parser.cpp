@@ -264,7 +264,7 @@ AstNode* Parser::ParseReturn() {
 AstNode* Parser::ParseExpression() { return ParseAssignment(); }
 
 AstNode* Parser::ParseAssignment() {
-    AstNode* left = ParseOr();
+    AstNode* left = ParseConditional();
     if (!MatchAny({TokenKind::Equal, TokenKind::PlusEqual, TokenKind::MinusEqual,
                    TokenKind::StarEqual, TokenKind::SlashEqual, TokenKind::PercentEqual})) return left;
     AstNode* node = arena_->Make(NodeKind::Assign, Previous());
@@ -367,6 +367,17 @@ bool Parser::IsTypeStart(bool allowIdentifier) const {
     case TokenKind::Identifier: return allowIdentifier;
     default: return false;
     }
+}
+
+AstNode* Parser::ParseConditional() {
+    AstNode* condition = ParseOr();
+    if (!Match(TokenKind::Question)) return condition;
+    AstNode* node = arena_->Make(NodeKind::Conditional, Previous());
+    node->AppendChild(condition);
+    node->AppendChild(ParseExpression());
+    Consume(TokenKind::Colon, "expected ':' in conditional expression");
+    node->AppendChild(ParseAssignment());
+    return node;
 }
 
 bool Parser::IsVariableDeclarationStart() const {

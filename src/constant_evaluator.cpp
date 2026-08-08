@@ -104,6 +104,14 @@ std::optional<Value> ConstantExpressionEvaluator::Evaluate(const AstNode* expres
         if (!right) return std::nullopt;
         return EvaluateBinary(expression->token.kind, *left, *right);
     }
+    if (expression->kind == NodeKind::Conditional) {
+        auto condition = Evaluate(expression->firstChild);
+        if (!condition || condition->Type() != DataType::Bool()) return std::nullopt;
+        const AstNode* branch = condition->As<bool>()
+            ? expression->firstChild->nextSibling
+            : expression->firstChild->nextSibling->nextSibling;
+        return Evaluate(branch);
+    }
     return std::nullopt;
 }
 

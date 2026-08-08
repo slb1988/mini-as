@@ -448,3 +448,38 @@ TEST_CASE(increment_rejects_const_and_non_lvalue_operands) {
     CHECK(lvalueRejected);
 }
 
+TEST_CASE(conditional_expressions_short_circuit_and_convert_branches) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("conditional");
+    module->AddScriptSection("success",
+        "int safe() { return true ? 7 : 1 / 0; } "
+        "float select(bool flag) { return flag ? 42 : 2.5; }");
+    CHECK(module->Build());
+    auto safe = engine->CreateContext();
+    CHECK(safe->Prepare(module->GetFunctionByName("safe")));
+    CHECK(safe->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(safe->GetReturnInt() == 7);
+    auto select = engine->CreateContext();
+    CHECK(select->Prepare(module->GetFunctionByName("select")));
+    CHECK(select->SetArgBool(0, true));
+    CHECK(select->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(select->GetReturnFloat() == 42.0f);
+}
+
+TEST_CASE(conditional_expressions_require_bool_and_compatible_branches) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) { diagnostics.push_back(diagnostic); });
+    auto* module = engine->GetModule("conditional-invalid");
+    module->AddScriptSection("invalid", "int run() { int bad = 1 ? 2 : 3; return true ? 1 : false; }");
+    CHECK(!module->Build());
+    bool conditionRejected = false;
+    bool branchesRejected = false;
+    for (const auto& diagnostic : diagnostics) {
+        conditionRejected = conditionRejected || diagnostic.message.find("requires a bool condition") != std::string::npos;
+        branchesRejected = branchesRejected || diagnostic.message.find("incompatible types") != std::string::npos;
+    }
+    CHECK(conditionRejected);
+    CHECK(branchesRejected);
+}
+

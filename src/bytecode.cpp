@@ -366,6 +366,21 @@ void BytecodeCompiler::CompileExpression(AstNode* node) {
         else CompileLValueLoad(*target, node);
         break;
     }
+    case NodeKind::Conditional: {
+        const auto children = node->Children();
+        CompileExpression(children[0]);
+        const auto elseJump = Emit(OpCode::JumpIfFalse, -1, node);
+        CompileExpression(children[1]);
+        if (children[1]->inferredType == DataType::Int() && node->inferredType == DataType::Float())
+            Emit(OpCode::ToFloat, 0, children[1]);
+        const auto endJump = Emit(OpCode::Jump, -1, node);
+        PatchJump(elseJump, function_->code.size());
+        CompileExpression(children[2]);
+        if (children[2]->inferredType == DataType::Int() && node->inferredType == DataType::Float())
+            Emit(OpCode::ToFloat, 0, children[2]);
+        PatchJump(endJump, function_->code.size());
+        break;
+    }
     case NodeKind::Binary:
         if (node->token.kind == TokenKind::AndAnd || node->token.kind == TokenKind::OrOr) CompileLogical(node);
         else CompileBinary(node);

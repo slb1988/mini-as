@@ -78,3 +78,14 @@ TEST_CASE(parser_preserves_switch_clause_order) {
     CHECK(children[3]->kind == mini_as::NodeKind::DefaultClause);
 }
 
+TEST_CASE(parser_makes_conditional_expressions_right_associative) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer lexer("parse", "int f() { return false ? 1 : true ? 2 : 3; }", diagnostics);
+    mini_as::Parser parser(lexer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    CHECK(!diagnostics.HasErrors());
+    auto* expression = tree.root->firstChild->Children().back()->firstChild->firstChild;
+    CHECK(expression->kind == mini_as::NodeKind::Conditional);
+    CHECK(expression->Children()[2]->kind == mini_as::NodeKind::Conditional);
+}
+

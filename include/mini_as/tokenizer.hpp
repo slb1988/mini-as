@@ -14,7 +14,7 @@ enum class TokenKind {
     KwIf, KwElse, KwWhile, KwDo, KwFor, KwSwitch, KwCase, KwDefault,
     KwReturn, KwBreak, KwContinue, KwClass, KwInterface, KwIs, KwNull,
     LeftParen, RightParen, LeftBrace, RightBrace,
-    Comma, Dot, Semicolon, Colon, At,
+    Comma, Dot, Semicolon, Colon, Question, At,
     Plus, Minus, Star, Slash, Percent,
     PlusPlus, MinusMinus,
     PlusEqual, MinusEqual, StarEqual, SlashEqual, PercentEqual,

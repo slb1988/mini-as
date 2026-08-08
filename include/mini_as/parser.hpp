@@ -68,8 +68,12 @@ private:
     AstNode* ParseConditional();
     AstNode* ParseOr();
     AstNode* ParseAnd();
+    AstNode* ParseBitOr();
+    AstNode* ParseBitXor();
+    AstNode* ParseBitAnd();
     AstNode* ParseEquality();
     AstNode* ParseComparison();
+    AstNode* ParseShift();
     AstNode* ParseTerm();
     AstNode* ParseFactor();
     AstNode* ParseUnary();

@@ -704,3 +704,26 @@ TEST_CASE(numeric_literals_reject_missing_digits_and_uint64_overflow) {
     CHECK(!overflow->Build());
 }
 
+TEST_CASE(bitwise_and_shift_operators_preserve_left_type_and_precedence) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("bitwise");
+    module->AddScriptSection("success",
+        "int run() { uint value = 0x0F; value |= 0x20; value ^= 0x01; value &= 0x2E; "
+        "value <<= 1; value >>= 1; int negative = -8; int arithmetic = negative >>> 1; "
+        "int logical = negative >> 1; int precedence = 1 | 2 ^ 3 & 1; "
+        "return value == 46 && ~0 == -1 && arithmetic == -4 && logical == 2147483644 "
+        "&& precedence == 3 ? 42 : 0; }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByName("run")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+}
+
+TEST_CASE(bitwise_operators_reject_floating_operands) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("bitwise-invalid");
+    module->AddScriptSection("invalid", "int bad() { return 1.5f & 1; }");
+    CHECK(!module->Build());
+}
+

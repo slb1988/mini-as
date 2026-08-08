@@ -16,9 +16,10 @@ enum class OpCode : std::uint8_t {
     PushConst, PushVoid, LoadLocal, StoreLocal, LoadGlobal, StoreGlobal, Dup, Swap, Pop,
     ToFloat, ToDouble, ToInteger, ToString,
     AddInt, SubInt, MulInt, DivInt, ModInt,
+    BitAnd, BitOr, BitXor, ShiftLeft, ShiftRight, ShiftRightArithmetic,
     AddFloat, SubFloat, MulFloat, DivFloat,
     AddDouble, SubDouble, MulDouble, DivDouble,
-    Concat, NegInt, NegFloat, NegDouble, LogicalNot,
+    Concat, NegInt, NegFloat, NegDouble, BitNot, LogicalNot,
     Equal, NotEqual, Less, LessEqual, Greater, GreaterEqual,
     Jump, JumpIfFalse,
     Call, CallHost, CallVirtual, NewObject, LoadField, StoreField, Return

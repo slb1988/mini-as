@@ -20,8 +20,9 @@ std::string_view OpCodeName(OpCode opcode) {
         "LOAD_GLOBAL", "STORE_GLOBAL", "DUP", "SWAP", "POP",
         "TO_FLOAT", "TO_DOUBLE", "TO_INTEGER", "TO_STRING",
         "ADD_I", "SUB_I", "MUL_I", "DIV_I", "MOD_I",
+        "BIT_AND", "BIT_OR", "BIT_XOR", "SHL", "SHR", "USHR",
         "ADD_F", "SUB_F", "MUL_F", "DIV_F", "ADD_D", "SUB_D", "MUL_D", "DIV_D",
-        "CONCAT", "NEG_I", "NEG_F", "NEG_D", "NOT",
+        "CONCAT", "NEG_I", "NEG_F", "NEG_D", "BIT_NOT", "NOT",
         "EQ", "NE", "LT", "LE", "GT", "GE", "JMP", "JZ", "CALL", "CALL_HOST",
         "CALL_VIRTUAL", "NEW_OBJECT", "LOAD_FIELD", "STORE_FIELD", "RET"
     };
@@ -459,6 +460,7 @@ void BytecodeCompiler::CompileExpression(AstNode* node) {
     case NodeKind::Unary:
         CompileExpression(node->firstChild);
         if (node->token.kind == TokenKind::Bang) Emit(OpCode::LogicalNot, 0, node);
+        else if (node->token.kind == TokenKind::Tilde) Emit(OpCode::BitNot, 0, node);
         else if (node->token.kind == TokenKind::Minus) {
             Emit(node->inferredType == DataType::Double() ? OpCode::NegDouble
                  : node->inferredType == DataType::Float() ? OpCode::NegFloat
@@ -574,8 +576,11 @@ void BytecodeCompiler::CompileCompoundAssignment(const LValueRef& target, AstNod
         CompileLValueLoad(target, source);
     }
     const bool stringConcat = operation == TokenKind::PlusEqual && target.type == DataType::String();
-    const DataType operationType = stringConcat
-        ? DataType::String() : CommonNumericType(target.type, value->inferredType);
+    const bool bitwise = operation == TokenKind::AmpEqual || operation == TokenKind::PipeEqual ||
+        operation == TokenKind::CaretEqual || operation == TokenKind::ShiftLeftEqual ||
+        operation == TokenKind::ShiftRightEqual || operation == TokenKind::ShiftRightArithmeticEqual;
+    const DataType operationType = stringConcat ? DataType::String()
+        : bitwise ? target.type : CommonNumericType(target.type, value->inferredType);
     const bool floating = operationType == DataType::Float();
     const bool doublePrecision = operationType == DataType::Double();
     if (!stringConcat) EmitConversion(target.type, operationType, source);
@@ -593,6 +598,12 @@ void BytecodeCompiler::CompileCompoundAssignment(const LValueRef& target, AstNod
     else if (operation == TokenKind::SlashEqual)
         opcode = doublePrecision ? OpCode::DivDouble : floating ? OpCode::DivFloat : OpCode::DivInt;
     else if (operation == TokenKind::PercentEqual) opcode = OpCode::ModInt;
+    else if (operation == TokenKind::AmpEqual) opcode = OpCode::BitAnd;
+    else if (operation == TokenKind::PipeEqual) opcode = OpCode::BitOr;
+    else if (operation == TokenKind::CaretEqual) opcode = OpCode::BitXor;
+    else if (operation == TokenKind::ShiftLeftEqual) opcode = OpCode::ShiftLeft;
+    else if (operation == TokenKind::ShiftRightEqual) opcode = OpCode::ShiftRight;
+    else if (operation == TokenKind::ShiftRightArithmeticEqual) opcode = OpCode::ShiftRightArithmetic;
     else { Error(source, "compound assignment operator cannot be compiled"); return; }
     Emit(opcode, 0, source);
     if (!stringConcat) EmitConversion(operationType, target.type, source);
@@ -663,9 +674,13 @@ void BytecodeCompiler::CompileBinary(AstNode* node) {
     const auto children = node->Children();
     const DataType result = node->inferredType;
     const bool stringOperation = node->token.kind == TokenKind::Plus && result == DataType::String();
+    const bool bitwise = node->token.kind == TokenKind::Amp || node->token.kind == TokenKind::Pipe ||
+        node->token.kind == TokenKind::Caret || node->token.kind == TokenKind::ShiftLeft ||
+        node->token.kind == TokenKind::ShiftRight || node->token.kind == TokenKind::ShiftRightArithmetic;
     const DataType operationType = children[0]->inferredType.IsNumeric() &&
                                    children[1]->inferredType.IsNumeric()
-        ? CommonNumericType(children[0]->inferredType, children[1]->inferredType)
+        ? (bitwise ? children[0]->inferredType
+                   : CommonNumericType(children[0]->inferredType, children[1]->inferredType))
         : result;
     CompileExpression(children[0]);
     if (!stringOperation) EmitConversion(children[0]->inferredType, operationType, node);
@@ -686,6 +701,12 @@ void BytecodeCompiler::CompileBinary(AstNode* node) {
     case TokenKind::Slash: opcode = doublePrecision ? OpCode::DivDouble
         : floating ? OpCode::DivFloat : OpCode::DivInt; break;
     case TokenKind::Percent: opcode = OpCode::ModInt; break;
+    case TokenKind::Amp: opcode = OpCode::BitAnd; break;
+    case TokenKind::Pipe: opcode = OpCode::BitOr; break;
+    case TokenKind::Caret: opcode = OpCode::BitXor; break;
+    case TokenKind::ShiftLeft: opcode = OpCode::ShiftLeft; break;
+    case TokenKind::ShiftRight: opcode = OpCode::ShiftRight; break;
+    case TokenKind::ShiftRightArithmetic: opcode = OpCode::ShiftRightArithmetic; break;
     case TokenKind::EqualEqual: case TokenKind::KwIs: opcode = OpCode::Equal; break;
     case TokenKind::BangEqual: opcode = OpCode::NotEqual; break;
     case TokenKind::Less: opcode = OpCode::Less; break;

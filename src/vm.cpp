@@ -161,6 +161,8 @@ bool VirtualMachine::Step() {
     }
     case OpCode::ToString: Push(Value(Pop().ToString())); break;
     case OpCode::AddInt: case OpCode::SubInt: case OpCode::MulInt: case OpCode::DivInt: case OpCode::ModInt:
+    case OpCode::BitAnd: case OpCode::BitOr: case OpCode::BitXor:
+    case OpCode::ShiftLeft: case OpCode::ShiftRight: case OpCode::ShiftRightArithmetic:
     case OpCode::AddFloat: case OpCode::SubFloat: case OpCode::MulFloat: case OpCode::DivFloat:
     case OpCode::AddDouble: case OpCode::SubDouble: case OpCode::MulDouble: case OpCode::DivDouble:
         BinaryArithmetic(instruction); break;
@@ -172,6 +174,11 @@ bool VirtualMachine::Step() {
     }
     case OpCode::NegFloat: Push(Value(-Pop().As<float>())); break;
     case OpCode::NegDouble: Push(Value(-Pop().As<double>())); break;
+    case OpCode::BitNot: {
+        Value operand = Pop();
+        Push(Value::Integer(operand.Type(), ~operand.UnsignedInteger()));
+        break;
+    }
     case OpCode::LogicalNot: Push(Value(!Pop().As<bool>())); break;
     case OpCode::Equal: case OpCode::NotEqual: case OpCode::Less: case OpCode::LessEqual:
     case OpCode::Greater: case OpCode::GreaterEqual: Compare(instruction); break;
@@ -372,6 +379,26 @@ void VirtualMachine::BinaryArithmetic(const Instruction& instruction) {
             else Push(Value::Integer(type, static_cast<std::uint64_t>(signedA % signedB)));
         } else Push(Value::Integer(type, a % b));
         break;
+    case OpCode::BitAnd: Push(Value::Integer(type, a & b)); break;
+    case OpCode::BitOr: Push(Value::Integer(type, a | b)); break;
+    case OpCode::BitXor: Push(Value::Integer(type, a ^ b)); break;
+    case OpCode::ShiftLeft: {
+        const auto count = static_cast<unsigned>(b & (type.IntegerBits() - 1));
+        Push(Value::Integer(type, a << count));
+        break;
+    }
+    case OpCode::ShiftRight: {
+        const auto count = static_cast<unsigned>(b & (type.IntegerBits() - 1));
+        Push(Value::Integer(type, a >> count));
+        break;
+    }
+    case OpCode::ShiftRightArithmetic: {
+        const auto count = static_cast<unsigned>(b & (type.IntegerBits() - 1));
+        if (type.IsSignedInteger())
+            Push(Value::Integer(type, static_cast<std::uint64_t>(left.SignedInteger() >> count)));
+        else Push(Value::Integer(type, a >> count));
+        break;
+    }
     default: break;
     }
 }

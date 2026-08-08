@@ -47,6 +47,8 @@ std::string_view TokenName(TokenKind kind) {
         "(", ")", "{", "}", ",", ".", ";", ":", "?", "@", "+", "-", "*", "/", "%",
         "++", "--",
         "+=", "-=", "*=", "/=", "%=",
+        "&", "|", "^", "~", "<<", ">>", ">>>",
+        "&=", "|=", "^=", "<<=", ">>=", ">>>=",
         "!", "!=", "=", "==", "<", "<=", ">", ">=", "&&", "||"
     };
     static_assert(sizeof(names) / sizeof(names[0]) == static_cast<std::size_t>(TokenKind::OrOr) + 1,
@@ -118,16 +120,27 @@ void Tokenizer::ScanToken() {
     case '%': Add(Match('=') ? TokenKind::PercentEqual : TokenKind::Percent, start, location); return;
     case '!': Add(Match('=') ? TokenKind::BangEqual : TokenKind::Bang, start, location); return;
     case '=': Add(Match('=') ? TokenKind::EqualEqual : TokenKind::Equal, start, location); return;
-    case '<': Add(Match('=') ? TokenKind::LessEqual : TokenKind::Less, start, location); return;
-    case '>': Add(Match('=') ? TokenKind::GreaterEqual : TokenKind::Greater, start, location); return;
+    case '<':
+        if (Match('<')) Add(Match('=') ? TokenKind::ShiftLeftEqual : TokenKind::ShiftLeft, start, location);
+        else Add(Match('=') ? TokenKind::LessEqual : TokenKind::Less, start, location);
+        return;
+    case '>':
+        if (Match('>')) {
+            if (Match('>')) Add(Match('=') ? TokenKind::ShiftRightArithmeticEqual
+                                          : TokenKind::ShiftRightArithmetic, start, location);
+            else Add(Match('=') ? TokenKind::ShiftRightEqual : TokenKind::ShiftRight, start, location);
+        } else Add(Match('=') ? TokenKind::GreaterEqual : TokenKind::Greater, start, location);
+        return;
     case '&':
         if (Match('&')) Add(TokenKind::AndAnd, start, location);
-        else diagnostics_.Report(location, Severity::Error, "expected '&' after '&'");
+        else Add(Match('=') ? TokenKind::AmpEqual : TokenKind::Amp, start, location);
         return;
     case '|':
         if (Match('|')) Add(TokenKind::OrOr, start, location);
-        else diagnostics_.Report(location, Severity::Error, "expected '|' after '|'");
+        else Add(Match('=') ? TokenKind::PipeEqual : TokenKind::Pipe, start, location);
         return;
+    case '^': Add(Match('=') ? TokenKind::CaretEqual : TokenKind::Caret, start, location); return;
+    case '~': Add(TokenKind::Tilde, start, location); return;
     case '/':
         if (Match('/')) { while (!AtEnd() && Peek() != '\n') Advance(); return; }
         if (Match('*')) { SkipBlockComment(location); return; }

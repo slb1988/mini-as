@@ -143,3 +143,21 @@ TEST_CASE(bytecode_uses_double_operations_and_explicit_narrowing) {
     CHECK(listing.find("TO_FLOAT") != std::string::npos);
 }
 
+TEST_CASE(bytecode_emits_typed_bitwise_and_shift_operations) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("bit-bytecode",
+        "int bits(int value) { value ^= 3; return (~value & 0xFF) << 1 >>> 1; }", diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    mini_as::TypeChecker checker(diagnostics);
+    CHECK(checker.Check(tree.root));
+    mini_as::BytecodeCompiler compiler(diagnostics);
+    auto module = compiler.Compile(tree.root, checker.Functions());
+    const auto listing = mini_as::Disassemble(module.functions[0]);
+    CHECK(listing.find("BIT_XOR") != std::string::npos);
+    CHECK(listing.find("BIT_NOT") != std::string::npos);
+    CHECK(listing.find("BIT_AND") != std::string::npos);
+    CHECK(listing.find("SHL") != std::string::npos);
+    CHECK(listing.find("USHR") != std::string::npos);
+}
+

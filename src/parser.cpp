@@ -275,7 +275,10 @@ AstNode* Parser::ParseExpression() { return ParseAssignment(); }
 AstNode* Parser::ParseAssignment() {
     AstNode* left = ParseConditional();
     if (!MatchAny({TokenKind::Equal, TokenKind::PlusEqual, TokenKind::MinusEqual,
-                   TokenKind::StarEqual, TokenKind::SlashEqual, TokenKind::PercentEqual})) return left;
+                   TokenKind::StarEqual, TokenKind::SlashEqual, TokenKind::PercentEqual,
+                   TokenKind::AmpEqual, TokenKind::PipeEqual, TokenKind::CaretEqual,
+                   TokenKind::ShiftLeftEqual, TokenKind::ShiftRightEqual,
+                   TokenKind::ShiftRightArithmeticEqual})) return left;
     AstNode* node = arena_->Make(NodeKind::Assign, Previous());
     node->AppendChild(left);
     node->AppendChild(ParseAssignment());
@@ -293,9 +296,13 @@ AstNode* Parser::method() { \
 }
 
 BINARY_LEVEL(ParseOr, ParseAnd, TokenKind::OrOr)
-BINARY_LEVEL(ParseAnd, ParseEquality, TokenKind::AndAnd)
+BINARY_LEVEL(ParseAnd, ParseBitOr, TokenKind::AndAnd)
+BINARY_LEVEL(ParseBitOr, ParseBitXor, TokenKind::Pipe)
+BINARY_LEVEL(ParseBitXor, ParseBitAnd, TokenKind::Caret)
+BINARY_LEVEL(ParseBitAnd, ParseEquality, TokenKind::Amp)
 BINARY_LEVEL(ParseEquality, ParseComparison, TokenKind::EqualEqual, TokenKind::BangEqual, TokenKind::KwIs)
-BINARY_LEVEL(ParseComparison, ParseTerm, TokenKind::Less, TokenKind::LessEqual, TokenKind::Greater, TokenKind::GreaterEqual)
+BINARY_LEVEL(ParseComparison, ParseShift, TokenKind::Less, TokenKind::LessEqual, TokenKind::Greater, TokenKind::GreaterEqual)
+BINARY_LEVEL(ParseShift, ParseTerm, TokenKind::ShiftLeft, TokenKind::ShiftRight, TokenKind::ShiftRightArithmetic)
 BINARY_LEVEL(ParseTerm, ParseFactor, TokenKind::Plus, TokenKind::Minus)
 BINARY_LEVEL(ParseFactor, ParseUnary, TokenKind::Star, TokenKind::Slash, TokenKind::Percent)
 #undef BINARY_LEVEL
@@ -306,7 +313,7 @@ AstNode* Parser::ParseUnary() {
         node->AppendChild(ParseUnary());
         return node;
     }
-    if (MatchAny({TokenKind::Bang, TokenKind::Minus, TokenKind::Plus, TokenKind::At})) {
+    if (MatchAny({TokenKind::Bang, TokenKind::Tilde, TokenKind::Minus, TokenKind::Plus, TokenKind::At})) {
         AstNode* node = arena_->Make(NodeKind::Unary, Previous());
         node->AppendChild(ParseUnary());
         return node;

@@ -385,7 +385,16 @@ DataType TypeChecker::CheckExpression(AstNode* node) {
                 Error(node, "cannot assign " + value.Name() + " to " + target.Name());
         } else {
             DataType operationType = DataType::Invalid();
-            if (node->token.kind == TokenKind::PlusEqual && target == DataType::String()) {
+            const bool bitwise = node->token.kind == TokenKind::AmpEqual ||
+                node->token.kind == TokenKind::PipeEqual || node->token.kind == TokenKind::CaretEqual ||
+                node->token.kind == TokenKind::ShiftLeftEqual ||
+                node->token.kind == TokenKind::ShiftRightEqual ||
+                node->token.kind == TokenKind::ShiftRightArithmeticEqual;
+            if (bitwise) {
+                if (!target.IsInteger() || !value.IsInteger())
+                    Error(node, "bitwise compound assignment requires integer operands");
+                else operationType = target;
+            } else if (node->token.kind == TokenKind::PlusEqual && target == DataType::String()) {
                 operationType = DataType::String();
             } else if (target.IsNumeric() && value.IsNumeric()) {
                 if (node->token.kind == TokenKind::PercentEqual &&
@@ -420,6 +429,13 @@ DataType TypeChecker::CheckBinary(AstNode* node) {
         if (left != DataType::Bool() || right != DataType::Bool()) Error(node, "logical operator requires bool operands");
         return DataType::Bool();
     }
+    if (op == TokenKind::Amp || op == TokenKind::Pipe || op == TokenKind::Caret ||
+        op == TokenKind::ShiftLeft || op == TokenKind::ShiftRight ||
+        op == TokenKind::ShiftRightArithmetic) {
+        if (!left.IsInteger() || !right.IsInteger())
+            Error(node, "bitwise operator requires integer operands");
+        return left.IsInteger() ? left : DataType::Invalid();
+    }
     if (op == TokenKind::EqualEqual || op == TokenKind::BangEqual || op == TokenKind::KwIs) {
         if (left != right && !(left.IsNumeric() && right.IsNumeric())) Error(node, "incomparable operand types");
         return DataType::Bool();
@@ -437,6 +453,10 @@ DataType TypeChecker::CheckUnary(AstNode* node) {
     if (node->token.kind == TokenKind::Bang) {
         if (operand != DataType::Bool()) Error(node, "'!' requires bool operand");
         return DataType::Bool();
+    }
+    if (node->token.kind == TokenKind::Tilde) {
+        if (!operand.IsInteger()) Error(node, "'~' requires an integer operand");
+        return operand;
     }
     if (node->token.kind == TokenKind::At) return operand;
     if (!operand.IsNumeric()) Error(node, "numeric unary operator requires numeric operand");

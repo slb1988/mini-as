@@ -20,6 +20,8 @@ enum class TokenKind {
     Plus, Minus, Star, Slash, Percent,
     PlusPlus, MinusMinus,
     PlusEqual, MinusEqual, StarEqual, SlashEqual, PercentEqual,
+    Amp, Pipe, Caret, Tilde, ShiftLeft, ShiftRight, ShiftRightArithmetic,
+    AmpEqual, PipeEqual, CaretEqual, ShiftLeftEqual, ShiftRightEqual, ShiftRightArithmeticEqual,
     Bang, BangEqual, Equal, EqualEqual,
     Less, LessEqual, Greater, GreaterEqual,
     AndAnd, OrOr

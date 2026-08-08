@@ -64,3 +64,24 @@ TEST_CASE(tokenizer_recognizes_numeric_bases_exponents_and_float_suffixes) {
     CHECK(tokens[8].kind == mini_as::TokenKind::Double);
 }
 
+TEST_CASE(tokenizer_recognizes_bitwise_shift_and_assignment_tokens) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer lexer("bits", "~a & b | c ^ d << 1 >> 2 >>> 3 &= 4 |= 5 ^= 6 <<= 7 >>= 8 >>>= 9",
+                             diagnostics);
+    const auto tokens = lexer.ScanAll();
+    CHECK(!diagnostics.HasErrors());
+    CHECK(tokens[0].kind == mini_as::TokenKind::Tilde);
+    CHECK(tokens[2].kind == mini_as::TokenKind::Amp);
+    CHECK(tokens[4].kind == mini_as::TokenKind::Pipe);
+    CHECK(tokens[6].kind == mini_as::TokenKind::Caret);
+    CHECK(tokens[8].kind == mini_as::TokenKind::ShiftLeft);
+    CHECK(tokens[10].kind == mini_as::TokenKind::ShiftRight);
+    CHECK(tokens[12].kind == mini_as::TokenKind::ShiftRightArithmetic);
+    CHECK(tokens[14].kind == mini_as::TokenKind::AmpEqual);
+    CHECK(tokens[16].kind == mini_as::TokenKind::PipeEqual);
+    CHECK(tokens[18].kind == mini_as::TokenKind::CaretEqual);
+    CHECK(tokens[20].kind == mini_as::TokenKind::ShiftLeftEqual);
+    CHECK(tokens[22].kind == mini_as::TokenKind::ShiftRightEqual);
+    CHECK(tokens[24].kind == mini_as::TokenKind::ShiftRightArithmeticEqual);
+}
+

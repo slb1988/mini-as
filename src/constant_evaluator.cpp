@@ -92,6 +92,19 @@ std::optional<Value> EvaluateBinary(TokenKind operation, const Value& left, cons
         return Value(a >= b);
     }
     const auto a = convertedLeft.UnsignedInteger(), b = convertedRight.UnsignedInteger();
+    if (operation == TokenKind::Amp) return Value::Integer(left.Type(), a & b);
+    if (operation == TokenKind::Pipe) return Value::Integer(left.Type(), a | b);
+    if (operation == TokenKind::Caret) return Value::Integer(left.Type(), a ^ b);
+    if (operation == TokenKind::ShiftLeft)
+        return Value::Integer(left.Type(), a << (b & (left.Type().IntegerBits() - 1)));
+    if (operation == TokenKind::ShiftRight)
+        return Value::Integer(left.Type(), a >> (b & (left.Type().IntegerBits() - 1)));
+    if (operation == TokenKind::ShiftRightArithmetic) {
+        const auto count = static_cast<unsigned>(b & (left.Type().IntegerBits() - 1));
+        return left.Type().IsSignedInteger()
+            ? Value::Integer(left.Type(), static_cast<std::uint64_t>(convertedLeft.SignedInteger() >> count))
+            : Value::Integer(left.Type(), a >> count);
+    }
     if (operation == TokenKind::Plus) return Value::Integer(common, a + b);
     if (operation == TokenKind::Minus) return Value::Integer(common, a - b);
     if (operation == TokenKind::Star) return Value::Integer(common, a * b);
@@ -177,6 +190,8 @@ std::optional<Value> ConstantExpressionEvaluator::Evaluate(const AstNode* expres
         if (!operand) return std::nullopt;
         if (expression->token.kind == TokenKind::Bang && operand->Type() == DataType::Bool())
             return Value(!operand->As<bool>());
+        if (expression->token.kind == TokenKind::Tilde && operand->Type().IsInteger())
+            return Value::Integer(operand->Type(), ~operand->UnsignedInteger());
         if (expression->token.kind == TokenKind::Plus && operand->Type().IsNumeric()) return operand;
         if (expression->token.kind == TokenKind::Minus) {
             if (operand->Type().IsInteger())

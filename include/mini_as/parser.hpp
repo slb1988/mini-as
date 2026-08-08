@@ -20,6 +20,7 @@ struct AstNode {
     DataType inferredType = DataType::Invalid();
     bool isConst = false;
     bool isAuto = false;
+    bool isGlobal = false;
     AstNode* firstChild = nullptr;
     AstNode* nextSibling = nullptr;
 

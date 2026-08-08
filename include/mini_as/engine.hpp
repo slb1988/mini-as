@@ -21,6 +21,7 @@ class ScriptEngine;
 
 struct ModuleImage {
     BytecodeModule bytecode;
+    std::shared_ptr<ModuleState> state;
 };
 
 class ScriptModule {
@@ -96,6 +97,7 @@ private:
     const TypeInfo* RegisterScriptType(const ClassSignature& type);
     FunctionId GetOrCreateFunctionId(std::string key);
     TypeId GetOrCreateTypeId(std::string_view name);
+    GlobalId GetOrCreateGlobalId(std::string key);
     void RegisterModuleImage(const std::shared_ptr<const ModuleImage>& image);
     std::shared_ptr<const ModuleImage> FindModuleImage(const BytecodeFunction* function);
     MessageCallback messageCallback_;
@@ -105,8 +107,10 @@ private:
     std::unordered_map<std::string, std::unique_ptr<TypeInfo>> objectTypes_;
     std::unordered_map<std::string, FunctionId> functionIds_;
     std::unordered_map<std::string, TypeId> typeIds_;
+    std::unordered_map<std::string, GlobalId> globalIds_;
     std::uint32_t nextFunctionId_ = 0;
     std::uint32_t nextTypeId_ = 0;
+    std::uint32_t nextGlobalId_ = 0;
     std::unordered_map<const BytecodeFunction*, std::weak_ptr<const ModuleImage>> moduleImages_;
 };
 

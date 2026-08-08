@@ -82,3 +82,32 @@ TEST_CASE(bytecode_lvalues_cover_local_and_field_storage) {
     CHECK(loadedField);
 }
 
+TEST_CASE(bytecode_globals_use_stable_ids_for_load_and_store) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("globals", "int counter = 1; int next() { counter = counter + 1; return counter; }", diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    mini_as::TypeChecker checker(diagnostics);
+    CHECK(checker.Check(tree.root));
+    auto globals = checker.Globals();
+    globals[0].id = mini_as::GlobalId{7};
+    mini_as::BytecodeCompiler compiler(diagnostics);
+    auto module = compiler.Compile(tree.root, checker.Functions(), checker.Classes(), globals);
+    CHECK(!diagnostics.HasErrors());
+    CHECK(module.FindGlobalIndex(mini_as::GlobalId{7}).has_value());
+    bool loaded = false;
+    bool stored = false;
+    for (const auto& instruction : module.functions[0].code) {
+        if (instruction.opcode == mini_as::OpCode::LoadGlobal) {
+            loaded = true;
+            CHECK(instruction.operand == 7);
+        }
+        if (instruction.opcode == mini_as::OpCode::StoreGlobal) {
+            stored = true;
+            CHECK(instruction.operand == 7);
+        }
+    }
+    CHECK(loaded);
+    CHECK(stored);
+}
+

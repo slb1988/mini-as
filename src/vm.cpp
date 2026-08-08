@@ -22,12 +22,13 @@ bool ValuesEqual(const Value& left, const Value& right) {
 } // namespace
 
 bool VirtualMachine::Prepare(const BytecodeFunction& function, const std::vector<Value>& arguments,
-                             const BytecodeModule* module) {
+                             const BytecodeModule* module, ModuleState* state) {
     stack_.clear();
     callStack_.clear();
     locals_.assign(function.localCount, Value{});
     function_ = &function;
     module_ = module;
+    moduleState_ = state;
     pc_ = 0;
     suspendRequested_ = false;
     result_ = {};
@@ -70,8 +71,8 @@ void VirtualMachine::SetLineCallback(std::function<void(const SourceLocation&)> 
 
 ExecutionResult VirtualMachine::Execute(const BytecodeFunction& function,
                                         const std::vector<Value>& arguments,
-                                        const BytecodeModule* module) {
-    if (!Prepare(function, arguments, module)) return result_;
+                                        const BytecodeModule* module, ModuleState* state) {
+    if (!Prepare(function, arguments, module, state)) return result_;
     return Continue();
 }
 
@@ -101,6 +102,24 @@ bool VirtualMachine::Step() {
         const auto index = slot();
         if (index >= locals_.size()) throw std::runtime_error("local slot out of range");
         locals_[index] = Pop(); break;
+    }
+    case OpCode::LoadGlobal: {
+        if (!module_ || !moduleState_ || instruction.operand < 0)
+            throw std::runtime_error("module global state is unavailable");
+        const auto index = module_->FindGlobalIndex(GlobalId{static_cast<std::uint32_t>(instruction.operand)});
+        if (!index || *index >= moduleState_->globals.size())
+            throw std::runtime_error("global slot is unavailable");
+        Push(moduleState_->globals[*index]);
+        break;
+    }
+    case OpCode::StoreGlobal: {
+        if (!module_ || !moduleState_ || instruction.operand < 0)
+            throw std::runtime_error("module global state is unavailable");
+        const auto index = module_->FindGlobalIndex(GlobalId{static_cast<std::uint32_t>(instruction.operand)});
+        if (!index || *index >= moduleState_->globals.size())
+            throw std::runtime_error("global slot is unavailable");
+        moduleState_->globals[*index] = Pop();
+        break;
     }
     case OpCode::Dup: { Value value = Pop(); Push(value); Push(std::move(value)); break; }
     case OpCode::Pop: Pop(); break;

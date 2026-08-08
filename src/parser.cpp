@@ -55,7 +55,13 @@ AstNode* Parser::ParseTopLevel() {
         }
         current_ = saved;
     }
-    return ParseStatement();
+    AstNode* statement = ParseStatement();
+    if (statement && statement->kind == NodeKind::VarDecl) statement->isGlobal = true;
+    if (statement && statement->kind == NodeKind::DeclList) {
+        for (AstNode* declaration = statement->firstChild; declaration;
+             declaration = declaration->nextSibling) declaration->isGlobal = true;
+    }
+    return statement;
 }
 
 AstNode* Parser::ParseClass(bool isInterface) {

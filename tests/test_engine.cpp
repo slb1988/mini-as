@@ -181,3 +181,64 @@ TEST_CASE(auto_declarations_require_initializers) {
     CHECK(requiresInitializer);
 }
 
+TEST_CASE(module_globals_are_initialized_in_order_and_shared_by_contexts) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("globals");
+    module->AddScriptSection("globals",
+        "int first = 20, counter = first * 2; "
+        "int next() { counter = counter + 1; return counter; }");
+    CHECK(module->Build());
+
+    auto firstCall = engine->CreateContext();
+    auto secondCall = engine->CreateContext();
+    CHECK(firstCall->Prepare(module->GetFunctionByName("next")));
+    CHECK(secondCall->Prepare(module->GetFunctionByName("next")));
+    CHECK(firstCall->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(secondCall->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(firstCall->GetReturnInt() == 41);
+    CHECK(secondCall->GetReturnInt() == 42);
+}
+
+TEST_CASE(module_globals_are_visible_to_functions_declared_first) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("global-forward-reference");
+    module->AddScriptSection("globals", "int read() { return answer; } const int answer = 42;");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByName("read")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+}
+
+TEST_CASE(const_module_globals_reject_assignment) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) { diagnostics.push_back(diagnostic); });
+    auto* module = engine->GetModule("const-global");
+    module->AddScriptSection("invalid", "const int answer = 41; int change() { answer = 42; return answer; }");
+    CHECK(!module->Build());
+    bool protectedAssignment = false;
+    for (const auto& diagnostic : diagnostics)
+        protectedAssignment = protectedAssignment ||
+            diagnostic.message.find("cannot assign to const variable 'answer'") != std::string::npos;
+    CHECK(protectedAssignment);
+}
+
+TEST_CASE(failed_global_initialization_preserves_previous_image_and_state) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("global-rebuild");
+    module->AddScriptSection("v1", "int value = 40; int next() { value = value + 1; return value; }");
+    CHECK(module->Build());
+    auto first = engine->CreateContext();
+    CHECK(first->Prepare(module->GetFunctionByName("next")));
+    CHECK(first->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(first->GetReturnInt() == 41);
+
+    module->AddScriptSection("v2", "int broken = 1 / 0; int next() { return broken; }");
+    CHECK(!module->Build());
+    auto preserved = engine->CreateContext();
+    CHECK(preserved->Prepare(module->GetFunctionByName("next")));
+    CHECK(preserved->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(preserved->GetReturnInt() == 42);
+}
+

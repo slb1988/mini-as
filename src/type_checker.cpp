@@ -25,12 +25,14 @@ bool TypeChecker::Check(AstNode* root) {
     scopes_.clear();
     scopes_.emplace_back();
     Predeclare(root);
+    PredeclareGlobals(root);
     if (root) for (AstNode* child = root->firstChild; child; child = child->nextSibling) CheckNode(child);
     return !diagnostics_.HasErrors();
 }
 
 const std::vector<FunctionSignature>& TypeChecker::Functions() const { return functions_; }
 const std::vector<ClassSignature>& TypeChecker::Classes() const { return classes_; }
+const std::vector<GlobalSignature>& TypeChecker::Globals() const { return globals_; }
 
 void TypeChecker::Predeclare(AstNode* root) {
     if (!root) return;
@@ -87,6 +89,50 @@ void TypeChecker::Predeclare(AstNode* root) {
     }
 }
 
+void TypeChecker::PredeclareGlobals(AstNode* root) {
+    globals_.clear();
+    if (!root) return;
+    std::vector<AstNode*> declarations;
+    for (AstNode* node = root->firstChild; node; node = node->nextSibling) {
+        if (node->kind == NodeKind::VarDecl && node->isGlobal) declarations.push_back(node);
+        if (node->kind == NodeKind::DeclList) {
+            for (AstNode* declaration = node->firstChild; declaration;
+                 declaration = declaration->nextSibling) {
+                if (declaration->isGlobal) declarations.push_back(declaration);
+            }
+        }
+    }
+    for (AstNode* declaration : declarations) {
+        if (!declaration->isAuto)
+            Declare(declaration->token, declaration->declaredType, declaration->isConst);
+    }
+    for (AstNode* node = root->firstChild; node; node = node->nextSibling) {
+        std::vector<AstNode*> group;
+        if (node->kind == NodeKind::VarDecl && node->isGlobal) group.push_back(node);
+        if (node->kind == NodeKind::DeclList) {
+            for (AstNode* declaration = node->firstChild; declaration;
+                 declaration = declaration->nextSibling) {
+                if (declaration->isGlobal) group.push_back(declaration);
+            }
+        }
+        DataType sharedAutoType = DataType::Invalid();
+        for (AstNode* declaration : group) {
+            if (!declaration->isAuto) continue;
+            if (!declaration->firstChild) {
+                Error(declaration, "auto declaration requires an initializer");
+                continue;
+            }
+            if (!sharedAutoType.IsValid()) sharedAutoType = CheckExpression(declaration->firstChild);
+            declaration->declaredType = sharedAutoType;
+            Declare(declaration->token, declaration->declaredType, declaration->isConst);
+        }
+    }
+    for (AstNode* declaration : declarations) {
+        globals_.push_back({declaration->token.lexeme, declaration->declaredType,
+                            declaration->isConst, {}});
+    }
+}
+
 void TypeChecker::CheckNode(AstNode* node) {
     if (!node) return;
     switch (node->kind) {
@@ -112,7 +158,7 @@ void TypeChecker::CheckNode(AstNode* node) {
                 Error(node, "cannot initialize " + node->declaredType.Name() + " with " + value.Name());
             }
         }
-        Declare(node->token, node->declaredType, node->isConst);
+        if (!node->isGlobal) Declare(node->token, node->declaredType, node->isConst);
         break;
     }
     case NodeKind::IfStmt:

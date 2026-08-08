@@ -13,7 +13,7 @@ struct RegisteredHostFunction;
 
 enum class OpCode : std::uint8_t {
     Nop, Suspend,
-    PushConst, PushVoid, LoadLocal, StoreLocal, Dup, Pop,
+    PushConst, PushVoid, LoadLocal, StoreLocal, LoadGlobal, StoreGlobal, Dup, Pop,
     ToFloat, ToString,
     AddInt, SubInt, MulInt, DivInt, ModInt,
     AddFloat, SubFloat, MulFloat, DivFloat,
@@ -51,8 +51,18 @@ struct CallableRef {
     std::uint32_t virtualSlot = 0;
 };
 
+struct GlobalBinding {
+    GlobalSignature signature;
+};
+
+struct ModuleState {
+    std::vector<Value> globals;
+};
+
 struct BytecodeModule {
     std::vector<BytecodeFunction> functions;
+    BytecodeFunction globalInitializer;
+    std::vector<GlobalBinding> globals;
     std::vector<CallableRef> callables;
     std::vector<std::pair<FunctionId, const RegisteredHostFunction*>> hostFunctions;
     std::vector<std::pair<TypeId, const TypeInfo*>> objectTypes;
@@ -61,6 +71,7 @@ struct BytecodeModule {
     const RegisteredHostFunction* FindHostFunction(FunctionId id) const;
     const TypeInfo* FindType(TypeId id) const;
     const CallableRef* FindCallable(std::size_t index) const;
+    std::optional<std::size_t> FindGlobalIndex(GlobalId id) const;
 };
 
 std::string_view OpCodeName(OpCode opcode);
@@ -70,7 +81,8 @@ class BytecodeCompiler {
 public:
     explicit BytecodeCompiler(DiagnosticSink& diagnostics);
     BytecodeModule Compile(AstNode* root, const std::vector<FunctionSignature>& signatures,
-                           const std::vector<ClassSignature>& classes = {});
+                           const std::vector<ClassSignature>& classes = {},
+                           const std::vector<GlobalSignature>& globals = {});
 
 private:
     struct LValueRef {
@@ -83,6 +95,7 @@ private:
     };
 
     void CompileFunction(AstNode* node, std::size_t functionIndex);
+    void CompileGlobalInitializer(AstNode* root);
     void CompileBlock(AstNode* node, bool createScope = true);
     void CompileStatement(AstNode* node);
     void CompileExpression(AstNode* node);
@@ -112,6 +125,8 @@ private:
     std::unordered_map<std::string, FunctionId> hostIds_;
     std::vector<ClassSignature> classes_;
     std::unordered_map<std::string, TypeId> classIds_;
+    std::vector<GlobalSignature> globals_;
+    std::unordered_map<std::string, GlobalSignature> globalSymbols_;
 };
 
 } // namespace mini_as

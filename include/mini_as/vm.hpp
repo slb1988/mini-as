@@ -24,14 +24,14 @@ struct ExecutionResult {
 class VirtualMachine {
 public:
     bool Prepare(const BytecodeFunction& function, const std::vector<Value>& arguments = {},
-                 const BytecodeModule* module = nullptr);
+                 const BytecodeModule* module = nullptr, ModuleState* state = nullptr);
     ExecutionResult Continue();
     void RequestSuspend();
     void Abort();
     void SetLineCallback(std::function<void(const SourceLocation&)> callback);
     ExecutionResult Execute(const BytecodeFunction& function,
                             const std::vector<Value>& arguments = {},
-                            const BytecodeModule* module = nullptr);
+                            const BytecodeModule* module = nullptr, ModuleState* state = nullptr);
 
 private:
     struct CallFrame {
@@ -52,6 +52,7 @@ private:
     std::vector<CallFrame> callStack_;
     const BytecodeFunction* function_ = nullptr;
     const BytecodeModule* module_ = nullptr;
+    ModuleState* moduleState_ = nullptr;
     std::size_t pc_ = 0;
     bool suspendRequested_ = false;
     std::function<void(const SourceLocation&)> lineCallback_;

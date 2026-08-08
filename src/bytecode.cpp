@@ -8,7 +8,8 @@
 namespace mini_as {
 std::string_view OpCodeName(OpCode opcode) {
     static const char* names[] = {
-        "NOP", "SUSPEND", "PUSH_CONST", "PUSH_VOID", "LOAD_LOCAL", "STORE_LOCAL", "DUP", "POP",
+        "NOP", "SUSPEND", "PUSH_CONST", "PUSH_VOID", "LOAD_LOCAL", "STORE_LOCAL",
+        "LOAD_GLOBAL", "STORE_GLOBAL", "DUP", "POP",
         "TO_FLOAT", "TO_STRING", "ADD_I", "SUB_I", "MUL_I", "DIV_I", "MOD_I",
         "ADD_F", "SUB_F", "MUL_F", "DIV_F", "CONCAT", "NEG_I", "NEG_F", "NOT",
         "EQ", "NE", "LT", "LE", "GT", "GE", "JMP", "JZ", "CALL", "CALL_HOST",
@@ -25,7 +26,8 @@ std::string Disassemble(const BytecodeFunction& function) {
         out << std::setw(4) << i << "  " << std::left << std::setw(12)
             << OpCodeName(instruction.opcode) << std::right;
         if (instruction.opcode == OpCode::PushConst || instruction.opcode == OpCode::LoadLocal ||
-            instruction.opcode == OpCode::StoreLocal || instruction.opcode == OpCode::Jump ||
+            instruction.opcode == OpCode::StoreLocal || instruction.opcode == OpCode::LoadGlobal ||
+            instruction.opcode == OpCode::StoreGlobal || instruction.opcode == OpCode::Jump ||
             instruction.opcode == OpCode::JumpIfFalse || instruction.opcode == OpCode::Call ||
             instruction.opcode == OpCode::CallHost || instruction.opcode == OpCode::NewObject ||
             instruction.opcode == OpCode::LoadField || instruction.opcode == OpCode::StoreField) out << instruction.operand;
@@ -53,16 +55,29 @@ const CallableRef* BytecodeModule::FindCallable(std::size_t index) const {
     return index < callables.size() ? &callables[index] : nullptr;
 }
 
+std::optional<std::size_t> BytecodeModule::FindGlobalIndex(GlobalId id) const {
+    for (std::size_t index = 0; index < globals.size(); ++index)
+        if (globals[index].signature.id == id) return index;
+    return std::nullopt;
+}
+
 BytecodeCompiler::BytecodeCompiler(DiagnosticSink& diagnostics) : diagnostics_(diagnostics) {}
 
 BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<FunctionSignature>& signatures,
-                                         const std::vector<ClassSignature>& classes) {
+                                         const std::vector<ClassSignature>& classes,
+                                         const std::vector<GlobalSignature>& globals) {
     module_ = {};
     signatures_ = signatures;
     functionIndices_.clear();
     functionIds_.clear();
     hostIds_.clear();
     classes_ = classes;
+    globals_ = globals;
+    globalSymbols_.clear();
+    for (const auto& global : globals_) {
+        globalSymbols_[global.name] = global;
+        module_.globals.push_back({global});
+    }
     classIds_.clear();
     std::uint32_t nextFunctionId = 0;
     for (const auto& signature : signatures_) {
@@ -101,7 +116,41 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
         const auto found = functionIndices_.find(astSignature.Declaration());
         if (found != functionIndices_.end()) CompileFunction(node, found->second);
     }
+    CompileGlobalInitializer(root);
     return std::move(module_);
+}
+
+void BytecodeCompiler::CompileGlobalInitializer(AstNode* root) {
+    function_ = &module_.globalInitializer;
+    function_->signature.name = "$globals";
+    function_->signature.returnType = DataType::Void();
+    function_->code.clear();
+    function_->constants.clear();
+    scopes_.clear();
+    scopes_.emplace_back();
+    nextLocal_ = 0;
+    auto compileDeclaration = [&](AstNode* declaration) {
+        if (!declaration || !declaration->isGlobal || !declaration->firstChild) return;
+        const auto found = globalSymbols_.find(declaration->token.lexeme);
+        if (found == globalSymbols_.end()) return;
+        CompileExpression(declaration->firstChild);
+        if (declaration->firstChild->inferredType == DataType::Int() &&
+            declaration->declaredType == DataType::Float()) Emit(OpCode::ToFloat, 0, declaration);
+        Emit(OpCode::StoreGlobal, static_cast<std::int32_t>(found->second.id.value), declaration);
+    };
+    if (root) {
+        for (AstNode* node = root->firstChild; node; node = node->nextSibling) {
+            if (node->kind == NodeKind::VarDecl) compileDeclaration(node);
+            if (node->kind == NodeKind::DeclList) {
+                for (AstNode* declaration = node->firstChild; declaration;
+                     declaration = declaration->nextSibling) compileDeclaration(declaration);
+            }
+        }
+    }
+    Emit(OpCode::PushVoid, 0, root);
+    Emit(OpCode::Return, 0, root);
+    function_->localCount = 0;
+    function_ = nullptr;
 }
 
 void BytecodeCompiler::CompileFunction(AstNode* node, std::size_t functionIndex) {
@@ -231,12 +280,22 @@ std::optional<BytecodeCompiler::LValueRef> BytecodeCompiler::ResolveLValue(AstNo
     if (!expression) return std::nullopt;
     if (expression->kind == NodeKind::Identifier) {
         const auto local = LookupLocal(expression->token.lexeme);
-        if (!local) return std::nullopt;
-        LValueRef result;
-        result.kind = LValueRef::Kind::Local;
-        result.type = expression->inferredType;
-        result.variable = *local;
-        return result;
+        if (local) {
+            LValueRef result;
+            result.kind = LValueRef::Kind::Local;
+            result.type = expression->inferredType;
+            result.variable = *local;
+            return result;
+        }
+        const auto global = globalSymbols_.find(expression->token.lexeme);
+        if (global != globalSymbols_.end()) {
+            LValueRef result;
+            result.kind = LValueRef::Kind::Global;
+            result.type = global->second.type;
+            result.global = global->second.id;
+            return result;
+        }
+        return std::nullopt;
     }
     if (expression->kind == NodeKind::Member) {
         const auto field = FindField(expression);
@@ -261,6 +320,8 @@ void BytecodeCompiler::CompileLValueLoad(const LValueRef& target, const AstNode*
         Emit(OpCode::LoadField, static_cast<std::int32_t>(target.field), source);
         break;
     case LValueRef::Kind::Global:
+        Emit(OpCode::LoadGlobal, static_cast<std::int32_t>(target.global.value), source);
+        break;
     case LValueRef::Kind::Index:
         Error(source, "lvalue kind is not implemented");
         break;
@@ -282,6 +343,9 @@ void BytecodeCompiler::CompileLValueStore(const LValueRef& target, AstNode* valu
         Emit(OpCode::StoreField, static_cast<std::int32_t>(target.field), source);
         break;
     case LValueRef::Kind::Global:
+        Emit(OpCode::Dup, 0, source);
+        Emit(OpCode::StoreGlobal, static_cast<std::int32_t>(target.global.value), source);
+        break;
     case LValueRef::Kind::Index:
         Error(source, "lvalue kind is not implemented");
         break;

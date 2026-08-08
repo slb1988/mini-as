@@ -4,6 +4,18 @@
 #include <algorithm>
 
 namespace mini_as {
+namespace {
+
+Value DefaultGlobalValue(const DataType& type) {
+    if (type == DataType::Bool()) return Value(false);
+    if (type == DataType::Int()) return Value(std::int32_t{0});
+    if (type == DataType::Float()) return Value(0.0f);
+    if (type == DataType::String()) return Value(std::string{});
+    if (type.kind == TypeKind::Object) return Value(ObjectHandle{});
+    return Value{};
+}
+
+} // namespace
 
 std::string_view Version() { return "0.1.0-learning"; }
 
@@ -42,8 +54,11 @@ bool ScriptModule::Build() {
     }
     auto classes = checker.Classes();
     for (auto& type : classes) type.id = engine_.GetOrCreateTypeId(type.name);
+    auto globals = checker.Globals();
+    for (auto& global : globals)
+        global.id = engine_.GetOrCreateGlobalId(name_ + "\n" + global.name);
     BytecodeCompiler compiler(diagnostics);
-    BytecodeModule candidate = compiler.Compile(tree.root, functions, classes);
+    BytecodeModule candidate = compiler.Compile(tree.root, functions, classes, globals);
     if (diagnostics.HasErrors()) return false;
     std::vector<const TypeInfo*> concreteTypes;
     for (const auto& type : classes) {
@@ -53,8 +68,20 @@ bool ScriptModule::Build() {
     for (const auto& host : engine_.hostFunctions_)
         candidate.hostFunctions.push_back({host.signature.id, &host});
     for (const auto* type : concreteTypes) candidate.objectTypes.push_back({type->id, type});
+    auto state = std::make_shared<ModuleState>();
+    state->globals.reserve(candidate.globals.size());
+    for (const auto& global : candidate.globals)
+        state->globals.push_back(DefaultGlobalValue(global.signature.type));
+    VirtualMachine initializer;
+    const auto initialized = initializer.Execute(candidate.globalInitializer, {}, &candidate, state.get());
+    if (initialized.state != ExecutionState::Finished) {
+        diagnostics.Report(initialized.location, Severity::Error,
+                           "global initialization failed: " + initialized.exception);
+        return false;
+    }
     auto nextImage = std::make_shared<ModuleImage>();
     nextImage->bytecode = std::move(candidate);
+    nextImage->state = std::move(state);
     engine_.RegisterModuleImage(nextImage);
     image_ = std::move(nextImage);
     sections_.clear();
@@ -118,7 +145,7 @@ ExecutionState ScriptContext::Execute() {
         return result_.state;
     }
     if (result_.state == ExecutionState::Prepared) {
-        if (!vm_.Prepare(*function_, arguments_, &image_->bytecode)) {
+        if (!vm_.Prepare(*function_, arguments_, &image_->bytecode, image_->state.get())) {
             result_ = vm_.Continue();
             return result_.state;
         }
@@ -264,6 +291,14 @@ TypeId ScriptEngine::GetOrCreateTypeId(std::string_view name) {
     if (found != typeIds_.end()) return found->second;
     const TypeId id{nextTypeId_++};
     typeIds_.emplace(name, id);
+    return id;
+}
+
+GlobalId ScriptEngine::GetOrCreateGlobalId(std::string key) {
+    const auto found = globalIds_.find(key);
+    if (found != globalIds_.end()) return found->second;
+    const GlobalId id{nextGlobalId_++};
+    globalIds_.emplace(std::move(key), id);
     return id;
 }
 

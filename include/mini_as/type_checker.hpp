@@ -28,6 +28,13 @@ struct ClassSignature {
     TypeId id;
 };
 
+struct GlobalSignature {
+    std::string name;
+    DataType type;
+    bool isConst = false;
+    GlobalId id;
+};
+
 class TypeChecker {
 public:
     explicit TypeChecker(DiagnosticSink& diagnostics);
@@ -35,6 +42,7 @@ public:
     bool Check(AstNode* root);
     const std::vector<FunctionSignature>& Functions() const;
     const std::vector<ClassSignature>& Classes() const;
+    const std::vector<GlobalSignature>& Globals() const;
 
 private:
     struct VariableSymbol {
@@ -43,6 +51,7 @@ private:
     };
 
     void Predeclare(AstNode* root);
+    void PredeclareGlobals(AstNode* root);
     void CheckNode(AstNode* node);
     void CheckFunction(AstNode* node);
     void CheckBlock(AstNode* node, bool createScope = true);
@@ -60,6 +69,7 @@ private:
     DiagnosticSink& diagnostics_;
     std::vector<FunctionSignature> functions_;
     std::vector<ClassSignature> classes_;
+    std::vector<GlobalSignature> globals_;
     std::vector<std::unordered_map<std::string, VariableSymbol>> scopes_;
     DataType currentReturn_ = DataType::Void();
 };

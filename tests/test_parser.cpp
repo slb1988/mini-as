@@ -33,3 +33,15 @@ TEST_CASE(parser_groups_multiple_declarations_with_independent_initializers) {
     CHECK(variables[2]->token.lexeme == "c");
 }
 
+TEST_CASE(parser_marks_const_auto_declarations_for_type_inference) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer lexer("parse", "int f() { const auto answer = 42; return answer; }", diagnostics);
+    mini_as::Parser parser(lexer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    CHECK(!diagnostics.HasErrors());
+    auto* declaration = tree.root->firstChild->Children().back()->firstChild;
+    CHECK(declaration->kind == mini_as::NodeKind::VarDecl);
+    CHECK(declaration->isAuto);
+    CHECK(declaration->isConst);
+}
+

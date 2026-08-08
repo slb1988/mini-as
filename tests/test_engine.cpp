@@ -154,3 +154,30 @@ TEST_CASE(const_locals_can_be_read_but_not_assigned) {
     CHECK(protectedAssignment);
 }
 
+TEST_CASE(auto_declarations_infer_initializer_types) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("auto-valid");
+    module->AddScriptSection("success",
+        "int value() { auto integer = 40; auto floating = integer + 0.5; const auto delta = 2; "
+        "if (floating > 40.0) return integer + delta; return 0; }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByName("value")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+}
+
+TEST_CASE(auto_declarations_require_initializers) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) { diagnostics.push_back(diagnostic); });
+    auto* module = engine->GetModule("auto-invalid");
+    module->AddScriptSection("invalid", "int value() { auto missing; return 0; }");
+    CHECK(!module->Build());
+    bool requiresInitializer = false;
+    for (const auto& diagnostic : diagnostics)
+        requiresInitializer = requiresInitializer ||
+            diagnostic.message.find("auto declaration requires an initializer") != std::string::npos;
+    CHECK(requiresInitializer);
+}
+

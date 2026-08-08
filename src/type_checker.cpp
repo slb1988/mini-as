@@ -92,13 +92,22 @@ void TypeChecker::CheckNode(AstNode* node) {
     switch (node->kind) {
     case NodeKind::FunctionDecl: CheckFunction(node); break;
     case NodeKind::Block: CheckBlock(node); break;
-    case NodeKind::DeclList:
-        for (AstNode* declaration = node->firstChild; declaration; declaration = declaration->nextSibling)
+    case NodeKind::DeclList: {
+        DataType sharedAutoType = DataType::Invalid();
+        for (AstNode* declaration = node->firstChild; declaration; declaration = declaration->nextSibling) {
+            if (declaration->isAuto && sharedAutoType.IsValid()) declaration->declaredType = sharedAutoType;
             CheckNode(declaration);
+            if (declaration->isAuto && !sharedAutoType.IsValid()) sharedAutoType = declaration->declaredType;
+        }
         break;
+    }
     case NodeKind::VarDecl: {
+        if (node->isAuto && !node->firstChild) {
+            Error(node, "auto declaration requires an initializer");
+        }
         if (node->firstChild) {
             DataType value = CheckExpression(node->firstChild);
+            if (node->isAuto && !node->declaredType.IsValid()) node->declaredType = value;
             if (!CanConvert(value, node->declaredType)) {
                 Error(node, "cannot initialize " + node->declaredType.Name() + " with " + value.Name());
             }

@@ -120,8 +120,9 @@ AstNode* Parser::ParseStatement() {
     if (Match(TokenKind::KwIf)) return ParseIf();
     if (Match(TokenKind::KwWhile)) return ParseWhile();
     if (Match(TokenKind::KwReturn)) return ParseReturn();
-    if ((Check(TokenKind::KwConst) || IsTypeStart()) &&
-        (Current().kind == TokenKind::KwConst || Current().kind != TokenKind::Identifier ||
+    if ((Check(TokenKind::KwConst) || Check(TokenKind::KwAuto) || IsTypeStart()) &&
+        (Current().kind == TokenKind::KwConst || Current().kind == TokenKind::KwAuto ||
+         Current().kind != TokenKind::Identifier ||
         (current_ + 1 < tokens_.size() && (tokens_[current_ + 1].kind == TokenKind::Identifier ||
                                           tokens_[current_ + 1].kind == TokenKind::At)))) {
         return ParseVariableDeclaration();
@@ -134,12 +135,14 @@ AstNode* Parser::ParseStatement() {
 
 AstNode* Parser::ParseVariableDeclaration() {
     const bool isConst = Match(TokenKind::KwConst);
-    DataType type = ParseType(false);
+    const bool isAuto = Match(TokenKind::KwAuto);
+    DataType type = isAuto ? DataType::Invalid() : ParseType(false);
     auto parseOne = [&]() {
         Token name = Consume(TokenKind::Identifier, "expected variable name");
         AstNode* declaration = arena_->Make(NodeKind::VarDecl, name);
         declaration->declaredType = type;
         declaration->isConst = isConst;
+        declaration->isAuto = isAuto;
         if (Match(TokenKind::Equal)) declaration->AppendChild(ParseAssignment());
         return declaration;
     };

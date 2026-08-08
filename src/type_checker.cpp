@@ -53,10 +53,16 @@ void TypeChecker::Predeclare(AstNode* root) {
             if (child->kind == NodeKind::FieldDecl) type.fields.push_back({child->token.lexeme, child->declaredType});
             else if (child->kind == NodeKind::FunctionDecl) {
                 FunctionSignature method{child->token.lexeme, child->declaredType, {}, false, {},
-                                         type.name, true};
+                                         type.name, true, child->isConstructor};
                 for (AstNode* parameter = child->firstChild;
                      parameter && parameter->kind == NodeKind::Parameter; parameter = parameter->nextSibling)
                     method.parameters.push_back(parameter->declaredType);
+                bool duplicate = false;
+                for (const auto& existing : type.methods) {
+                    if (existing.name == method.name && existing.parameters == method.parameters &&
+                        existing.constructor == method.constructor) duplicate = true;
+                }
+                if (duplicate) Error(child, "duplicate method or constructor '" + method.Declaration() + "'");
                 type.methods.push_back(std::move(method));
             }
         }
@@ -80,7 +86,7 @@ void TypeChecker::Predeclare(AstNode* root) {
     }
     for (AstNode* node = root->firstChild; node; node = node->nextSibling) {
         if (node->kind != NodeKind::FunctionDecl) continue;
-        FunctionSignature signature{node->token.lexeme, node->declaredType, {}, false, {}, {}, false};
+        FunctionSignature signature{node->token.lexeme, node->declaredType, {}, false, {}, {}, false, false};
         for (AstNode* child = node->firstChild; child && child->kind == NodeKind::Parameter;
              child = child->nextSibling) signature.parameters.push_back(child->declaredType);
         for (const auto& existing : functions_) {
@@ -425,18 +431,38 @@ DataType TypeChecker::CheckUnary(AstNode* node) {
 DataType TypeChecker::CheckCall(AstNode* node) {
     AstNode* callee = node->firstChild;
     if (!callee) return DataType::Invalid();
+    std::vector<DataType> arguments;
+    for (AstNode* argument = callee->nextSibling; argument; argument = argument->nextSibling) {
+        arguments.push_back(CheckExpression(argument));
+    }
     if (callee->kind == NodeKind::Identifier) {
         if (const ClassSignature* type = FindClass(callee->token.lexeme)) {
-            if (type->interfaceType || callee->nextSibling) {
-                Error(node, "only zero-argument concrete class factories are supported");
+            if (type->interfaceType) {
+                Error(node, "interface types cannot be constructed");
+                return DataType::Invalid();
+            }
+            const FunctionSignature* constructor = nullptr;
+            int bestCost = 1000000;
+            bool hasConstructors = false;
+            for (const auto& candidate : type->methods) {
+                if (!candidate.constructor) continue;
+                hasConstructors = true;
+                if (candidate.parameters.size() != arguments.size()) continue;
+                int cost = 0;
+                bool viable = true;
+                for (std::size_t i = 0; i < arguments.size(); ++i) {
+                    if (arguments[i] == candidate.parameters[i]) continue;
+                    if (arguments[i] == DataType::Int() && candidate.parameters[i] == DataType::Float()) ++cost;
+                    else viable = false;
+                }
+                if (viable && cost < bestCost) { constructor = &candidate; bestCost = cost; }
+            }
+            if ((hasConstructors && !constructor) || (!hasConstructors && !arguments.empty())) {
+                Error(node, "no matching constructor for '" + type->name + "'");
                 return DataType::Invalid();
             }
             return DataType::Object(type->name, true);
         }
-    }
-    std::vector<DataType> arguments;
-    for (AstNode* argument = callee->nextSibling; argument; argument = argument->nextSibling) {
-        arguments.push_back(CheckExpression(argument));
     }
     if (callee->kind == NodeKind::Member) {
         const DataType object = CheckExpression(callee->firstChild);
@@ -487,7 +513,7 @@ const FunctionSignature* TypeChecker::FindMethod(
     const FunctionSignature* best = nullptr;
     int bestCost = 1000000;
     for (const auto& method : type->methods) {
-        if (method.name != name || method.parameters.size() != arguments.size()) continue;
+        if (method.constructor || method.name != name || method.parameters.size() != arguments.size()) continue;
         int cost = 0;
         bool viable = true;
         for (std::size_t i = 0; i < arguments.size(); ++i) {

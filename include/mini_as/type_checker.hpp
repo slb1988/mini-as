@@ -17,6 +17,7 @@ struct FunctionSignature {
     FunctionId id;
     std::string objectType;
     bool method = false;
+    bool constructor = false;
 
     std::string Declaration() const;
 };

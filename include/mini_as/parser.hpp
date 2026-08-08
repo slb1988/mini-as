@@ -24,6 +24,7 @@ struct AstNode {
     bool isGlobal = false;
     bool isPostfix = false;
     bool implicitThis = false;
+    bool isConstructor = false;
     AstNode* firstChild = nullptr;
     AstNode* nextSibling = nullptr;
 

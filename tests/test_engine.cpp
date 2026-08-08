@@ -512,3 +512,35 @@ TEST_CASE(instance_method_calls_report_unknown_members) {
     CHECK(rejected);
 }
 
+TEST_CASE(overloaded_constructors_initialize_instances_by_arity) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("constructors");
+    module->AddScriptSection("success",
+        "class Box { int value; Box(int first) { value = first; } "
+        "Box(int first, int second) { value = first + second; } int get() { return value; } } "
+        "int run() { Box@ large = Box(40); Box@ small = Box(1, 1); return large.get() + small.get(); }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByName("run")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+}
+
+TEST_CASE(constructors_reject_missing_overloads_and_duplicates) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) { diagnostics.push_back(diagnostic); });
+    auto* module = engine->GetModule("constructor-invalid");
+    module->AddScriptSection("invalid",
+        "class Box { Box(int value) { } Box(int other) { } } int run() { Box@ box = Box(); return 0; }");
+    CHECK(!module->Build());
+    bool duplicate = false;
+    bool missing = false;
+    for (const auto& diagnostic : diagnostics) {
+        duplicate = duplicate || diagnostic.message.find("duplicate method or constructor") != std::string::npos;
+        missing = missing || diagnostic.message.find("no matching constructor for 'Box'") != std::string::npos;
+    }
+    CHECK(duplicate);
+    CHECK(missing);
+}
+

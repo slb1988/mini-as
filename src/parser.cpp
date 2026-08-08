@@ -73,6 +73,14 @@ AstNode* Parser::ParseClass(bool isInterface) {
     }
     Consume(TokenKind::LeftBrace, "expected '{' before type body");
     while (!Check(TokenKind::RightBrace) && !Check(TokenKind::End)) {
+        if (!isInterface && Check(TokenKind::Identifier) && Current().lexeme == name.lexeme &&
+            current_ + 1 < tokens_.size() && tokens_[current_ + 1].kind == TokenKind::LeftParen) {
+            Token constructorName = Advance();
+            AstNode* constructor = ParseFunction(DataType::Void(), std::move(constructorName));
+            constructor->isConstructor = true;
+            node->AppendChild(constructor);
+            continue;
+        }
         DataType type = ParseType(true);
         Token memberName = Consume(TokenKind::Identifier, "expected member name");
         if (Check(TokenKind::LeftParen)) {

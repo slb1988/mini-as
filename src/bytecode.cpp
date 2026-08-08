@@ -120,7 +120,7 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
     }
     for (AstNode* node = root->firstChild; node; node = node->nextSibling) {
         if (node->kind != NodeKind::FunctionDecl) continue;
-        FunctionSignature astSignature{node->token.lexeme, node->declaredType, {}, false, {}, {}, false};
+        FunctionSignature astSignature{node->token.lexeme, node->declaredType, {}, false, {}, {}, false, false};
         for (AstNode* child = node->firstChild; child && child->kind == NodeKind::Parameter; child = child->nextSibling)
             astSignature.parameters.push_back(child->declaredType);
         const auto found = functionIndices_.find(FunctionKey(astSignature));
@@ -131,7 +131,7 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
         for (AstNode* methodNode = typeNode->firstChild; methodNode; methodNode = methodNode->nextSibling) {
             if (methodNode->kind != NodeKind::FunctionDecl || !methodNode->firstChild) continue;
             FunctionSignature method{methodNode->token.lexeme, methodNode->declaredType, {}, false, {},
-                                     typeNode->token.lexeme, true};
+                                     typeNode->token.lexeme, true, methodNode->isConstructor};
             for (AstNode* parameter = methodNode->firstChild;
                  parameter && parameter->kind == NodeKind::Parameter; parameter = parameter->nextSibling)
                 method.parameters.push_back(parameter->declaredType);
@@ -661,20 +661,52 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
     }
     const bool explicitMethod = callee->kind == NodeKind::Member;
     const std::string& callName = callee->token.lexeme;
+    std::vector<AstNode*> arguments;
+    for (AstNode* argument = callee->nextSibling; argument; argument = argument->nextSibling)
+        arguments.push_back(argument);
     const auto classFound = classIds_.find(callName);
     if (!explicitMethod && classFound != classIds_.end()) {
-        if (callee->nextSibling) { Error(node, "class factory expects no arguments"); return; }
         Emit(OpCode::NewObject, static_cast<std::int32_t>(classFound->second.value), node);
+        const FunctionSignature* constructor = nullptr;
+        int bestCost = 1000000;
+        for (const auto& signature : signatures_) {
+            if (!signature.constructor || signature.objectType != callName ||
+                signature.parameters.size() != arguments.size()) continue;
+            int cost = 0;
+            bool viable = true;
+            for (std::size_t i = 0; i < arguments.size(); ++i) {
+                if (arguments[i]->inferredType == signature.parameters[i]) continue;
+                if (arguments[i]->inferredType == DataType::Int() &&
+                    signature.parameters[i] == DataType::Float()) ++cost;
+                else viable = false;
+            }
+            if (viable && cost < bestCost) { constructor = &signature; bestCost = cost; }
+        }
+        if (constructor) {
+            Emit(OpCode::Dup, 0, node);
+            for (std::size_t i = 0; i < arguments.size(); ++i) {
+                CompileExpression(arguments[i]);
+                if (arguments[i]->inferredType == DataType::Int() &&
+                    constructor->parameters[i] == DataType::Float())
+                    Emit(OpCode::ToFloat, 0, arguments[i]);
+            }
+            const auto target = functionIds_.find(FunctionKey(*constructor));
+            if (target == functionIds_.end()) { Error(node, "constructor target is missing"); return; }
+            Emit(OpCode::Call, AddCallable({CallableKind::ScriptMethod, target->second,
+                                            classFound->second, 0}), node);
+            Emit(OpCode::Pop, 0, node);
+        } else if (!arguments.empty()) {
+            Error(node, "constructor target is missing");
+        }
         return;
     }
-    std::vector<AstNode*> arguments;
-    for (AstNode* argument = callee->nextSibling; argument; argument = argument->nextSibling) arguments.push_back(argument);
     const FunctionSignature* target = nullptr;
     int bestCost = 1000000;
     const std::string receiverType = explicitMethod
         ? callee->firstChild->inferredType.objectName : currentObjectType_;
     for (const auto& signature : signatures_) {
-        if (signature.name != callName || signature.parameters.size() != arguments.size()) continue;
+        if (signature.constructor || signature.name != callName ||
+            signature.parameters.size() != arguments.size()) continue;
         if (explicitMethod && (!signature.method || signature.objectType != receiverType)) continue;
         if (!explicitMethod && signature.method && signature.objectType != currentObjectType_) continue;
         if (!explicitMethod && currentObjectType_.empty() && signature.method) continue;

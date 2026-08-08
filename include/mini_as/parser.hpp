@@ -23,6 +23,7 @@ struct AstNode {
     bool isAuto = false;
     bool isGlobal = false;
     bool isPostfix = false;
+    bool implicitThis = false;
     AstNode* firstChild = nullptr;
     AstNode* nextSibling = nullptr;
 

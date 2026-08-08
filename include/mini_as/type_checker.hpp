@@ -15,6 +15,8 @@ struct FunctionSignature {
     std::vector<DataType> parameters;
     bool host = false;
     FunctionId id;
+    std::string objectType;
+    bool method = false;
 
     std::string Declaration() const;
 };
@@ -61,6 +63,8 @@ private:
     DataType CheckCall(AstNode* node);
     std::optional<VariableSymbol> Lookup(std::string_view name) const;
     bool IsReadOnlyLValue(const AstNode* node) const;
+    const FunctionSignature* FindMethod(const DataType& object, std::string_view name,
+                                        const std::vector<DataType>& arguments) const;
     const ClassSignature* FindClass(std::string_view name) const;
     void Declare(const Token& name, const DataType& type, bool isConst = false);
     bool CanConvert(const DataType& from, const DataType& to) const;
@@ -74,6 +78,7 @@ private:
     DataType currentReturn_ = DataType::Void();
     int breakableDepth_ = 0;
     int loopDepth_ = 0;
+    const ClassSignature* currentClass_ = nullptr;
 };
 
 } // namespace mini_as

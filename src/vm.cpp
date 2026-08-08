@@ -177,7 +177,8 @@ bool VirtualMachine::Step() {
             throw std::runtime_error("call descriptor kind does not match opcode");
         const BytecodeFunction* target = module_->FindFunction(callable->function);
         if (!target) throw std::runtime_error("call target is unavailable");
-        std::vector<Value> arguments(target->signature.parameters.size());
+        const std::size_t hiddenArguments = callable->kind == CallableKind::ScriptMethod ? 1 : 0;
+        std::vector<Value> arguments(target->signature.parameters.size() + hiddenArguments);
         for (std::size_t i = arguments.size(); i > 0; --i) arguments[i - 1] = Pop();
         callStack_.push_back({function_, pc_, std::move(locals_)});
         function_ = target;

@@ -53,7 +53,15 @@ bool ScriptModule::Build() {
         }
     }
     auto classes = checker.Classes();
-    for (auto& type : classes) type.id = engine_.GetOrCreateTypeId(type.name);
+    for (auto& type : classes) {
+        type.id = engine_.GetOrCreateTypeId(type.name);
+        for (auto& method : type.methods) {
+            method.objectType = type.name;
+            method.method = true;
+            method.id = engine_.GetOrCreateFunctionId(
+                name_ + "\n" + type.name + "::" + method.Declaration());
+        }
+    }
     auto globals = checker.Globals();
     for (auto& global : globals)
         global.id = engine_.GetOrCreateGlobalId(name_ + "\n" + global.name);

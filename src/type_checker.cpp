@@ -52,7 +52,8 @@ void TypeChecker::Predeclare(AstNode* root) {
         for (; child; child = child->nextSibling) {
             if (child->kind == NodeKind::FieldDecl) type.fields.push_back({child->token.lexeme, child->declaredType});
             else if (child->kind == NodeKind::FunctionDecl) {
-                FunctionSignature method{child->token.lexeme, child->declaredType, {}, false, {}};
+                FunctionSignature method{child->token.lexeme, child->declaredType, {}, false, {},
+                                         type.name, true};
                 for (AstNode* parameter = child->firstChild;
                      parameter && parameter->kind == NodeKind::Parameter; parameter = parameter->nextSibling)
                     method.parameters.push_back(parameter->declaredType);
@@ -79,7 +80,7 @@ void TypeChecker::Predeclare(AstNode* root) {
     }
     for (AstNode* node = root->firstChild; node; node = node->nextSibling) {
         if (node->kind != NodeKind::FunctionDecl) continue;
-        FunctionSignature signature{node->token.lexeme, node->declaredType, {}, false, {}};
+        FunctionSignature signature{node->token.lexeme, node->declaredType, {}, false, {}, {}, false};
         for (AstNode* child = node->firstChild; child && child->kind == NodeKind::Parameter;
              child = child->nextSibling) signature.parameters.push_back(child->declaredType);
         for (const auto& existing : functions_) {
@@ -250,7 +251,15 @@ void TypeChecker::CheckNode(AstNode* node) {
         if (loopDepth_ == 0) Error(node, "continue statement is not inside a loop");
         break;
     case NodeKind::ExprStmt: CheckExpression(node->firstChild); break;
-    case NodeKind::ClassDecl: case NodeKind::InterfaceDecl: case NodeKind::EmptyStmt:
+    case NodeKind::ClassDecl: {
+        const ClassSignature* previousClass = currentClass_;
+        currentClass_ = FindClass(node->token.lexeme);
+        for (AstNode* member = node->firstChild; member; member = member->nextSibling)
+            if (member->kind == NodeKind::FunctionDecl && member->firstChild) CheckFunction(member);
+        currentClass_ = previousClass;
+        break;
+    }
+    case NodeKind::InterfaceDecl: case NodeKind::EmptyStmt:
     case NodeKind::CaseClause: case NodeKind::DefaultClause: break;
     default: CheckExpression(node); break;
     }
@@ -292,8 +301,17 @@ DataType TypeChecker::CheckExpression(AstNode* node) {
         break;
     case NodeKind::Identifier: {
         const auto type = Lookup(node->token.lexeme);
-        if (!type) Error(node, "unknown variable '" + node->token.lexeme + "'");
-        else result = type->type;
+        if (type) result = type->type;
+        else if (currentClass_) {
+            for (const auto& field : currentClass_->fields) {
+                if (field.first == node->token.lexeme) {
+                    result = field.second;
+                    node->implicitThis = true;
+                    break;
+                }
+            }
+            if (!result.IsValid()) Error(node, "unknown variable '" + node->token.lexeme + "'");
+        } else Error(node, "unknown variable '" + node->token.lexeme + "'");
         break;
     }
     case NodeKind::Member: {
@@ -416,12 +434,23 @@ DataType TypeChecker::CheckCall(AstNode* node) {
             return DataType::Object(type->name, true);
         }
     }
-    if (callee->kind != NodeKind::Identifier) {
-        Error(node, "method calls are not available yet"); return DataType::Invalid();
-    }
     std::vector<DataType> arguments;
     for (AstNode* argument = callee->nextSibling; argument; argument = argument->nextSibling) {
         arguments.push_back(CheckExpression(argument));
+    }
+    if (callee->kind == NodeKind::Member) {
+        const DataType object = CheckExpression(callee->firstChild);
+        const FunctionSignature* method = FindMethod(object, callee->token.lexeme, arguments);
+        if (!method) Error(node, "no matching method for '" + callee->token.lexeme + "'");
+        return method ? method->returnType : DataType::Invalid();
+    }
+    if (callee->kind != NodeKind::Identifier) {
+        Error(node, "callee is not callable"); return DataType::Invalid();
+    }
+    if (currentClass_) {
+        const FunctionSignature* method = FindMethod(
+            DataType::Object(currentClass_->name, true), callee->token.lexeme, arguments);
+        if (method) return method->returnType;
     }
     const FunctionSignature* best = nullptr;
     int bestCost = 1000000;
@@ -449,6 +478,26 @@ std::optional<TypeChecker::VariableSymbol> TypeChecker::Lookup(std::string_view 
         if (found != scope->end()) return found->second;
     }
     return std::nullopt;
+}
+
+const FunctionSignature* TypeChecker::FindMethod(
+    const DataType& object, std::string_view name, const std::vector<DataType>& arguments) const {
+    const ClassSignature* type = FindClass(object.objectName);
+    if (!type) return nullptr;
+    const FunctionSignature* best = nullptr;
+    int bestCost = 1000000;
+    for (const auto& method : type->methods) {
+        if (method.name != name || method.parameters.size() != arguments.size()) continue;
+        int cost = 0;
+        bool viable = true;
+        for (std::size_t i = 0; i < arguments.size(); ++i) {
+            if (arguments[i] == method.parameters[i]) continue;
+            if (arguments[i] == DataType::Int() && method.parameters[i] == DataType::Float()) ++cost;
+            else viable = false;
+        }
+        if (viable && cost < bestCost) { best = &method; bestCost = cost; }
+    }
+    return best;
 }
 
 bool TypeChecker::IsReadOnlyLValue(const AstNode* node) const {

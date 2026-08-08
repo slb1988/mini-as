@@ -483,3 +483,32 @@ TEST_CASE(conditional_expressions_require_bool_and_compatible_branches) {
     CHECK(branchesRejected);
 }
 
+TEST_CASE(instance_methods_use_implicit_this_and_preserve_object_state) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("methods");
+    module->AddScriptSection("success",
+        "class Counter { int value; void set(int next) { value = next; } "
+        "int add(int delta) { value += delta; return value; } "
+        "int addTwice(int delta) { return add(delta) + add(delta); } } "
+        "int run() { Counter@ counter = Counter(); counter.set(38); return counter.addTwice(2); }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByName("run")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 82);
+}
+
+TEST_CASE(instance_method_calls_report_unknown_members) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) { diagnostics.push_back(diagnostic); });
+    auto* module = engine->GetModule("method-invalid");
+    module->AddScriptSection("invalid",
+        "class Counter { int value; } int run() { Counter@ counter = Counter(); return counter.missing(); }");
+    CHECK(!module->Build());
+    bool rejected = false;
+    for (const auto& diagnostic : diagnostics)
+        rejected = rejected || diagnostic.message.find("no matching method for 'missing'") != std::string::npos;
+    CHECK(rejected);
+}
+

@@ -101,7 +101,8 @@ private:
         std::size_t continueTarget = 0;
     };
 
-    void CompileFunction(AstNode* node, std::size_t functionIndex);
+    void CompileFunction(AstNode* node, std::size_t functionIndex,
+                         std::string objectType = {});
     void CompileGlobalInitializer(AstNode* root);
     void CompileBlock(AstNode* node, bool createScope = true);
     void CompileStatement(AstNode* node);
@@ -138,6 +139,7 @@ private:
     std::vector<GlobalSignature> globals_;
     std::unordered_map<std::string, GlobalSignature> globalSymbols_;
     std::vector<ControlFlowContext> controlFlow_;
+    std::string currentObjectType_;
 };
 
 } // namespace mini_as

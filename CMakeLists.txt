@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.16)
 project(mini_angelscript VERSION 0.1.0 LANGUAGES CXX)
 
+option(MINI_AS_BUILD_COMPAT_TESTS
+  "Build differential tests against AngelScript 2.38.0" OFF)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -51,3 +54,27 @@ add_executable(tutorial_clone examples/tutorial/main.cpp)
 target_link_libraries(tutorial_clone PRIVATE mini_angelscript)
 add_test(NAME tutorial_clone
   COMMAND tutorial_clone ${CMAKE_CURRENT_SOURCE_DIR}/examples/tutorial/script.as)
+
+if(MINI_AS_BUILD_COMPAT_TESTS)
+  include(FetchContent)
+  FetchContent_Declare(angelscript_238
+    URL https://www.angelcode.com/angelscript/sdk/files/angelscript_2.38.0.zip
+    URL_HASH SHA256=b33b5dbcda10317ef67d628353d83246984ce6fcac102d4dc2aed121eba52e6f
+    SOURCE_SUBDIR angelscript/projects/cmake
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+  set(AS_DISABLE_INSTALL ON CACHE BOOL "" FORCE)
+  FetchContent_MakeAvailable(angelscript_238)
+
+  add_executable(mini_as_compat_runner tests/compat/mini_runner.cpp)
+  target_link_libraries(mini_as_compat_runner PRIVATE mini_angelscript)
+
+  add_executable(angelscript_compat_runner tests/compat/official_runner.cpp)
+  target_link_libraries(angelscript_compat_runner PRIVATE angelscript)
+
+  add_test(NAME compat_arithmetic
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/arithmetic.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+endif()

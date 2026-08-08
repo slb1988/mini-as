@@ -22,6 +22,7 @@ DataType ReadType(const std::vector<Token>& tokens, std::size_t& index) {
     case TokenKind::KwUInt: type = DataType::UInt(); break;
     case TokenKind::KwUInt64: type = DataType::UInt64(); break;
     case TokenKind::KwFloat: type = DataType::Float(); break;
+    case TokenKind::KwDouble: type = DataType::Double(); break;
     case TokenKind::KwString: type = DataType::String(); break;
     case TokenKind::Identifier: type = DataType::Object(tokens[index].lexeme); break;
     default: return DataType::Invalid();
@@ -38,12 +39,14 @@ std::size_t GenericCall::GetArgCount() const { return arguments_.size(); }
 const Value& GenericCall::GetArg(std::size_t index) const { return arguments_.at(index); }
 std::int32_t GenericCall::GetArgInt(std::size_t index) const { return GetArg(index).As<std::int32_t>(); }
 float GenericCall::GetArgFloat(std::size_t index) const { return GetArg(index).As<float>(); }
+double GenericCall::GetArgDouble(std::size_t index) const { return GetArg(index).As<double>(); }
 bool GenericCall::GetArgBool(std::size_t index) const { return GetArg(index).As<bool>(); }
 const std::string& GenericCall::GetArgString(std::size_t index) const { return GetArg(index).As<std::string>(); }
 const ObjectHandle& GenericCall::GetArgObject(std::size_t index) const { return GetArg(index).As<ObjectHandle>(); }
 void GenericCall::SetReturn(Value value) { returnValue_ = std::move(value); }
 void GenericCall::SetReturnInt(std::int32_t value) { SetReturn(Value(value)); }
 void GenericCall::SetReturnFloat(float value) { SetReturn(Value(value)); }
+void GenericCall::SetReturnDouble(double value) { SetReturn(Value(value)); }
 void GenericCall::SetReturnBool(bool value) { SetReturn(Value(value)); }
 void GenericCall::SetReturnString(std::string value) { SetReturn(Value(std::move(value))); }
 void GenericCall::SetReturnObject(ObjectHandle value) { SetReturn(Value(std::move(value))); }

@@ -18,8 +18,10 @@ std::string_view OpCodeName(OpCode opcode) {
     static const char* names[] = {
         "NOP", "SUSPEND", "PUSH_CONST", "PUSH_VOID", "LOAD_LOCAL", "STORE_LOCAL",
         "LOAD_GLOBAL", "STORE_GLOBAL", "DUP", "SWAP", "POP",
-        "TO_FLOAT", "TO_INTEGER", "TO_STRING", "ADD_I", "SUB_I", "MUL_I", "DIV_I", "MOD_I",
-        "ADD_F", "SUB_F", "MUL_F", "DIV_F", "CONCAT", "NEG_I", "NEG_F", "NOT",
+        "TO_FLOAT", "TO_DOUBLE", "TO_INTEGER", "TO_STRING",
+        "ADD_I", "SUB_I", "MUL_I", "DIV_I", "MOD_I",
+        "ADD_F", "SUB_F", "MUL_F", "DIV_F", "ADD_D", "SUB_D", "MUL_D", "DIV_D",
+        "CONCAT", "NEG_I", "NEG_F", "NEG_D", "NOT",
         "EQ", "NE", "LT", "LE", "GT", "GE", "JMP", "JZ", "CALL", "CALL_HOST",
         "CALL_VIRTUAL", "NEW_OBJECT", "LOAD_FIELD", "STORE_FIELD", "RET"
     };
@@ -458,7 +460,9 @@ void BytecodeCompiler::CompileExpression(AstNode* node) {
         CompileExpression(node->firstChild);
         if (node->token.kind == TokenKind::Bang) Emit(OpCode::LogicalNot, 0, node);
         else if (node->token.kind == TokenKind::Minus) {
-            Emit(node->inferredType == DataType::Float() ? OpCode::NegFloat : OpCode::NegInt, 0, node);
+            Emit(node->inferredType == DataType::Double() ? OpCode::NegDouble
+                 : node->inferredType == DataType::Float() ? OpCode::NegFloat
+                                                           : OpCode::NegInt, 0, node);
         }
         break;
     case NodeKind::Increment: CompileIncrement(node); break;
@@ -573,16 +577,21 @@ void BytecodeCompiler::CompileCompoundAssignment(const LValueRef& target, AstNod
     const DataType operationType = stringConcat
         ? DataType::String() : CommonNumericType(target.type, value->inferredType);
     const bool floating = operationType == DataType::Float();
+    const bool doublePrecision = operationType == DataType::Double();
     if (!stringConcat) EmitConversion(target.type, operationType, source);
     CompileExpression(value);
     if (stringConcat && value->inferredType != DataType::String()) Emit(OpCode::ToString, 0, source);
     if (!stringConcat) EmitConversion(value->inferredType, operationType, source);
     OpCode opcode = OpCode::Nop;
     if (operation == TokenKind::PlusEqual)
-        opcode = stringConcat ? OpCode::Concat : (floating ? OpCode::AddFloat : OpCode::AddInt);
-    else if (operation == TokenKind::MinusEqual) opcode = floating ? OpCode::SubFloat : OpCode::SubInt;
-    else if (operation == TokenKind::StarEqual) opcode = floating ? OpCode::MulFloat : OpCode::MulInt;
-    else if (operation == TokenKind::SlashEqual) opcode = floating ? OpCode::DivFloat : OpCode::DivInt;
+        opcode = stringConcat ? OpCode::Concat : (doublePrecision ? OpCode::AddDouble
+                                               : floating ? OpCode::AddFloat : OpCode::AddInt);
+    else if (operation == TokenKind::MinusEqual)
+        opcode = doublePrecision ? OpCode::SubDouble : floating ? OpCode::SubFloat : OpCode::SubInt;
+    else if (operation == TokenKind::StarEqual)
+        opcode = doublePrecision ? OpCode::MulDouble : floating ? OpCode::MulFloat : OpCode::MulInt;
+    else if (operation == TokenKind::SlashEqual)
+        opcode = doublePrecision ? OpCode::DivDouble : floating ? OpCode::DivFloat : OpCode::DivInt;
     else if (operation == TokenKind::PercentEqual) opcode = OpCode::ModInt;
     else { Error(source, "compound assignment operator cannot be compiled"); return; }
     Emit(opcode, 0, source);
@@ -623,11 +632,13 @@ void BytecodeCompiler::CompileIncrement(AstNode* node) {
         if (node->isPostfix) Emit(OpCode::Dup, 0, node);
     }
     const bool floating = target->type == DataType::Float();
+    const bool doublePrecision = target->type == DataType::Double();
     Emit(OpCode::PushConst,
-         AddConstant(floating ? Value(1.0f) : Value::Integer(target->type, 1)), node);
+         AddConstant(doublePrecision ? Value(1.0)
+                     : floating ? Value(1.0f) : Value::Integer(target->type, 1)), node);
     Emit(node->token.kind == TokenKind::PlusPlus
-             ? (floating ? OpCode::AddFloat : OpCode::AddInt)
-             : (floating ? OpCode::SubFloat : OpCode::SubInt),
+             ? (doublePrecision ? OpCode::AddDouble : floating ? OpCode::AddFloat : OpCode::AddInt)
+             : (doublePrecision ? OpCode::SubDouble : floating ? OpCode::SubFloat : OpCode::SubInt),
          0, node);
     switch (target->kind) {
     case LValueRef::Kind::Local:
@@ -663,12 +674,17 @@ void BytecodeCompiler::CompileBinary(AstNode* node) {
     if (!stringOperation) EmitConversion(children[1]->inferredType, operationType, node);
     if (stringOperation && children[1]->inferredType != DataType::String()) Emit(OpCode::ToString, 0, node);
     const bool floating = operationType == DataType::Float();
+    const bool doublePrecision = operationType == DataType::Double();
     OpCode opcode = OpCode::Nop;
     switch (node->token.kind) {
-    case TokenKind::Plus: opcode = result == DataType::String() ? OpCode::Concat : (floating ? OpCode::AddFloat : OpCode::AddInt); break;
-    case TokenKind::Minus: opcode = floating ? OpCode::SubFloat : OpCode::SubInt; break;
-    case TokenKind::Star: opcode = floating ? OpCode::MulFloat : OpCode::MulInt; break;
-    case TokenKind::Slash: opcode = floating ? OpCode::DivFloat : OpCode::DivInt; break;
+    case TokenKind::Plus: opcode = result == DataType::String() ? OpCode::Concat
+        : doublePrecision ? OpCode::AddDouble : floating ? OpCode::AddFloat : OpCode::AddInt; break;
+    case TokenKind::Minus: opcode = doublePrecision ? OpCode::SubDouble
+        : floating ? OpCode::SubFloat : OpCode::SubInt; break;
+    case TokenKind::Star: opcode = doublePrecision ? OpCode::MulDouble
+        : floating ? OpCode::MulFloat : OpCode::MulInt; break;
+    case TokenKind::Slash: opcode = doublePrecision ? OpCode::DivDouble
+        : floating ? OpCode::DivFloat : OpCode::DivInt; break;
     case TokenKind::Percent: opcode = OpCode::ModInt; break;
     case TokenKind::EqualEqual: case TokenKind::KwIs: opcode = OpCode::Equal; break;
     case TokenKind::BangEqual: opcode = OpCode::NotEqual; break;
@@ -854,6 +870,10 @@ void BytecodeCompiler::EmitConversion(const DataType& from, const DataType& to,
         Emit(OpCode::ToInteger, static_cast<std::int32_t>(to.kind), source);
     } else if (from.IsInteger() && to == DataType::Float()) {
         Emit(OpCode::ToFloat, 0, source);
+    } else if ((from.IsInteger() || from == DataType::Float()) && to == DataType::Double()) {
+        Emit(OpCode::ToDouble, 0, source);
+    } else if (from == DataType::Double() && to == DataType::Float()) {
+        Emit(OpCode::ToFloat, 0, source);
     }
 }
 
@@ -866,6 +886,9 @@ std::optional<int> BytecodeCompiler::ConversionCost(const DataType& from,
         return 1 + widthCost + (from.IsSignedInteger() != to.IsSignedInteger() ? 1 : 0);
     }
     if (from.IsInteger() && to == DataType::Float()) return 100;
+    if (from.IsInteger() && to == DataType::Double()) return 101;
+    if (from == DataType::Float() && to == DataType::Double()) return 1;
+    if (from == DataType::Double() && to == DataType::Float()) return 2;
     return std::nullopt;
 }
 

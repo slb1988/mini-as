@@ -11,8 +11,17 @@ namespace {
 
 float AsFloat(const Value& value) {
     if (value.Type() == DataType::Float()) return value.As<float>();
+    if (value.Type() == DataType::Double()) return static_cast<float>(value.As<double>());
     if (value.Type().IsSignedInteger()) return static_cast<float>(value.SignedInteger());
     if (value.Type().IsUnsignedInteger()) return static_cast<float>(value.UnsignedInteger());
+    throw std::runtime_error("expected numeric value");
+}
+
+double AsDouble(const Value& value) {
+    if (value.Type() == DataType::Double()) return value.As<double>();
+    if (value.Type() == DataType::Float()) return value.As<float>();
+    if (value.Type().IsSignedInteger()) return static_cast<double>(value.SignedInteger());
+    if (value.Type().IsUnsignedInteger()) return static_cast<double>(value.UnsignedInteger());
     throw std::runtime_error("expected numeric value");
 }
 
@@ -28,7 +37,7 @@ bool ValuesEqual(const Value& left, const Value& right) {
         return right.SignedInteger() >= 0 &&
                left.UnsignedInteger() == static_cast<std::uint64_t>(right.SignedInteger());
     }
-    if (left.Type().IsNumeric() && right.Type().IsNumeric()) return AsFloat(left) == AsFloat(right);
+    if (left.Type().IsNumeric() && right.Type().IsNumeric()) return AsDouble(left) == AsDouble(right);
     return left == right;
 }
 
@@ -143,6 +152,7 @@ bool VirtualMachine::Step() {
     }
     case OpCode::Pop: Pop(); break;
     case OpCode::ToFloat: Push(Value(AsFloat(Pop()))); break;
+    case OpCode::ToDouble: Push(Value(AsDouble(Pop()))); break;
     case OpCode::ToInteger: {
         const DataType target{static_cast<TypeKind>(instruction.operand), {}, false};
         if (!target.IsInteger()) throw std::runtime_error("invalid integer conversion target");
@@ -152,6 +162,7 @@ bool VirtualMachine::Step() {
     case OpCode::ToString: Push(Value(Pop().ToString())); break;
     case OpCode::AddInt: case OpCode::SubInt: case OpCode::MulInt: case OpCode::DivInt: case OpCode::ModInt:
     case OpCode::AddFloat: case OpCode::SubFloat: case OpCode::MulFloat: case OpCode::DivFloat:
+    case OpCode::AddDouble: case OpCode::SubDouble: case OpCode::MulDouble: case OpCode::DivDouble:
         BinaryArithmetic(instruction); break;
     case OpCode::Concat: { Value right = Pop(), left = Pop(); Push(Value(left.As<std::string>() + right.As<std::string>())); break; }
     case OpCode::NegInt: {
@@ -160,6 +171,7 @@ bool VirtualMachine::Step() {
         break;
     }
     case OpCode::NegFloat: Push(Value(-Pop().As<float>())); break;
+    case OpCode::NegDouble: Push(Value(-Pop().As<double>())); break;
     case OpCode::LogicalNot: Push(Value(!Pop().As<bool>())); break;
     case OpCode::Equal: case OpCode::NotEqual: case OpCode::Less: case OpCode::LessEqual:
     case OpCode::Greater: case OpCode::GreaterEqual: Compare(instruction); break;
@@ -309,6 +321,19 @@ void VirtualMachine::Fail(const Instruction& instruction, std::string message) {
 
 void VirtualMachine::BinaryArithmetic(const Instruction& instruction) {
     Value right = Pop(), left = Pop();
+    if (instruction.opcode >= OpCode::AddDouble && instruction.opcode <= OpCode::DivDouble) {
+        const double a = AsDouble(left), b = AsDouble(right);
+        if (instruction.opcode == OpCode::DivDouble && b == 0.0)
+            throw std::runtime_error("division by zero");
+        switch (instruction.opcode) {
+        case OpCode::AddDouble: Push(Value(a + b)); break;
+        case OpCode::SubDouble: Push(Value(a - b)); break;
+        case OpCode::MulDouble: Push(Value(a * b)); break;
+        case OpCode::DivDouble: Push(Value(a / b)); break;
+        default: break;
+        }
+        return;
+    }
     if (instruction.opcode >= OpCode::AddFloat && instruction.opcode <= OpCode::DivFloat) {
         const float a = AsFloat(left), b = AsFloat(right);
         if (instruction.opcode == OpCode::DivFloat && b == 0.0f) throw std::runtime_error("division by zero");
@@ -373,7 +398,7 @@ void VirtualMachine::Compare(const Instruction& instruction) {
                 else result = a >= b;
             }
         } else {
-            const float a = AsFloat(left), b = AsFloat(right);
+            const double a = AsDouble(left), b = AsDouble(right);
             if (instruction.opcode == OpCode::Less) result = a < b;
             else if (instruction.opcode == OpCode::LessEqual) result = a <= b;
             else if (instruction.opcode == OpCode::Greater) result = a > b;

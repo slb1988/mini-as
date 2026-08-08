@@ -43,3 +43,18 @@ TEST_CASE(registration_parser_rejects_invalid_and_duplicate_declarations) {
     CHECK(messages.size() >= 2);
 }
 
+TEST_CASE(generic_call_supports_double_arguments_and_returns) {
+    auto engine = mini_as::CreateScriptEngine();
+    CHECK(engine->RegisterGlobalFunction("double Twice(double)", [](mini_as::GenericCall& call) {
+        call.SetReturnDouble(call.GetArgDouble(0) * 2.0);
+    }));
+    auto* module = engine->GetModule("generic-double");
+    module->AddScriptSection("script", "double run(double value) { return Twice(value); }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByName("run")));
+    CHECK(context->SetArgDouble(0, 21.0));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnDouble() == 42.0);
+}
+

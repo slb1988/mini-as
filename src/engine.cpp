@@ -10,6 +10,7 @@ Value DefaultGlobalValue(const DataType& type) {
     if (type == DataType::Bool()) return Value(false);
     if (type.IsInteger()) return Value::Integer(type, 0);
     if (type == DataType::Float()) return Value(0.0f);
+    if (type == DataType::Double()) return Value(0.0);
     if (type == DataType::String()) return Value(std::string{});
     if (type.kind == TypeKind::Object) return Value(ObjectHandle{});
     return Value{};
@@ -141,6 +142,7 @@ bool ScriptContext::Prepare(const BytecodeFunction* function) {
 
 bool ScriptContext::SetArgInt(std::size_t index, std::int32_t value) { return SetArgument(index, Value(value)); }
 bool ScriptContext::SetArgFloat(std::size_t index, float value) { return SetArgument(index, Value(value)); }
+bool ScriptContext::SetArgDouble(std::size_t index, double value) { return SetArgument(index, Value(value)); }
 bool ScriptContext::SetArgBool(std::size_t index, bool value) { return SetArgument(index, Value(value)); }
 bool ScriptContext::SetArgString(std::size_t index, std::string value) { return SetArgument(index, Value(std::move(value))); }
 bool ScriptContext::SetArgObject(std::size_t index, ObjectHandle value) { return SetArgument(index, Value(std::move(value))); }
@@ -169,6 +171,7 @@ ExecutionState ScriptContext::GetState() const { return result_.state; }
 const Value& ScriptContext::GetReturnValue() const { return result_.returnValue; }
 std::int32_t ScriptContext::GetReturnInt() const { return result_.returnValue.As<std::int32_t>(); }
 float ScriptContext::GetReturnFloat() const { return result_.returnValue.As<float>(); }
+double ScriptContext::GetReturnDouble() const { return result_.returnValue.As<double>(); }
 const std::string& ScriptContext::GetExceptionString() const { return result_.exception; }
 const SourceLocation& ScriptContext::GetExceptionLocation() const { return result_.location; }
 const std::vector<StackFrameInfo>& ScriptContext::GetCallStack() const { return result_.callStack; }
@@ -181,6 +184,14 @@ bool ScriptContext::SetArgument(std::size_t index, Value value) {
         value = Value(static_cast<float>(value.SignedInteger()));
     else if (value.Type().IsUnsignedInteger() && expected == DataType::Float())
         value = Value(static_cast<float>(value.UnsignedInteger()));
+    else if (value.Type().IsSignedInteger() && expected == DataType::Double())
+        value = Value(static_cast<double>(value.SignedInteger()));
+    else if (value.Type().IsUnsignedInteger() && expected == DataType::Double())
+        value = Value(static_cast<double>(value.UnsignedInteger()));
+    else if (value.Type() == DataType::Float() && expected == DataType::Double())
+        value = Value(static_cast<double>(value.As<float>()));
+    else if (value.Type() == DataType::Double() && expected == DataType::Float())
+        value = Value(static_cast<float>(value.As<double>()));
     else if (value.Type() != expected) {
         if (value.Type().kind == TypeKind::Object && value.Type().objectName == "<null>" && expected.isHandle) {
             arguments_[index] = std::move(value);

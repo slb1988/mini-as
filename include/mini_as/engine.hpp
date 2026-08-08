@@ -49,6 +49,7 @@ public:
     bool Prepare(const BytecodeFunction* function);
     bool SetArgInt(std::size_t index, std::int32_t value);
     bool SetArgFloat(std::size_t index, float value);
+    bool SetArgDouble(std::size_t index, double value);
     bool SetArgBool(std::size_t index, bool value);
     bool SetArgString(std::size_t index, std::string value);
     bool SetArgObject(std::size_t index, ObjectHandle value);
@@ -60,6 +61,7 @@ public:
     const Value& GetReturnValue() const;
     std::int32_t GetReturnInt() const;
     float GetReturnFloat() const;
+    double GetReturnDouble() const;
     const std::string& GetExceptionString() const;
     const SourceLocation& GetExceptionLocation() const;
     const std::vector<StackFrameInfo>& GetCallStack() const;

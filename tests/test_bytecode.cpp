@@ -128,3 +128,18 @@ TEST_CASE(bytecode_emits_explicit_integer_width_conversions) {
     CHECK(conversions >= 3);
 }
 
+TEST_CASE(bytecode_uses_double_operations_and_explicit_narrowing) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("double-bytecode",
+        "float narrow(double value) { return value + 0.25; }", diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    mini_as::TypeChecker checker(diagnostics);
+    CHECK(checker.Check(tree.root));
+    mini_as::BytecodeCompiler compiler(diagnostics);
+    auto module = compiler.Compile(tree.root, checker.Functions());
+    const auto listing = mini_as::Disassemble(module.functions[0]);
+    CHECK(listing.find("ADD_D") != std::string::npos);
+    CHECK(listing.find("TO_FLOAT") != std::string::npos);
+}
+

@@ -52,6 +52,7 @@ ScriptObject::ScriptObject(const TypeInfo* type) : RefObject(type) {
         case TypeKind::UInt8: case TypeKind::UInt16: case TypeKind::UInt: case TypeKind::UInt64:
             fields_.push_back(Value::Integer(field.second, 0)); break;
         case TypeKind::Float: fields_.emplace_back(0.0f); break;
+        case TypeKind::Double: fields_.emplace_back(0.0); break;
         case TypeKind::String: fields_.emplace_back(std::string{}); break;
         case TypeKind::Object: fields_.emplace_back(ObjectHandle{}); break;
         default: fields_.emplace_back(); break;

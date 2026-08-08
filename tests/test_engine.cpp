@@ -640,3 +640,40 @@ TEST_CASE(integer_family_rejects_bad_initializers_and_locates_division_by_zero) 
     CHECK(context->GetExceptionLocation().row == 4);
 }
 
+TEST_CASE(double_values_keep_precision_and_cross_the_embedding_api) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("double-precision");
+    module->AddScriptSection("success",
+        "double add(double left, double right) { return left + right; } "
+        "int precise() { double value = 16777217; float narrowed = value; "
+        "return value > narrowed ? 42 : 0; }");
+    CHECK(module->Build());
+    auto add = engine->CreateContext();
+    CHECK(add->Prepare(module->GetFunctionByName("add")));
+    CHECK(add->SetArgDouble(0, 40.125));
+    CHECK(add->SetArgDouble(1, 1.875));
+    CHECK(add->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(add->GetReturnDouble() == 42.0);
+    auto precise = engine->CreateContext();
+    CHECK(precise->Prepare(module->GetFunctionByName("precise")));
+    CHECK(precise->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(precise->GetReturnInt() == 42);
+}
+
+TEST_CASE(double_values_reject_integer_returns_and_locate_division_by_zero) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* invalid = engine->GetModule("double-invalid");
+    invalid->AddScriptSection("invalid", "int bad() { return 1.5; }");
+    CHECK(!invalid->Build());
+
+    auto* runtime = engine->GetModule("double-runtime");
+    runtime->AddScriptSection("runtime",
+        "double divide() {\n double one = 1; double zero = 0;\n return one / zero;\n}");
+    CHECK(runtime->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(runtime->GetFunctionByName("divide")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Exception);
+    CHECK(context->GetExceptionString() == "division by zero");
+    CHECK(context->GetExceptionLocation().row == 3);
+}
+

@@ -22,9 +22,11 @@ std::string DecodeString(std::string_view lexeme) {
     return result;
 }
 
-float Number(const Value& value) {
-    if (value.Type() == DataType::Int()) return static_cast<float>(value.As<std::int32_t>());
-    return value.As<float>();
+double Number(const Value& value) {
+    if (value.Type().IsSignedInteger()) return static_cast<double>(value.SignedInteger());
+    if (value.Type().IsUnsignedInteger()) return static_cast<double>(value.UnsignedInteger());
+    if (value.Type() == DataType::Float()) return value.As<float>();
+    return value.As<double>();
 }
 
 } // namespace
@@ -67,8 +69,8 @@ Value TreeInterpreter::EvaluateBinary(AstNode* node) {
     if (!left.Type().IsNumeric() || !right.Type().IsNumeric()) {
         RuntimeError(node, "operator requires numeric operands"); return {};
     }
-    if (left.Type() == DataType::Float() || right.Type() == DataType::Float()) {
-        const float a = Number(left), b = Number(right);
+    if (!left.Type().IsInteger() || !right.Type().IsInteger()) {
+        const double a = Number(left), b = Number(right);
         switch (node->token.kind) {
         case TokenKind::Plus: return Value(a + b);
         case TokenKind::Minus: return Value(a - b);
@@ -102,6 +104,7 @@ Value TreeInterpreter::EvaluateUnary(AstNode* node) {
     if (node->token.kind == TokenKind::Minus) {
         if (operand.Type() == DataType::Int()) return Value(-operand.As<std::int32_t>());
         if (operand.Type() == DataType::Float()) return Value(-operand.As<float>());
+        if (operand.Type() == DataType::Double()) return Value(-operand.As<double>());
     }
     if (node->token.kind == TokenKind::Plus && operand.Type().IsNumeric()) return operand;
     if (node->token.kind == TokenKind::Bang && operand.Type() == DataType::Bool()) {

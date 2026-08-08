@@ -369,6 +369,7 @@ DataType Parser::ParseType(bool allowVoid) {
     else if (Match(TokenKind::KwUInt)) type = DataType::UInt();
     else if (Match(TokenKind::KwUInt64)) type = DataType::UInt64();
     else if (Match(TokenKind::KwFloat)) type = DataType::Float();
+    else if (Match(TokenKind::KwDouble)) type = DataType::Double();
     else if (Match(TokenKind::KwString)) type = DataType::String();
     else if (Match(TokenKind::Identifier)) type = DataType::Object(Previous().lexeme);
     else { Error(Current(), "expected type"); return DataType::Invalid(); }
@@ -381,7 +382,7 @@ bool Parser::IsTypeStart(bool allowIdentifier) const {
     case TokenKind::KwVoid: case TokenKind::KwBool:
     case TokenKind::KwInt8: case TokenKind::KwInt16: case TokenKind::KwInt: case TokenKind::KwInt64:
     case TokenKind::KwUInt8: case TokenKind::KwUInt16: case TokenKind::KwUInt: case TokenKind::KwUInt64:
-    case TokenKind::KwFloat: case TokenKind::KwString: return true;
+    case TokenKind::KwFloat: case TokenKind::KwDouble: case TokenKind::KwString: return true;
     case TokenKind::Identifier: return allowIdentifier;
     default: return false;
     }

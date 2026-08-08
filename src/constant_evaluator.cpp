@@ -20,13 +20,16 @@ std::string DecodeString(std::string_view text) {
     return result;
 }
 
-float AsFloat(const Value& value) {
-    return value.Type() == DataType::Float()
-        ? value.As<float>() : static_cast<float>(value.As<std::int32_t>());
+double AsDouble(const Value& value) {
+    if (value.Type() == DataType::Double()) return value.As<double>();
+    if (value.Type() == DataType::Float()) return value.As<float>();
+    if (value.Type().IsSignedInteger()) return static_cast<double>(value.SignedInteger());
+    return static_cast<double>(value.UnsignedInteger());
 }
 
 std::optional<Value> EvaluateBinary(TokenKind operation, const Value& left, const Value& right) {
-    const bool floating = left.Type() == DataType::Float() || right.Type() == DataType::Float();
+    const bool floating = !left.Type().IsInteger() || !right.Type().IsInteger();
+    const bool doublePrecision = left.Type() == DataType::Double() || right.Type() == DataType::Double();
     if (operation == TokenKind::Plus &&
         (left.Type() == DataType::String() || right.Type() == DataType::String())) {
         return Value(left.ToString() + right.ToString());
@@ -38,22 +41,25 @@ std::optional<Value> EvaluateBinary(TokenKind operation, const Value& left, cons
     }
     if (operation == TokenKind::EqualEqual || operation == TokenKind::BangEqual) {
         bool equal = false;
-        if (left.Type().IsNumeric() && right.Type().IsNumeric()) equal = AsFloat(left) == AsFloat(right);
+        if (left.Type().IsNumeric() && right.Type().IsNumeric()) equal = AsDouble(left) == AsDouble(right);
         else if (left.Type() == right.Type()) equal = left == right;
         else return std::nullopt;
         return Value(operation == TokenKind::EqualEqual ? equal : !equal);
     }
     if (!left.Type().IsNumeric() || !right.Type().IsNumeric()) return std::nullopt;
-    const float floatLeft = AsFloat(left), floatRight = AsFloat(right);
+    const double floatLeft = AsDouble(left), floatRight = AsDouble(right);
     if (operation == TokenKind::Less) return Value(floatLeft < floatRight);
     if (operation == TokenKind::LessEqual) return Value(floatLeft <= floatRight);
     if (operation == TokenKind::Greater) return Value(floatLeft > floatRight);
     if (operation == TokenKind::GreaterEqual) return Value(floatLeft >= floatRight);
     if (floating) {
-        if (operation == TokenKind::Plus) return Value(floatLeft + floatRight);
-        if (operation == TokenKind::Minus) return Value(floatLeft - floatRight);
-        if (operation == TokenKind::Star) return Value(floatLeft * floatRight);
-        if (operation == TokenKind::Slash && floatRight != 0.0f) return Value(floatLeft / floatRight);
+        const auto result = [&](double value) {
+            return doublePrecision ? Value(value) : Value(static_cast<float>(value));
+        };
+        if (operation == TokenKind::Plus) return result(floatLeft + floatRight);
+        if (operation == TokenKind::Minus) return result(floatLeft - floatRight);
+        if (operation == TokenKind::Star) return result(floatLeft * floatRight);
+        if (operation == TokenKind::Slash && floatRight != 0.0) return result(floatLeft / floatRight);
         return std::nullopt;
     }
     const auto intLeft = left.As<std::int32_t>(), intRight = right.As<std::int32_t>();
@@ -90,6 +96,7 @@ std::optional<Value> ConstantExpressionEvaluator::Evaluate(const AstNode* expres
         if (expression->token.kind == TokenKind::Minus) {
             if (operand->Type() == DataType::Int()) return Value(-operand->As<std::int32_t>());
             if (operand->Type() == DataType::Float()) return Value(-operand->As<float>());
+            if (operand->Type() == DataType::Double()) return Value(-operand->As<double>());
         }
         return std::nullopt;
     }

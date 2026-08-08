@@ -14,10 +14,11 @@ struct RegisteredHostFunction;
 enum class OpCode : std::uint8_t {
     Nop, Suspend,
     PushConst, PushVoid, LoadLocal, StoreLocal, LoadGlobal, StoreGlobal, Dup, Swap, Pop,
-    ToFloat, ToInteger, ToString,
+    ToFloat, ToDouble, ToInteger, ToString,
     AddInt, SubInt, MulInt, DivInt, ModInt,
     AddFloat, SubFloat, MulFloat, DivFloat,
-    Concat, NegInt, NegFloat, LogicalNot,
+    AddDouble, SubDouble, MulDouble, DivDouble,
+    Concat, NegInt, NegFloat, NegDouble, LogicalNot,
     Equal, NotEqual, Less, LessEqual, Greater, GreaterEqual,
     Jump, JumpIfFalse,
     Call, CallHost, CallVirtual, NewObject, LoadField, StoreField, Return

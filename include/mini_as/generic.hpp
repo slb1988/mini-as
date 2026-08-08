@@ -14,12 +14,14 @@ public:
     const Value& GetArg(std::size_t index) const;
     std::int32_t GetArgInt(std::size_t index) const;
     float GetArgFloat(std::size_t index) const;
+    double GetArgDouble(std::size_t index) const;
     bool GetArgBool(std::size_t index) const;
     const std::string& GetArgString(std::size_t index) const;
     const ObjectHandle& GetArgObject(std::size_t index) const;
     void SetReturn(Value value);
     void SetReturnInt(std::int32_t value);
     void SetReturnFloat(float value);
+    void SetReturnDouble(double value);
     void SetReturnBool(bool value);
     void SetReturnString(std::string value);
     void SetReturnObject(ObjectHandle value);

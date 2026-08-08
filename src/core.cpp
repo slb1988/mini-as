@@ -42,6 +42,7 @@ DataType DataType::UInt() { return {TypeKind::UInt, {}, false}; }
 DataType DataType::UInt32() { return UInt(); }
 DataType DataType::UInt64() { return {TypeKind::UInt64, {}, false}; }
 DataType DataType::Float() { return {TypeKind::Float, {}, false}; }
+DataType DataType::Double() { return {TypeKind::Double, {}, false}; }
 DataType DataType::String() { return {TypeKind::String, {}, false}; }
 DataType DataType::Object(std::string name, bool handle) {
     return {TypeKind::Object, std::move(name), handle};
@@ -61,6 +62,7 @@ std::string DataType::Name() const {
     case TypeKind::UInt: return "uint";
     case TypeKind::UInt64: return "uint64";
     case TypeKind::Float: return "float";
+    case TypeKind::Double: return "double";
     case TypeKind::String: return "string";
     case TypeKind::Object: return objectName + (isHandle ? "@" : "");
     case TypeKind::Invalid: return "<invalid>";
@@ -68,7 +70,9 @@ std::string DataType::Name() const {
     return "<invalid>";
 }
 
-bool DataType::IsNumeric() const { return IsInteger() || kind == TypeKind::Float; }
+bool DataType::IsNumeric() const {
+    return IsInteger() || kind == TypeKind::Float || kind == TypeKind::Double;
+}
 bool DataType::IsInteger() const { return IsSignedInteger() || IsUnsignedInteger(); }
 bool DataType::IsSignedInteger() const {
     return kind == TypeKind::Int8 || kind == TypeKind::Int16 ||
@@ -97,6 +101,7 @@ bool operator!=(const DataType& left, const DataType& right) { return !(left == 
 
 DataType CommonNumericType(const DataType& left, const DataType& right) {
     if (!left.IsNumeric() || !right.IsNumeric()) return DataType::Invalid();
+    if (left == DataType::Double() || right == DataType::Double()) return DataType::Double();
     if (left == DataType::Float() || right == DataType::Float()) return DataType::Float();
     DataType promotedLeft = left.IntegerBits() < 32 ? DataType::Int() : left;
     DataType promotedRight = right.IntegerBits() < 32 ? DataType::Int() : right;
@@ -116,6 +121,7 @@ bool operator==(const IntegerStorage& left, const IntegerStorage& right) {
 Value::Value(bool value) : storage_(value) {}
 Value::Value(std::int32_t value) : storage_(value) {}
 Value::Value(float value) : storage_(value) {}
+Value::Value(double value) : storage_(value) {}
 Value::Value(std::string value) : storage_(std::move(value)) {}
 Value::Value(const char* value) : storage_(std::string(value)) {}
 Value::Value(ObjectHandle value) : storage_(std::move(value)) {}
@@ -137,8 +143,9 @@ DataType Value::Type() const {
     case 2: return DataType::Int();
     case 3: return {std::get<IntegerStorage>(storage_).kind, {}, false};
     case 4: return DataType::Float();
-    case 5: return DataType::String();
-    case 6: {
+    case 5: return DataType::Double();
+    case 6: return DataType::String();
+    case 7: {
         const auto& handle = std::get<ObjectHandle>(storage_);
         return handle ? DataType::Object(handle.Get()->GetTypeInfo()->name, true)
                       : DataType::Object("<null>", true);
@@ -176,6 +183,11 @@ std::string Value::ToString() const {
     if (const auto* value = std::get_if<float>(&storage_)) {
         std::ostringstream stream;
         stream << std::setprecision(7) << *value;
+        return stream.str();
+    }
+    if (const auto* value = std::get_if<double>(&storage_)) {
+        std::ostringstream stream;
+        stream << std::setprecision(15) << *value;
         return stream.str();
     }
     if (const auto* value = std::get_if<std::string>(&storage_)) return *value;

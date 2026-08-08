@@ -560,7 +560,10 @@ void TypeChecker::Declare(const Token& name, const DataType& type, bool isConst)
 
 bool TypeChecker::CanConvert(const DataType& from, const DataType& to) const {
     if (from == to) return true;
-    if (from.IsInteger() && (to.IsInteger() || to == DataType::Float())) return true;
+    if (from.IsInteger() && (to.IsInteger() || to == DataType::Float() || to == DataType::Double()))
+        return true;
+    if ((from == DataType::Float() && to == DataType::Double()) ||
+        (from == DataType::Double() && to == DataType::Float())) return true;
     if (from.kind == TypeKind::Object && from.objectName == "<null>" && to.isHandle) return true;
     if (from.kind == TypeKind::Object && to.kind == TypeKind::Object && from.isHandle && to.isHandle) {
         if (const auto* type = FindClass(from.objectName)) {
@@ -578,6 +581,9 @@ std::optional<int> TypeChecker::ConversionCost(const DataType& from, const DataT
         return 1 + widthCost + (from.IsSignedInteger() != to.IsSignedInteger() ? 1 : 0);
     }
     if (from.IsInteger() && to == DataType::Float()) return 100;
+    if (from.IsInteger() && to == DataType::Double()) return 101;
+    if (from == DataType::Float() && to == DataType::Double()) return 1;
+    if (from == DataType::Double() && to == DataType::Float()) return 2;
     return CanConvert(from, to) ? std::optional<int>{1} : std::nullopt;
 }
 

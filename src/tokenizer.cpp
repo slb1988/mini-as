@@ -38,8 +38,10 @@ bool IsIdentifierPart(char ch) {
 
 std::string_view TokenName(TokenKind kind) {
     static const char* names[] = {
-        "end", "identifier", "integer", "float literal", "string literal",
-        "void", "bool", "int", "float", "string", "true", "false", "const", "auto",
+        "end", "identifier", "integer", "bits literal", "float literal", "double literal",
+        "string literal", "void", "bool", "int8", "int16", "int", "int64",
+        "uint8", "uint16", "uint", "uint64", "float", "double", "string",
+        "true", "false", "const", "auto",
         "if", "else", "while", "do", "for", "switch", "case", "default",
         "return", "break", "continue", "class", "interface", "is", "null",
         "(", ")", "{", "}", ",", ".", ";", ":", "?", "@", "+", "-", "*", "/", "%",
@@ -47,6 +49,8 @@ std::string_view TokenName(TokenKind kind) {
         "+=", "-=", "*=", "/=", "%=",
         "!", "!=", "=", "==", "<", "<=", ">", ">=", "&&", "||"
     };
+    static_assert(sizeof(names) / sizeof(names[0]) == static_cast<std::size_t>(TokenKind::OrOr) + 1,
+                  "token name table must match TokenKind");
     return names[static_cast<std::size_t>(kind)];
 }
 
@@ -96,7 +100,10 @@ void Tokenizer::ScanToken() {
     case '{': Add(TokenKind::LeftBrace, start, location); return;
     case '}': Add(TokenKind::RightBrace, start, location); return;
     case ',': Add(TokenKind::Comma, start, location); return;
-    case '.': Add(TokenKind::Dot, start, location); return;
+    case '.':
+        if (std::isdigit(static_cast<unsigned char>(Peek()))) ScanNumber(start, location);
+        else Add(TokenKind::Dot, start, location);
+        return;
     case ';': Add(TokenKind::Semicolon, start, location); return;
     case ':': Add(TokenKind::Colon, start, location); return;
     case '?': Add(TokenKind::Question, start, location); return;
@@ -134,12 +141,43 @@ void Tokenizer::ScanToken() {
 }
 
 void Tokenizer::ScanNumber(std::size_t start, SourceLocation location) {
+    if (source_[start] == '0' &&
+        (Peek() == 'b' || Peek() == 'B' || Peek() == 'o' || Peek() == 'O' ||
+         Peek() == 'd' || Peek() == 'D' || Peek() == 'x' || Peek() == 'X')) {
+        const char prefix = Advance();
+        const auto isDigit = [prefix](char ch) {
+            if (prefix == 'b' || prefix == 'B') return ch == '0' || ch == '1';
+            if (prefix == 'o' || prefix == 'O') return ch >= '0' && ch <= '7';
+            if (prefix == 'd' || prefix == 'D') return ch >= '0' && ch <= '9';
+            return std::isdigit(static_cast<unsigned char>(ch)) ||
+                   (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F');
+        };
+        const std::size_t digits = current_;
+        while (isDigit(Peek())) Advance();
+        if (current_ == digits)
+            diagnostics_.Report(location, Severity::Error, "numeric base prefix requires digits");
+        Add(TokenKind::Bits, start, std::move(location));
+        return;
+    }
+
     while (std::isdigit(static_cast<unsigned char>(Peek()))) Advance();
     TokenKind kind = TokenKind::Integer;
-    if (Peek() == '.' && std::isdigit(static_cast<unsigned char>(Peek(1)))) {
-        kind = TokenKind::Float;
-        Advance();
+    if (source_[start] == '.' || Peek() == '.' || Peek() == 'e' || Peek() == 'E') {
+        kind = TokenKind::Double;
+        if (source_[start] != '.' && Peek() == '.') Advance();
         while (std::isdigit(static_cast<unsigned char>(Peek()))) Advance();
+        if (Peek() == 'e' || Peek() == 'E') {
+            Advance();
+            if (Peek() == '+' || Peek() == '-') Advance();
+            const std::size_t exponent = current_;
+            while (std::isdigit(static_cast<unsigned char>(Peek()))) Advance();
+            if (current_ == exponent)
+                diagnostics_.Report(location, Severity::Error, "floating exponent requires digits");
+        }
+        if (Peek() == 'f' || Peek() == 'F') {
+            kind = TokenKind::Float;
+            Advance();
+        }
     }
     Add(kind, start, std::move(location));
 }

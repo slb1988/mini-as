@@ -31,3 +31,22 @@ TEST_CASE(constant_evaluator_rejects_runtime_values_and_invalid_arithmetic) {
     auto divisionByZero = EvaluateReturn("1 / 0", diagnostics);
     CHECK(!divisionByZero.has_value());
 }
+
+TEST_CASE(numeric_literal_decoder_preserves_official_types_and_values) {
+    mini_as::Token bits{mini_as::TokenKind::Bits, "0xFFFFFFFF", {}};
+    auto unsignedValue = mini_as::DecodeNumericLiteral(bits);
+    CHECK(unsignedValue.has_value());
+    CHECK(unsignedValue->Type() == mini_as::DataType::UInt());
+    CHECK(unsignedValue->UnsignedInteger() == 0xFFFFFFFFull);
+
+    mini_as::Token wide{mini_as::TokenKind::Integer, "2147483648", {}};
+    auto signedWide = mini_as::DecodeNumericLiteral(wide);
+    CHECK(signedWide.has_value());
+    CHECK(signedWide->Type() == mini_as::DataType::Int64());
+    CHECK(signedWide->SignedInteger() == 2147483648ll);
+
+    mini_as::Token real{mini_as::TokenKind::Double, "1.25e2", {}};
+    CHECK(mini_as::DecodeNumericLiteral(real)->As<double>() == 125.0);
+    mini_as::Token single{mini_as::TokenKind::Float, "1.25f", {}};
+    CHECK(mini_as::DecodeNumericLiteral(single)->As<float>() == 1.25f);
+}

@@ -47,3 +47,20 @@ TEST_CASE(tokenizer_recognizes_the_integer_type_family) {
     CHECK(tokens[9].kind == mini_as::TokenKind::KwUInt64);
 }
 
+TEST_CASE(tokenizer_recognizes_numeric_bases_exponents_and_float_suffixes) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer lexer("numbers",
+        "0b1010 0o12 0d10 0xA 2147483648 1.5 1.5f .5 1e2", diagnostics);
+    const auto tokens = lexer.ScanAll();
+    CHECK(!diagnostics.HasErrors());
+    CHECK(tokens[0].kind == mini_as::TokenKind::Bits);
+    CHECK(tokens[1].kind == mini_as::TokenKind::Bits);
+    CHECK(tokens[2].kind == mini_as::TokenKind::Bits);
+    CHECK(tokens[3].kind == mini_as::TokenKind::Bits);
+    CHECK(tokens[4].kind == mini_as::TokenKind::Integer);
+    CHECK(tokens[5].kind == mini_as::TokenKind::Double);
+    CHECK(tokens[6].kind == mini_as::TokenKind::Float);
+    CHECK(tokens[7].kind == mini_as::TokenKind::Double);
+    CHECK(tokens[8].kind == mini_as::TokenKind::Double);
+}
+

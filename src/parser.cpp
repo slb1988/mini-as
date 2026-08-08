@@ -341,7 +341,8 @@ AstNode* Parser::ParseCall() {
 }
 
 AstNode* Parser::ParsePrimary() {
-    if (MatchAny({TokenKind::Integer, TokenKind::Float, TokenKind::String,
+    if (MatchAny({TokenKind::Integer, TokenKind::Bits, TokenKind::Float, TokenKind::Double,
+                  TokenKind::String,
                   TokenKind::KwTrue, TokenKind::KwFalse, TokenKind::KwNull})) {
         return arena_->Make(NodeKind::Literal, Previous());
     }

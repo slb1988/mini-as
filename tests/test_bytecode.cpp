@@ -15,7 +15,7 @@ TEST_CASE(bytecode_compiler_emits_typed_operations_and_slots) {
     CHECK(module.functions[0].localCount == 2);
     const auto listing = mini_as::Disassemble(module.functions[0]);
     CHECK(listing.find("TO_FLOAT") != std::string::npos);
-    CHECK(listing.find("ADD_F") != std::string::npos);
+    CHECK(listing.find("ADD_D") != std::string::npos);
     CHECK(listing.find("RET") != std::string::npos);
 }
 

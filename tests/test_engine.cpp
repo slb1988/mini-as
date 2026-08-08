@@ -677,3 +677,30 @@ TEST_CASE(double_values_reject_integer_returns_and_locate_division_by_zero) {
     CHECK(context->GetExceptionLocation().row == 3);
 }
 
+TEST_CASE(numeric_literals_cover_bases_suffixes_and_automatic_widths) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("numeric-literals");
+    module->AddScriptSection("success",
+        "int run() { uint binary = 0b101010; uint octal = 0o52; "
+        "uint decimal = 0d42; uint hex = 0x2A; int64 wide = 2147483648; "
+        "uint64 huge = 9223372036854775808; double real = 1.25e1; float single = 2.5f; "
+        "return binary == 42 && octal == 42 && decimal == 42 && hex == 42 && "
+        "huge == 0x8000000000000000 && wide == 2147483648 && "
+        "real == 12.5 && single == 2.5f ? 42 : 0; }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByName("run")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+}
+
+TEST_CASE(numeric_literals_reject_missing_digits_and_uint64_overflow) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* missing = engine->GetModule("numeric-prefix-invalid");
+    missing->AddScriptSection("invalid", "uint bad = 0x;");
+    CHECK(!missing->Build());
+    auto* overflow = engine->GetModule("numeric-overflow-invalid");
+    overflow->AddScriptSection("invalid", "uint64 bad = 18446744073709551616;");
+    CHECK(!overflow->Build());
+}
+

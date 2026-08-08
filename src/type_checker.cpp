@@ -307,8 +307,13 @@ DataType TypeChecker::CheckExpression(AstNode* node) {
     switch (node->kind) {
     case NodeKind::Literal:
         switch (node->token.kind) {
-        case TokenKind::Integer: result = DataType::Int(); break;
-        case TokenKind::Float: result = DataType::Float(); break;
+        case TokenKind::Integer: case TokenKind::Bits:
+        case TokenKind::Float: case TokenKind::Double: {
+            const auto value = DecodeNumericLiteral(node->token);
+            if (value) result = value->Type();
+            else Error(node, "numeric literal is out of range");
+            break;
+        }
         case TokenKind::String: result = DataType::String(); break;
         case TokenKind::KwTrue: case TokenKind::KwFalse: result = DataType::Bool(); break;
         case TokenKind::KwNull: result = DataType::Object("<null>", true); break;

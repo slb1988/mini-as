@@ -1,4 +1,5 @@
 #include "mini_as/interpreter.hpp"
+#include "mini_as/constant_evaluator.hpp"
 
 #include <cmath>
 #include <cstdlib>
@@ -133,8 +134,13 @@ Value TreeInterpreter::EvaluateCall(AstNode* node) {
 
 Value TreeInterpreter::DecodeLiteral(const Token& token) {
     switch (token.kind) {
-    case TokenKind::Integer: return Value(static_cast<std::int32_t>(std::strtol(token.lexeme.c_str(), nullptr, 10)));
-    case TokenKind::Float: return Value(std::strtof(token.lexeme.c_str(), nullptr));
+    case TokenKind::Integer: case TokenKind::Bits:
+    case TokenKind::Float: case TokenKind::Double: {
+        const auto value = DecodeNumericLiteral(token);
+        if (value) return *value;
+        RuntimeError(nullptr, "numeric literal is out of range");
+        return {};
+    }
     case TokenKind::String: return Value(DecodeString(token.lexeme));
     case TokenKind::KwTrue: return Value(true);
     case TokenKind::KwFalse: return Value(false);

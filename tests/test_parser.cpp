@@ -16,3 +16,20 @@ TEST_CASE(parser_builds_function_tree_with_precedence) {
     CHECK(expression->Children()[1]->token.kind == mini_as::TokenKind::Star);
 }
 
+TEST_CASE(parser_groups_multiple_declarations_with_independent_initializers) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer lexer("parse", "int f() { int a = 1, b, c = a + 2; return c; }", diagnostics);
+    mini_as::Parser parser(lexer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    CHECK(!diagnostics.HasErrors());
+    auto* declarations = tree.root->firstChild->Children().back()->firstChild;
+    CHECK(declarations->kind == mini_as::NodeKind::DeclList);
+    const auto variables = declarations->Children();
+    CHECK(variables.size() == 3);
+    CHECK(variables[0]->token.lexeme == "a");
+    CHECK(variables[0]->firstChild != nullptr);
+    CHECK(variables[1]->token.lexeme == "b");
+    CHECK(variables[1]->firstChild == nullptr);
+    CHECK(variables[2]->token.lexeme == "c");
+}
+

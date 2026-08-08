@@ -92,6 +92,10 @@ void TypeChecker::CheckNode(AstNode* node) {
     switch (node->kind) {
     case NodeKind::FunctionDecl: CheckFunction(node); break;
     case NodeKind::Block: CheckBlock(node); break;
+    case NodeKind::DeclList:
+        for (AstNode* declaration = node->firstChild; declaration; declaration = declaration->nextSibling)
+            CheckNode(declaration);
+        break;
     case NodeKind::VarDecl: {
         if (node->firstChild) {
             DataType value = CheckExpression(node->firstChild);

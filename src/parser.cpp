@@ -133,12 +133,23 @@ AstNode* Parser::ParseStatement() {
 
 AstNode* Parser::ParseVariableDeclaration() {
     DataType type = ParseType(false);
-    Token name = Consume(TokenKind::Identifier, "expected variable name");
-    AstNode* declaration = arena_->Make(NodeKind::VarDecl, name);
-    declaration->declaredType = std::move(type);
-    if (Match(TokenKind::Equal)) declaration->AppendChild(ParseExpression());
+    auto parseOne = [&]() {
+        Token name = Consume(TokenKind::Identifier, "expected variable name");
+        AstNode* declaration = arena_->Make(NodeKind::VarDecl, name);
+        declaration->declaredType = type;
+        if (Match(TokenKind::Equal)) declaration->AppendChild(ParseAssignment());
+        return declaration;
+    };
+    AstNode* first = parseOne();
+    if (!Match(TokenKind::Comma)) {
+        Consume(TokenKind::Semicolon, "expected ';' after declaration");
+        return first;
+    }
+    AstNode* declarations = arena_->Make(NodeKind::DeclList, first->token);
+    declarations->AppendChild(first);
+    do { declarations->AppendChild(parseOne()); } while (Match(TokenKind::Comma));
     Consume(TokenKind::Semicolon, "expected ';' after declaration");
-    return declaration;
+    return declarations;
 }
 
 AstNode* Parser::ParseIf() {

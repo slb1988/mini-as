@@ -135,6 +135,10 @@ void BytecodeCompiler::CompileStatement(AstNode* node) {
     Emit(OpCode::Suspend, 0, node);
     switch (node->kind) {
     case NodeKind::Block: CompileBlock(node); break;
+    case NodeKind::DeclList:
+        for (AstNode* declaration = node->firstChild; declaration; declaration = declaration->nextSibling)
+            CompileStatement(declaration);
+        break;
     case NodeKind::VarDecl: {
         const auto slot = DeclareLocal(node->token);
         if (node->firstChild) CompileExpression(node->firstChild);

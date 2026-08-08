@@ -107,3 +107,28 @@ TEST_CASE(module_rebuild_preserves_function_and_type_ids) {
     CHECK(engine->GetTypeInfo("Box")->id == typeId);
 }
 
+TEST_CASE(multiple_declarations_execute_in_source_order) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("multiple-declarations");
+    module->AddScriptSection("success",
+        "int value() { int first = 2, second = first + 3, third; third = second * 4; return third; }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByName("value")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 20);
+}
+
+TEST_CASE(multiple_declarations_report_duplicate_names) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) { diagnostics.push_back(diagnostic); });
+    auto* module = engine->GetModule("duplicate-declarations");
+    module->AddScriptSection("invalid", "int value() { int item = 1, item = 2; return item; }");
+    CHECK(!module->Build());
+    bool foundDuplicate = false;
+    for (const auto& diagnostic : diagnostics)
+        foundDuplicate = foundDuplicate || diagnostic.message.find("duplicate variable 'item'") != std::string::npos;
+    CHECK(foundDuplicate);
+}
+

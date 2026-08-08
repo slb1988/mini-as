@@ -20,7 +20,7 @@ enum class OpCode : std::uint8_t {
     Concat, NegInt, NegFloat, LogicalNot,
     Equal, NotEqual, Less, LessEqual, Greater, GreaterEqual,
     Jump, JumpIfFalse,
-    Call, CallHost, NewObject, LoadField, StoreField, Return
+    Call, CallHost, CallVirtual, NewObject, LoadField, StoreField, Return
 };
 
 struct Instruction {
@@ -49,6 +49,14 @@ struct CallableRef {
     FunctionId function;
     TypeId objectType;
     std::uint32_t virtualSlot = 0;
+    std::uint32_t parameterCount = 0;
+};
+
+struct VirtualDispatchEntry {
+    TypeId concreteType;
+    TypeId interfaceType;
+    std::uint32_t slot = 0;
+    FunctionId implementation;
 };
 
 struct GlobalBinding {
@@ -64,6 +72,7 @@ struct BytecodeModule {
     BytecodeFunction globalInitializer;
     std::vector<GlobalBinding> globals;
     std::vector<CallableRef> callables;
+    std::vector<VirtualDispatchEntry> virtualDispatch;
     std::vector<std::pair<FunctionId, const RegisteredHostFunction*>> hostFunctions;
     std::vector<std::pair<TypeId, const TypeInfo*>> objectTypes;
 
@@ -72,6 +81,8 @@ struct BytecodeModule {
     const TypeInfo* FindType(TypeId id) const;
     const CallableRef* FindCallable(std::size_t index) const;
     std::optional<std::size_t> FindGlobalIndex(GlobalId id) const;
+    const BytecodeFunction* ResolveVirtual(TypeId concreteType, TypeId interfaceType,
+                                           std::uint32_t slot) const;
 };
 
 std::string_view OpCodeName(OpCode opcode);

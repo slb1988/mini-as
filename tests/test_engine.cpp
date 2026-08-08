@@ -574,3 +574,37 @@ TEST_CASE(field_initializers_check_types_and_report_runtime_locations) {
     CHECK(context->GetExceptionLocation().row == 3);
 }
 
+TEST_CASE(interface_handles_dispatch_to_the_runtime_object_type) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("virtual-dispatch");
+    module->AddScriptSection("success",
+        "interface IValue { int get(); } "
+        "class First : IValue { int get() { return 40; } } "
+        "class Second : IValue { int get() { return 2; } } "
+        "int run() { IValue@ first = First(); IValue@ second = Second(); "
+        "return first.get() + second.get(); }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByName("run")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+    bool emittedVirtualCall = false;
+    for (const auto& instruction : module->GetFunctionByName("run")->code)
+        emittedVirtualCall = emittedVirtualCall || instruction.opcode == mini_as::OpCode::CallVirtual;
+    CHECK(emittedVirtualCall);
+}
+
+TEST_CASE(null_interface_dispatch_reports_the_call_location) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("virtual-null");
+    module->AddScriptSection("runtime",
+        "interface IValue { int get(); }\nint read(IValue@ item) {\n return item.get();\n}");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByName("read")));
+    CHECK(context->SetArgObject(0, mini_as::ObjectHandle{}));
+    CHECK(context->Execute() == mini_as::ExecutionState::Exception);
+    CHECK(context->GetExceptionString() == "null virtual method receiver");
+    CHECK(context->GetExceptionLocation().row == 3);
+}
+

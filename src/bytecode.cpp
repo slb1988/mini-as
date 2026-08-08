@@ -21,7 +21,7 @@ std::string_view OpCodeName(OpCode opcode) {
         "TO_FLOAT", "TO_STRING", "ADD_I", "SUB_I", "MUL_I", "DIV_I", "MOD_I",
         "ADD_F", "SUB_F", "MUL_F", "DIV_F", "CONCAT", "NEG_I", "NEG_F", "NOT",
         "EQ", "NE", "LT", "LE", "GT", "GE", "JMP", "JZ", "CALL", "CALL_HOST",
-        "NEW_OBJECT", "LOAD_FIELD", "STORE_FIELD", "RET"
+        "CALL_VIRTUAL", "NEW_OBJECT", "LOAD_FIELD", "STORE_FIELD", "RET"
     };
     return names[static_cast<std::size_t>(opcode)];
 }
@@ -37,7 +37,8 @@ std::string Disassemble(const BytecodeFunction& function) {
             instruction.opcode == OpCode::StoreLocal || instruction.opcode == OpCode::LoadGlobal ||
             instruction.opcode == OpCode::StoreGlobal || instruction.opcode == OpCode::Jump ||
             instruction.opcode == OpCode::JumpIfFalse || instruction.opcode == OpCode::Call ||
-            instruction.opcode == OpCode::CallHost || instruction.opcode == OpCode::NewObject ||
+            instruction.opcode == OpCode::CallHost || instruction.opcode == OpCode::CallVirtual ||
+            instruction.opcode == OpCode::NewObject ||
             instruction.opcode == OpCode::LoadField || instruction.opcode == OpCode::StoreField) out << instruction.operand;
         out << "  ; " << instruction.location.row << ':' << instruction.location.column << '\n';
     }
@@ -67,6 +68,15 @@ std::optional<std::size_t> BytecodeModule::FindGlobalIndex(GlobalId id) const {
     for (std::size_t index = 0; index < globals.size(); ++index)
         if (globals[index].signature.id == id) return index;
     return std::nullopt;
+}
+
+const BytecodeFunction* BytecodeModule::ResolveVirtual(
+    TypeId concreteType, TypeId interfaceType, std::uint32_t slot) const {
+    for (const auto& entry : virtualDispatch) {
+        if (entry.concreteType == concreteType && entry.interfaceType == interfaceType &&
+            entry.slot == slot) return FindFunction(entry.implementation);
+    }
+    return nullptr;
 }
 
 BytecodeCompiler::BytecodeCompiler(DiagnosticSink& diagnostics) : diagnostics_(diagnostics) {}
@@ -104,7 +114,7 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
     }
     for (auto& type : classes_) {
         if (!type.id.IsValid()) type.id = TypeId{nextTypeId++};
-        if (!type.interfaceType) classIds_[type.name] = type.id;
+        classIds_[type.name] = type.id;
     }
     if (!root) return module_;
     for (AstNode* node = root->firstChild; node; node = node->nextSibling)
@@ -114,12 +124,39 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
             hostIds_[FunctionKey(signature)] = signature.id;
             continue;
         }
+        bool interfaceMethod = false;
+        if (signature.method) {
+            for (const auto& type : classes_)
+                if (type.name == signature.objectType) interfaceMethod = type.interfaceType;
+        }
+        if (interfaceMethod) continue;
         const auto index = module_.functions.size();
         BytecodeFunction function;
         function.signature = signature;
         module_.functions.push_back(std::move(function));
         functionIndices_[FunctionKey(signature)] = index;
         functionIds_[FunctionKey(signature)] = signature.id;
+    }
+    for (const auto& concrete : classes_) {
+        if (concrete.interfaceType) continue;
+        for (const auto& interfaceName : concrete.interfaces) {
+            const ClassSignature* interfaceType = nullptr;
+            for (const auto& candidate : classes_)
+                if (candidate.name == interfaceName && candidate.interfaceType) interfaceType = &candidate;
+            if (!interfaceType) continue;
+            for (std::size_t slot = 0; slot < interfaceType->methods.size(); ++slot) {
+                const auto& required = interfaceType->methods[slot];
+                for (const auto& implementation : concrete.methods) {
+                    if (implementation.constructor || implementation.name != required.name ||
+                        implementation.returnType != required.returnType ||
+                        implementation.parameters != required.parameters) continue;
+                    const auto found = functionIds_.find(FunctionKey(implementation));
+                    if (found != functionIds_.end())
+                        module_.virtualDispatch.push_back({concrete.id, interfaceType->id,
+                                                           static_cast<std::uint32_t>(slot), found->second});
+                }
+            }
+        }
     }
     for (AstNode* node = root->firstChild; node; node = node->nextSibling) {
         if (node->kind != NodeKind::FunctionDecl) continue;
@@ -731,7 +768,8 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
             const auto target = functionIds_.find(FunctionKey(*constructor));
             if (target == functionIds_.end()) { Error(node, "constructor target is missing"); return; }
             Emit(OpCode::Call, AddCallable({CallableKind::ScriptMethod, target->second,
-                                            classFound->second, 0}), node);
+                                            classFound->second, 0,
+                                            static_cast<std::uint32_t>(constructor->parameters.size())}), node);
             Emit(OpCode::Pop, 0, node);
         } else if (!arguments.empty()) {
             Error(node, "constructor target is missing");
@@ -767,10 +805,34 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
         if (arguments[i]->inferredType == DataType::Int() && target->parameters[i] == DataType::Float())
             Emit(OpCode::ToFloat, 0, arguments[i]);
     }
+    if (target->method) {
+        const ClassSignature* ownerType = nullptr;
+        for (const auto& type : classes_) if (type.name == target->objectType) ownerType = &type;
+        if (ownerType && ownerType->interfaceType) {
+            std::uint32_t slot = 0;
+            bool foundSlot = false;
+            for (std::size_t index = 0; index < ownerType->methods.size(); ++index) {
+                const auto& method = ownerType->methods[index];
+                if (method.name == target->name && method.returnType == target->returnType &&
+                    method.parameters == target->parameters) {
+                    slot = static_cast<std::uint32_t>(index);
+                    foundSlot = true;
+                    break;
+                }
+            }
+            if (!foundSlot) { Error(node, "virtual method slot is missing"); return; }
+            Emit(OpCode::CallVirtual,
+                 AddCallable({CallableKind::VirtualMethod, {}, ownerType->id, slot,
+                              static_cast<std::uint32_t>(target->parameters.size())}), node);
+            return;
+        }
+    }
     if (target->host) {
         const auto found = hostIds_.find(FunctionKey(*target));
         if (found == hostIds_.end()) { Error(node, "host call target is missing"); return; }
-        Emit(OpCode::CallHost, AddCallable({CallableKind::HostFunction, found->second, {}, 0}), node);
+        Emit(OpCode::CallHost,
+             AddCallable({CallableKind::HostFunction, found->second, {}, 0,
+                          static_cast<std::uint32_t>(target->parameters.size())}), node);
     } else {
         const auto found = functionIds_.find(FunctionKey(*target));
         if (found == functionIds_.end()) { Error(node, "script call target is missing"); return; }
@@ -780,7 +842,8 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
         }
         Emit(OpCode::Call, AddCallable({target->method ? CallableKind::ScriptMethod
                                                       : CallableKind::ScriptFunction,
-                                       found->second, owner, 0}), node);
+                                       found->second, owner, 0,
+                                       static_cast<std::uint32_t>(target->parameters.size())}), node);
     }
 }
 
@@ -788,7 +851,8 @@ std::int32_t BytecodeCompiler::AddCallable(CallableRef callable) {
     for (std::size_t i = 0; i < module_.callables.size(); ++i) {
         const auto& existing = module_.callables[i];
         if (existing.kind == callable.kind && existing.function == callable.function &&
-            existing.objectType == callable.objectType && existing.virtualSlot == callable.virtualSlot)
+            existing.objectType == callable.objectType && existing.virtualSlot == callable.virtualSlot &&
+            existing.parameterCount == callable.parameterCount)
             return static_cast<std::int32_t>(i);
     }
     module_.callables.push_back(std::move(callable));

@@ -208,6 +208,26 @@ bool VirtualMachine::Step() {
         Push(call.ReturnValue());
         break;
     }
+    case OpCode::CallVirtual: {
+        if (!module_ || instruction.operand < 0) throw std::runtime_error("virtual call target is unavailable");
+        if (callStack_.size() >= 1024) throw std::runtime_error("script call stack overflow");
+        const CallableRef* callable = module_->FindCallable(static_cast<std::size_t>(instruction.operand));
+        if (!callable || callable->kind != CallableKind::VirtualMethod)
+            throw std::runtime_error("call descriptor kind does not match opcode");
+        std::vector<Value> arguments(static_cast<std::size_t>(callable->parameterCount) + 1);
+        for (std::size_t i = arguments.size(); i > 0; --i) arguments[i - 1] = Pop();
+        const auto& receiver = arguments[0].As<ObjectHandle>();
+        if (!receiver || !receiver.Get()->GetTypeInfo()) throw std::runtime_error("null virtual method receiver");
+        const BytecodeFunction* target = module_->ResolveVirtual(
+            receiver.Get()->GetTypeInfo()->id, callable->objectType, callable->virtualSlot);
+        if (!target) throw std::runtime_error("virtual method implementation is unavailable");
+        callStack_.push_back({function_, pc_, std::move(locals_)});
+        function_ = target;
+        pc_ = 0;
+        locals_.assign(target->localCount, Value{});
+        for (std::size_t i = 0; i < arguments.size(); ++i) locals_[i] = std::move(arguments[i]);
+        break;
+    }
     case OpCode::NewObject: {
         if (!module_ || instruction.operand < 0) throw std::runtime_error("object type is unavailable");
         const TypeInfo* type = module_->FindType(TypeId{static_cast<std::uint32_t>(instruction.operand)});

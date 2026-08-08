@@ -1,30 +1,11 @@
 #include "mini_as/bytecode.hpp"
+#include "mini_as/constant_evaluator.hpp"
 
-#include <cstdlib>
 #include <iomanip>
 #include <sstream>
 #include <utility>
 
 namespace mini_as {
-namespace {
-
-std::string DecodeString(std::string_view text) {
-    std::string result;
-    for (std::size_t i = 1; i + 1 < text.size(); ++i) {
-        char ch = text[i];
-        if (ch == '\\' && i + 1 < text.size() - 1) {
-            ch = text[++i];
-            if (ch == 'n') result += '\n';
-            else if (ch == 't') result += '\t';
-            else if (ch == 'r') result += '\r';
-            else result += ch;
-        } else result += ch;
-    }
-    return result;
-}
-
-} // namespace
-
 std::string_view OpCodeName(OpCode opcode) {
     static const char* names[] = {
         "NOP", "SUSPEND", "PUSH_CONST", "PUSH_VOID", "LOAD_LOCAL", "STORE_LOCAL", "DUP", "POP",
@@ -198,16 +179,9 @@ void BytecodeCompiler::CompileExpression(AstNode* node) {
     if (!node) return;
     switch (node->kind) {
     case NodeKind::Literal: {
-        Value value;
-        switch (node->token.kind) {
-        case TokenKind::Integer: value = Value(static_cast<std::int32_t>(std::strtol(node->token.lexeme.c_str(), nullptr, 10))); break;
-        case TokenKind::Float: value = Value(std::strtof(node->token.lexeme.c_str(), nullptr)); break;
-        case TokenKind::String: value = Value(DecodeString(node->token.lexeme)); break;
-        case TokenKind::KwTrue: value = Value(true); break;
-        case TokenKind::KwFalse: value = Value(false); break;
-        default: Error(node, "literal cannot be compiled"); return;
-        }
-        Emit(OpCode::PushConst, AddConstant(std::move(value)), node);
+        auto value = ConstantExpressionEvaluator{}.Evaluate(node);
+        if (!value) { Error(node, "literal cannot be compiled"); return; }
+        Emit(OpCode::PushConst, AddConstant(std::move(*value)), node);
         break;
     }
     case NodeKind::Identifier: {

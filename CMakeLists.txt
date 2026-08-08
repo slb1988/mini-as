@@ -10,6 +10,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(mini_angelscript
   src/bytecode.cpp
+  src/constant_evaluator.cpp
   src/core.cpp
   src/engine.cpp
   src/generic.cpp
@@ -37,6 +38,7 @@ add_executable(mini_as_tests
   tests/test_interpreter.cpp
   tests/test_types.cpp
   tests/test_bytecode.cpp
+  tests/test_constant_evaluator.cpp
   tests/test_vm.cpp
   tests/test_engine.cpp
   tests/test_generic.cpp

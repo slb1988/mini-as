@@ -49,6 +49,10 @@ const TypeInfo* BytecodeModule::FindType(TypeId id) const {
     return nullptr;
 }
 
+const CallableRef* BytecodeModule::FindCallable(std::size_t index) const {
+    return index < callables.size() ? &callables[index] : nullptr;
+}
+
 BytecodeCompiler::BytecodeCompiler(DiagnosticSink& diagnostics) : diagnostics_(diagnostics) {}
 
 BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<FunctionSignature>& signatures,
@@ -362,12 +366,23 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
     if (target->host) {
         const auto found = hostIds_.find(target->Declaration());
         if (found == hostIds_.end()) { Error(node, "host call target is missing"); return; }
-        Emit(OpCode::CallHost, static_cast<std::int32_t>(found->second.value), node);
+        Emit(OpCode::CallHost, AddCallable({CallableKind::HostFunction, found->second, {}, 0}), node);
     } else {
         const auto found = functionIds_.find(target->Declaration());
         if (found == functionIds_.end()) { Error(node, "script call target is missing"); return; }
-        Emit(OpCode::Call, static_cast<std::int32_t>(found->second.value), node);
+        Emit(OpCode::Call, AddCallable({CallableKind::ScriptFunction, found->second, {}, 0}), node);
     }
+}
+
+std::int32_t BytecodeCompiler::AddCallable(CallableRef callable) {
+    for (std::size_t i = 0; i < module_.callables.size(); ++i) {
+        const auto& existing = module_.callables[i];
+        if (existing.kind == callable.kind && existing.function == callable.function &&
+            existing.objectType == callable.objectType && existing.virtualSlot == callable.virtualSlot)
+            return static_cast<std::int32_t>(i);
+    }
+    module_.callables.push_back(std::move(callable));
+    return static_cast<std::int32_t>(module_.callables.size() - 1);
 }
 
 std::optional<std::pair<std::size_t, DataType>> BytecodeCompiler::FindField(const AstNode* member) const {

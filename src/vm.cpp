@@ -146,8 +146,11 @@ bool VirtualMachine::Step() {
     case OpCode::Call: {
         if (!module_ || instruction.operand < 0) throw std::runtime_error("call target is unavailable");
         if (callStack_.size() >= 1024) throw std::runtime_error("script call stack overflow");
-        const BytecodeFunction* target = module_->FindFunction(
-            FunctionId{static_cast<std::uint32_t>(instruction.operand)});
+        const CallableRef* callable = module_->FindCallable(static_cast<std::size_t>(instruction.operand));
+        if (!callable || (callable->kind != CallableKind::ScriptFunction &&
+                          callable->kind != CallableKind::ScriptMethod))
+            throw std::runtime_error("call descriptor kind does not match opcode");
+        const BytecodeFunction* target = module_->FindFunction(callable->function);
         if (!target) throw std::runtime_error("call target is unavailable");
         std::vector<Value> arguments(target->signature.parameters.size());
         for (std::size_t i = arguments.size(); i > 0; --i) arguments[i - 1] = Pop();
@@ -160,8 +163,11 @@ bool VirtualMachine::Step() {
     }
     case OpCode::CallHost: {
         if (!module_ || instruction.operand < 0) throw std::runtime_error("host call target is unavailable");
-        const auto* target = module_->FindHostFunction(
-            FunctionId{static_cast<std::uint32_t>(instruction.operand)});
+        const CallableRef* callable = module_->FindCallable(static_cast<std::size_t>(instruction.operand));
+        if (!callable || (callable->kind != CallableKind::HostFunction &&
+                          callable->kind != CallableKind::HostMethod))
+            throw std::runtime_error("call descriptor kind does not match opcode");
+        const auto* target = module_->FindHostFunction(callable->function);
         if (!target) throw std::runtime_error("host call target is unavailable");
         std::vector<Value> arguments(target->signature.parameters.size());
         for (std::size_t i = arguments.size(); i > 0; --i) arguments[i - 1] = Pop();

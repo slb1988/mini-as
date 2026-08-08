@@ -36,14 +36,31 @@ struct BytecodeFunction {
     std::size_t localCount = 0;
 };
 
+enum class CallableKind {
+    ScriptFunction,
+    HostFunction,
+    ScriptMethod,
+    HostMethod,
+    VirtualMethod
+};
+
+struct CallableRef {
+    CallableKind kind = CallableKind::ScriptFunction;
+    FunctionId function;
+    TypeId objectType;
+    std::uint32_t virtualSlot = 0;
+};
+
 struct BytecodeModule {
     std::vector<BytecodeFunction> functions;
+    std::vector<CallableRef> callables;
     std::vector<std::pair<FunctionId, const RegisteredHostFunction*>> hostFunctions;
     std::vector<std::pair<TypeId, const TypeInfo*>> objectTypes;
 
     const BytecodeFunction* FindFunction(FunctionId id) const;
     const RegisteredHostFunction* FindHostFunction(FunctionId id) const;
     const TypeInfo* FindType(TypeId id) const;
+    const CallableRef* FindCallable(std::size_t index) const;
 };
 
 std::string_view OpCodeName(OpCode opcode);
@@ -75,6 +92,7 @@ private:
     std::optional<LValueRef> ResolveLValue(AstNode* expression) const;
     void CompileLValueLoad(const LValueRef& target, const AstNode* source);
     void CompileLValueStore(const LValueRef& target, AstNode* value, const AstNode* source);
+    std::int32_t AddCallable(CallableRef callable);
     std::optional<std::pair<std::size_t, DataType>> FindField(const AstNode* member) const;
     std::size_t Emit(OpCode opcode, std::int32_t operand, const AstNode* node);
     void PatchJump(std::size_t instruction, std::size_t target);

@@ -48,7 +48,10 @@ TEST_CASE(bytecode_calls_reference_stable_function_ids) {
     for (const auto& instruction : caller.code) {
         if (instruction.opcode == mini_as::OpCode::Call) {
             foundCall = true;
-            CHECK(static_cast<std::uint32_t>(instruction.operand) == callee->signature.id.value);
+            const auto* callable = module.FindCallable(static_cast<std::size_t>(instruction.operand));
+            CHECK(callable != nullptr);
+            CHECK(callable->kind == mini_as::CallableKind::ScriptFunction);
+            CHECK(callable->function == callee->signature.id);
         }
     }
     CHECK(foundCall);

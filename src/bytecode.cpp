@@ -185,37 +185,22 @@ void BytecodeCompiler::CompileExpression(AstNode* node) {
         break;
     }
     case NodeKind::Identifier: {
-        const auto slot = LookupLocal(node->token.lexeme);
-        if (!slot) Error(node, "unknown local '" + node->token.lexeme + "'");
-        else Emit(OpCode::LoadLocal, static_cast<std::int32_t>(slot->value), node);
+        const auto target = ResolveLValue(node);
+        if (!target) Error(node, "unknown local '" + node->token.lexeme + "'");
+        else CompileLValueLoad(*target, node);
         break;
     }
     case NodeKind::Assign: {
         const auto children = node->Children();
-        if (children[0]->kind == NodeKind::Member) {
-            CompileExpression(children[0]->firstChild);
-            CompileExpression(children[1]);
-            if (children[1]->inferredType == DataType::Int() && children[0]->inferredType == DataType::Float())
-                Emit(OpCode::ToFloat, 0, node);
-            const auto field = FindField(children[0]);
-            if (!field) Error(node, "unknown field assignment target");
-            else Emit(OpCode::StoreField, static_cast<std::int32_t>(field->first), node);
-        } else {
-            CompileExpression(children[1]);
-            if (children[1]->inferredType == DataType::Int() && children[0]->inferredType == DataType::Float())
-                Emit(OpCode::ToFloat, 0, node);
-            Emit(OpCode::Dup, 0, node);
-            const auto slot = LookupLocal(children[0]->token.lexeme);
-            if (!slot) Error(node, "unknown assignment target");
-            else Emit(OpCode::StoreLocal, static_cast<std::int32_t>(slot->value), node);
-        }
+        const auto target = ResolveLValue(children[0]);
+        if (!target) Error(node, "unknown assignment target");
+        else CompileLValueStore(*target, children[1], node);
         break;
     }
     case NodeKind::Member: {
-        CompileExpression(node->firstChild);
-        const auto field = FindField(node);
-        if (!field) Error(node, "unknown field");
-        else Emit(OpCode::LoadField, static_cast<std::int32_t>(field->first), node);
+        const auto target = ResolveLValue(node);
+        if (!target) Error(node, "unknown field");
+        else CompileLValueLoad(*target, node);
         break;
     }
     case NodeKind::Binary:
@@ -231,6 +216,67 @@ void BytecodeCompiler::CompileExpression(AstNode* node) {
         break;
     case NodeKind::Call: CompileCall(node); break;
     default: Error(node, "expression cannot be compiled"); break;
+    }
+}
+
+std::optional<BytecodeCompiler::LValueRef> BytecodeCompiler::ResolveLValue(AstNode* expression) const {
+    if (!expression) return std::nullopt;
+    if (expression->kind == NodeKind::Identifier) {
+        const auto local = LookupLocal(expression->token.lexeme);
+        if (!local) return std::nullopt;
+        LValueRef result;
+        result.kind = LValueRef::Kind::Local;
+        result.type = expression->inferredType;
+        result.variable = *local;
+        return result;
+    }
+    if (expression->kind == NodeKind::Member) {
+        const auto field = FindField(expression);
+        if (!field) return std::nullopt;
+        LValueRef result;
+        result.kind = LValueRef::Kind::Field;
+        result.type = field->second;
+        result.field = static_cast<std::uint32_t>(field->first);
+        result.receiver = expression->firstChild;
+        return result;
+    }
+    return std::nullopt;
+}
+
+void BytecodeCompiler::CompileLValueLoad(const LValueRef& target, const AstNode* source) {
+    switch (target.kind) {
+    case LValueRef::Kind::Local:
+        Emit(OpCode::LoadLocal, static_cast<std::int32_t>(target.variable.value), source);
+        break;
+    case LValueRef::Kind::Field:
+        CompileExpression(target.receiver);
+        Emit(OpCode::LoadField, static_cast<std::int32_t>(target.field), source);
+        break;
+    case LValueRef::Kind::Global:
+    case LValueRef::Kind::Index:
+        Error(source, "lvalue kind is not implemented");
+        break;
+    }
+}
+
+void BytecodeCompiler::CompileLValueStore(const LValueRef& target, AstNode* value,
+                                          const AstNode* source) {
+    if (target.kind == LValueRef::Kind::Field) CompileExpression(target.receiver);
+    CompileExpression(value);
+    if (value->inferredType == DataType::Int() && target.type == DataType::Float())
+        Emit(OpCode::ToFloat, 0, source);
+    switch (target.kind) {
+    case LValueRef::Kind::Local:
+        Emit(OpCode::Dup, 0, source);
+        Emit(OpCode::StoreLocal, static_cast<std::int32_t>(target.variable.value), source);
+        break;
+    case LValueRef::Kind::Field:
+        Emit(OpCode::StoreField, static_cast<std::int32_t>(target.field), source);
+        break;
+    case LValueRef::Kind::Global:
+    case LValueRef::Kind::Index:
+        Error(source, "lvalue kind is not implemented");
+        break;
     }
 }
 

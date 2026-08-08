@@ -56,6 +56,15 @@ public:
                            const std::vector<ClassSignature>& classes = {});
 
 private:
+    struct LValueRef {
+        enum class Kind { Local, Global, Field, Index } kind = Kind::Local;
+        DataType type = DataType::Invalid();
+        VariableId variable;
+        GlobalId global;
+        std::uint32_t field = 0;
+        AstNode* receiver = nullptr;
+    };
+
     void CompileFunction(AstNode* node, std::size_t functionIndex);
     void CompileBlock(AstNode* node, bool createScope = true);
     void CompileStatement(AstNode* node);
@@ -63,6 +72,9 @@ private:
     void CompileBinary(AstNode* node);
     void CompileLogical(AstNode* node);
     void CompileCall(AstNode* node);
+    std::optional<LValueRef> ResolveLValue(AstNode* expression) const;
+    void CompileLValueLoad(const LValueRef& target, const AstNode* source);
+    void CompileLValueStore(const LValueRef& target, AstNode* value, const AstNode* source);
     std::optional<std::pair<std::size_t, DataType>> FindField(const AstNode* member) const;
     std::size_t Emit(OpCode opcode, std::int32_t operand, const AstNode* node);
     void PatchJump(std::size_t instruction, std::size_t target);

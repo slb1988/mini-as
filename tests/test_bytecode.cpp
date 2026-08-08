@@ -54,3 +54,28 @@ TEST_CASE(bytecode_calls_reference_stable_function_ids) {
     CHECK(foundCall);
 }
 
+TEST_CASE(bytecode_lvalues_cover_local_and_field_storage) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("lvalues",
+        "class Box { int value; } int set(Box@ box) { int local = 1; local = 2; box.value = local; return box.value; }",
+        diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    mini_as::TypeChecker checker(diagnostics);
+    CHECK(checker.Check(tree.root));
+    mini_as::BytecodeCompiler compiler(diagnostics);
+    auto module = compiler.Compile(tree.root, checker.Functions(), checker.Classes());
+    CHECK(!diagnostics.HasErrors());
+    bool storedLocal = false;
+    bool storedField = false;
+    bool loadedField = false;
+    for (const auto& instruction : module.functions[0].code) {
+        storedLocal = storedLocal || instruction.opcode == mini_as::OpCode::StoreLocal;
+        storedField = storedField || instruction.opcode == mini_as::OpCode::StoreField;
+        loadedField = loadedField || instruction.opcode == mini_as::OpCode::LoadField;
+    }
+    CHECK(storedLocal);
+    CHECK(storedField);
+    CHECK(loadedField);
+}
+

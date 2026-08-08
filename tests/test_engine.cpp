@@ -293,3 +293,38 @@ TEST_CASE(do_while_conditions_must_be_boolean) {
     CHECK(rejectedCondition);
 }
 
+TEST_CASE(switch_uses_integer_constant_cases_and_falls_through) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("switch");
+    module->AddScriptSection("success",
+        "int choose(int value) { int result = 0; switch (value) { "
+        "case 1: result = 1; case 2: result = result + 2; "
+        "case 3: result = result + 3; default: result = result + 4; } return result; }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByName("choose")));
+    CHECK(context->SetArgInt(0, 2));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 9);
+}
+
+TEST_CASE(switch_rejects_duplicate_and_nonconstant_cases) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) { diagnostics.push_back(diagnostic); });
+    auto* module = engine->GetModule("switch-invalid");
+    module->AddScriptSection("invalid",
+        "int choose(int value) { switch (value) { case 1 + 1: return 1; case 2: return 2; "
+        "case value: return 3; } return 0; }");
+    CHECK(!module->Build());
+    bool duplicate = false;
+    bool nonconstant = false;
+    for (const auto& diagnostic : diagnostics) {
+        duplicate = duplicate || diagnostic.message.find("duplicate case value") != std::string::npos;
+        nonconstant = nonconstant ||
+            diagnostic.message.find("case value must be an integer constant expression") != std::string::npos;
+    }
+    CHECK(duplicate);
+    CHECK(nonconstant);
+}
+

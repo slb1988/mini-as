@@ -13,7 +13,8 @@ const std::unordered_map<std::string, TokenKind> kKeywords = {
     {"false", TokenKind::KwFalse}, {"const", TokenKind::KwConst}, {"auto", TokenKind::KwAuto},
     {"if", TokenKind::KwIf},
     {"else", TokenKind::KwElse}, {"while", TokenKind::KwWhile}, {"do", TokenKind::KwDo},
-    {"for", TokenKind::KwFor},
+    {"for", TokenKind::KwFor}, {"switch", TokenKind::KwSwitch}, {"case", TokenKind::KwCase},
+    {"default", TokenKind::KwDefault},
     {"return", TokenKind::KwReturn}, {"class", TokenKind::KwClass},
     {"interface", TokenKind::KwInterface}, {"is", TokenKind::KwIs},
     {"null", TokenKind::KwNull},
@@ -32,7 +33,8 @@ std::string_view TokenName(TokenKind kind) {
     static const char* names[] = {
         "end", "identifier", "integer", "float literal", "string literal",
         "void", "bool", "int", "float", "string", "true", "false", "const", "auto",
-        "if", "else", "while", "do", "for", "return", "class", "interface", "is", "null",
+        "if", "else", "while", "do", "for", "switch", "case", "default",
+        "return", "class", "interface", "is", "null",
         "(", ")", "{", "}", ",", ".", ";", ":", "@", "+", "-", "*", "/", "%",
         "!", "!=", "=", "==", "<", "<=", ">", ">=", "&&", "||"
     };

@@ -61,3 +61,20 @@ TEST_CASE(parser_builds_four_clause_for_statement) {
     CHECK(clauses[3]->kind == mini_as::NodeKind::Block);
 }
 
+TEST_CASE(parser_preserves_switch_clause_order) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer lexer("parse",
+        "int f(int value) { switch (value) { case 1: value = 2; case 2: return value; default: return 0; } }",
+        diagnostics);
+    mini_as::Parser parser(lexer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    CHECK(!diagnostics.HasErrors());
+    auto* switchNode = tree.root->firstChild->Children().back()->firstChild;
+    CHECK(switchNode->kind == mini_as::NodeKind::SwitchStmt);
+    const auto children = switchNode->Children();
+    CHECK(children.size() == 4);
+    CHECK(children[1]->kind == mini_as::NodeKind::CaseClause);
+    CHECK(children[2]->kind == mini_as::NodeKind::CaseClause);
+    CHECK(children[3]->kind == mini_as::NodeKind::DefaultClause);
+}
+

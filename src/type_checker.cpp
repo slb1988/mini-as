@@ -1,6 +1,8 @@
 #include "mini_as/type_checker.hpp"
+#include "mini_as/constant_evaluator.hpp"
 
 #include <sstream>
+#include <unordered_set>
 #include <utility>
 
 namespace mini_as {
@@ -187,6 +189,34 @@ void TypeChecker::CheckNode(AstNode* node) {
         if (CheckExpression(children[1]) != DataType::Bool()) Error(children[1], "condition must be bool");
         break;
     }
+    case NodeKind::SwitchStmt: {
+        AstNode* selector = node->firstChild;
+        if (CheckExpression(selector) != DataType::Int()) Error(selector, "switch expression must be int");
+        std::unordered_set<std::int32_t> values;
+        bool hasDefault = false;
+        scopes_.emplace_back();
+        for (AstNode* clause = selector ? selector->nextSibling : nullptr; clause;
+             clause = clause->nextSibling) {
+            AstNode* statement = clause->firstChild;
+            if (clause->kind == NodeKind::CaseClause) {
+                AstNode* valueExpression = statement;
+                const DataType valueType = CheckExpression(valueExpression);
+                auto value = ConstantExpressionEvaluator{}.Evaluate(valueExpression);
+                if (valueType != DataType::Int() || !value || value->Type() != DataType::Int()) {
+                    Error(valueExpression, "case value must be an integer constant expression");
+                } else if (!values.insert(value->As<std::int32_t>()).second) {
+                    Error(valueExpression, "duplicate case value");
+                }
+                statement = statement ? statement->nextSibling : nullptr;
+            } else if (clause->kind == NodeKind::DefaultClause) {
+                if (hasDefault) Error(clause, "duplicate default clause");
+                hasDefault = true;
+            }
+            for (; statement; statement = statement->nextSibling) CheckNode(statement);
+        }
+        scopes_.pop_back();
+        break;
+    }
     case NodeKind::ReturnStmt: {
         DataType value = node->firstChild ? CheckExpression(node->firstChild) : DataType::Void();
         if (!CanConvert(value, currentReturn_)) {
@@ -195,7 +225,8 @@ void TypeChecker::CheckNode(AstNode* node) {
         break;
     }
     case NodeKind::ExprStmt: CheckExpression(node->firstChild); break;
-    case NodeKind::ClassDecl: case NodeKind::InterfaceDecl: case NodeKind::EmptyStmt: break;
+    case NodeKind::ClassDecl: case NodeKind::InterfaceDecl: case NodeKind::EmptyStmt:
+    case NodeKind::CaseClause: case NodeKind::DefaultClause: break;
     default: CheckExpression(node); break;
     }
 }

@@ -127,6 +127,7 @@ AstNode* Parser::ParseStatement() {
     if (Match(TokenKind::KwWhile)) return ParseWhile();
     if (Match(TokenKind::KwDo)) return ParseDoWhile();
     if (Match(TokenKind::KwFor)) return ParseFor();
+    if (Match(TokenKind::KwSwitch)) return ParseSwitch();
     if (Match(TokenKind::KwReturn)) return ParseReturn();
     if (IsVariableDeclarationStart()) return ParseVariableDeclaration();
     AstNode* statement = arena_->Make(NodeKind::ExprStmt, Current());
@@ -208,6 +209,38 @@ AstNode* Parser::ParseFor() {
     else node->AppendChild(ParseExpression());
     Consume(TokenKind::RightParen, "expected ')' after for clauses");
     node->AppendChild(ParseStatement());
+    return node;
+}
+
+AstNode* Parser::ParseSwitch() {
+    AstNode* node = arena_->Make(NodeKind::SwitchStmt, Previous());
+    Consume(TokenKind::LeftParen, "expected '(' after switch");
+    node->AppendChild(ParseExpression());
+    Consume(TokenKind::RightParen, "expected ')' after switch expression");
+    Consume(TokenKind::LeftBrace, "expected '{' before switch body");
+    while (!Check(TokenKind::RightBrace) && !Check(TokenKind::End)) {
+        AstNode* clause = nullptr;
+        if (Match(TokenKind::KwCase)) {
+            clause = arena_->Make(NodeKind::CaseClause, Previous());
+            clause->AppendChild(ParseExpression());
+            Consume(TokenKind::Colon, "expected ':' after case value");
+        } else if (Match(TokenKind::KwDefault)) {
+            clause = arena_->Make(NodeKind::DefaultClause, Previous());
+            Consume(TokenKind::Colon, "expected ':' after default");
+        } else {
+            Error(Current(), "expected case or default in switch");
+            Synchronize();
+            if (!Check(TokenKind::KwCase) && !Check(TokenKind::KwDefault) &&
+                !Check(TokenKind::RightBrace) && !Check(TokenKind::End)) Advance();
+            continue;
+        }
+        while (!Check(TokenKind::KwCase) && !Check(TokenKind::KwDefault) &&
+               !Check(TokenKind::RightBrace) && !Check(TokenKind::End)) {
+            clause->AppendChild(ParseStatement());
+        }
+        node->AppendChild(clause);
+    }
+    Consume(TokenKind::RightBrace, "expected '}' after switch body");
     return node;
 }
 
@@ -349,7 +382,8 @@ void Parser::Synchronize() {
         if (current_ && Previous().kind == TokenKind::Semicolon) return;
         switch (Current().kind) {
         case TokenKind::KwIf: case TokenKind::KwWhile: case TokenKind::KwDo:
-        case TokenKind::KwFor: case TokenKind::KwReturn:
+        case TokenKind::KwFor: case TokenKind::KwSwitch: case TokenKind::KwCase:
+        case TokenKind::KwDefault: case TokenKind::KwReturn:
         case TokenKind::KwClass: case TokenKind::KwInterface: return;
         default: Advance();
         }

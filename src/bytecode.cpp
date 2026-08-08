@@ -257,6 +257,47 @@ void BytecodeCompiler::CompileStatement(AstNode* node) {
         PatchJump(exitJump, function_->code.size());
         break;
     }
+    case NodeKind::SwitchStmt: {
+        AstNode* selector = node->firstChild;
+        scopes_.emplace_back();
+        const VariableId selectorSlot = DeclareLocal(node->token);
+        CompileExpression(selector);
+        Emit(OpCode::StoreLocal, static_cast<std::int32_t>(selectorSlot.value), node);
+        std::vector<std::pair<AstNode*, std::size_t>> caseJumps;
+        AstNode* defaultClause = nullptr;
+        for (AstNode* clause = selector ? selector->nextSibling : nullptr; clause;
+             clause = clause->nextSibling) {
+            if (clause->kind == NodeKind::DefaultClause) {
+                if (!defaultClause) defaultClause = clause;
+                continue;
+            }
+            AstNode* valueExpression = clause->firstChild;
+            auto value = ConstantExpressionEvaluator{}.Evaluate(valueExpression);
+            if (!value || value->Type() != DataType::Int()) {
+                Error(valueExpression, "case value cannot be compiled");
+                continue;
+            }
+            Emit(OpCode::LoadLocal, static_cast<std::int32_t>(selectorSlot.value), clause);
+            Emit(OpCode::PushConst, AddConstant(std::move(*value)), valueExpression);
+            Emit(OpCode::Equal, 0, clause);
+            const auto nextComparison = Emit(OpCode::JumpIfFalse, -1, clause);
+            caseJumps.push_back({clause, Emit(OpCode::Jump, -1, clause)});
+            PatchJump(nextComparison, function_->code.size());
+        }
+        const auto defaultJump = Emit(OpCode::Jump, -1, node);
+        for (AstNode* clause = selector ? selector->nextSibling : nullptr; clause;
+             clause = clause->nextSibling) {
+            for (const auto& pending : caseJumps)
+                if (pending.first == clause) PatchJump(pending.second, function_->code.size());
+            if (clause == defaultClause) PatchJump(defaultJump, function_->code.size());
+            AstNode* statement = clause->firstChild;
+            if (clause->kind == NodeKind::CaseClause && statement) statement = statement->nextSibling;
+            for (; statement; statement = statement->nextSibling) CompileStatement(statement);
+        }
+        if (!defaultClause) PatchJump(defaultJump, function_->code.size());
+        scopes_.pop_back();
+        break;
+    }
     default: Error(node, "statement cannot be compiled"); break;
     }
 }

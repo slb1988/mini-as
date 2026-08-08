@@ -384,3 +384,34 @@ TEST_CASE(continue_outside_loop_is_rejected) {
     CHECK(rejected);
 }
 
+TEST_CASE(compound_assignments_update_local_global_and_field_lvalues) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("compound");
+    module->AddScriptSection("success",
+        "int global = 3; class Box { int value; } int run() { int local = 4; Box@ box = Box(); "
+        "box.value = 5; local += 2; global *= 2; box.value -= 1; return local + global + box.value; }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByName("run")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 16);
+}
+
+TEST_CASE(compound_assignments_protect_const_and_report_runtime_location) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) { diagnostics.push_back(diagnostic); });
+    auto* invalid = engine->GetModule("compound-const");
+    invalid->AddScriptSection("invalid", "int run() { const int value = 1; value += 2; return value; }");
+    CHECK(!invalid->Build());
+
+    auto* runtime = engine->GetModule("compound-runtime");
+    runtime->AddScriptSection("runtime", "int run() {\n int value = 10;\n value /= 0;\n return value;\n}");
+    CHECK(runtime->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(runtime->GetFunctionByName("run")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Exception);
+    CHECK(context->GetExceptionString() == "division by zero");
+    CHECK(context->GetExceptionLocation().row == 3);
+}
+

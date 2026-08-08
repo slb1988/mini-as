@@ -112,6 +112,8 @@ private:
     std::optional<LValueRef> ResolveLValue(AstNode* expression) const;
     void CompileLValueLoad(const LValueRef& target, const AstNode* source);
     void CompileLValueStore(const LValueRef& target, AstNode* value, const AstNode* source);
+    void CompileCompoundAssignment(const LValueRef& target, AstNode* value,
+                                   TokenKind operation, const AstNode* source);
     std::int32_t AddCallable(CallableRef callable);
     std::optional<std::pair<std::size_t, DataType>> FindField(const AstNode* member) const;
     std::size_t Emit(OpCode opcode, std::int32_t operand, const AstNode* node);

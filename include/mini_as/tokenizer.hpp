@@ -16,6 +16,7 @@ enum class TokenKind {
     LeftParen, RightParen, LeftBrace, RightBrace,
     Comma, Dot, Semicolon, Colon, At,
     Plus, Minus, Star, Slash, Percent,
+    PlusEqual, MinusEqual, StarEqual, SlashEqual, PercentEqual,
     Bang, BangEqual, Equal, EqualEqual,
     Less, LessEqual, Greater, GreaterEqual,
     AndAnd, OrOr

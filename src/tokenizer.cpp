@@ -37,6 +37,7 @@ std::string_view TokenName(TokenKind kind) {
         "if", "else", "while", "do", "for", "switch", "case", "default",
         "return", "break", "continue", "class", "interface", "is", "null",
         "(", ")", "{", "}", ",", ".", ";", ":", "@", "+", "-", "*", "/", "%",
+        "+=", "-=", "*=", "/=", "%=",
         "!", "!=", "=", "==", "<", "<=", ">", ">=", "&&", "||"
     };
     return names[static_cast<std::size_t>(kind)];
@@ -92,10 +93,10 @@ void Tokenizer::ScanToken() {
     case ';': Add(TokenKind::Semicolon, start, location); return;
     case ':': Add(TokenKind::Colon, start, location); return;
     case '@': Add(TokenKind::At, start, location); return;
-    case '+': Add(TokenKind::Plus, start, location); return;
-    case '-': Add(TokenKind::Minus, start, location); return;
-    case '*': Add(TokenKind::Star, start, location); return;
-    case '%': Add(TokenKind::Percent, start, location); return;
+    case '+': Add(Match('=') ? TokenKind::PlusEqual : TokenKind::Plus, start, location); return;
+    case '-': Add(Match('=') ? TokenKind::MinusEqual : TokenKind::Minus, start, location); return;
+    case '*': Add(Match('=') ? TokenKind::StarEqual : TokenKind::Star, start, location); return;
+    case '%': Add(Match('=') ? TokenKind::PercentEqual : TokenKind::Percent, start, location); return;
     case '!': Add(Match('=') ? TokenKind::BangEqual : TokenKind::Bang, start, location); return;
     case '=': Add(Match('=') ? TokenKind::EqualEqual : TokenKind::Equal, start, location); return;
     case '<': Add(Match('=') ? TokenKind::LessEqual : TokenKind::Less, start, location); return;
@@ -111,7 +112,7 @@ void Tokenizer::ScanToken() {
     case '/':
         if (Match('/')) { while (!AtEnd() && Peek() != '\n') Advance(); return; }
         if (Match('*')) { SkipBlockComment(location); return; }
-        Add(TokenKind::Slash, start, location); return;
+        Add(Match('=') ? TokenKind::SlashEqual : TokenKind::Slash, start, location); return;
     case '"': ScanString(start, location); return;
     default:
         if (std::isdigit(static_cast<unsigned char>(ch))) ScanNumber(start, location);

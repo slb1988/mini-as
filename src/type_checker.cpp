@@ -319,7 +319,26 @@ DataType TypeChecker::CheckExpression(AstNode* node) {
         }
         DataType target = CheckExpression(children[0]);
         DataType value = CheckExpression(children[1]);
-        if (!CanConvert(value, target)) Error(node, "cannot assign " + value.Name() + " to " + target.Name());
+        if (node->token.kind == TokenKind::Equal) {
+            if (!CanConvert(value, target))
+                Error(node, "cannot assign " + value.Name() + " to " + target.Name());
+        } else {
+            DataType operationType = DataType::Invalid();
+            if (node->token.kind == TokenKind::PlusEqual && target == DataType::String()) {
+                operationType = DataType::String();
+            } else if (target.IsNumeric() && value.IsNumeric()) {
+                if (node->token.kind == TokenKind::PercentEqual &&
+                    (target != DataType::Int() || value != DataType::Int())) {
+                    Error(node, "'%=' requires int operands");
+                }
+                operationType = target == DataType::Float() || value == DataType::Float()
+                    ? DataType::Float() : DataType::Int();
+            } else {
+                Error(node, "compound assignment requires compatible numeric operands");
+            }
+            if (operationType.IsValid() && !CanConvert(operationType, target))
+                Error(node, "compound assignment result cannot convert to " + target.Name());
+        }
         result = target;
         break;
     }

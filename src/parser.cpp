@@ -265,7 +265,8 @@ AstNode* Parser::ParseExpression() { return ParseAssignment(); }
 
 AstNode* Parser::ParseAssignment() {
     AstNode* left = ParseOr();
-    if (!Match(TokenKind::Equal)) return left;
+    if (!MatchAny({TokenKind::Equal, TokenKind::PlusEqual, TokenKind::MinusEqual,
+                   TokenKind::StarEqual, TokenKind::SlashEqual, TokenKind::PercentEqual})) return left;
     AstNode* node = arena_->Make(NodeKind::Assign, Previous());
     node->AppendChild(left);
     node->AppendChild(ParseAssignment());

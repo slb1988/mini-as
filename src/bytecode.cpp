@@ -356,7 +356,8 @@ void BytecodeCompiler::CompileExpression(AstNode* node) {
         const auto children = node->Children();
         const auto target = ResolveLValue(children[0]);
         if (!target) Error(node, "unknown assignment target");
-        else CompileLValueStore(*target, children[1], node);
+        else if (node->token.kind == TokenKind::Equal) CompileLValueStore(*target, children[1], node);
+        else CompileCompoundAssignment(*target, children[1], node->token.kind, node);
         break;
     }
     case NodeKind::Member: {
@@ -450,6 +451,48 @@ void BytecodeCompiler::CompileLValueStore(const LValueRef& target, AstNode* valu
     case LValueRef::Kind::Global:
         Emit(OpCode::Dup, 0, source);
         Emit(OpCode::StoreGlobal, static_cast<std::int32_t>(target.global.value), source);
+        break;
+    case LValueRef::Kind::Index:
+        Error(source, "lvalue kind is not implemented");
+        break;
+    }
+}
+
+void BytecodeCompiler::CompileCompoundAssignment(const LValueRef& target, AstNode* value,
+                                                 TokenKind operation, const AstNode* source) {
+    if (target.kind == LValueRef::Kind::Field) {
+        CompileExpression(target.receiver);
+        Emit(OpCode::Dup, 0, source);
+        Emit(OpCode::LoadField, static_cast<std::int32_t>(target.field), source);
+    } else {
+        CompileLValueLoad(target, source);
+    }
+    const bool stringConcat = operation == TokenKind::PlusEqual && target.type == DataType::String();
+    const bool floating = target.type == DataType::Float() || value->inferredType == DataType::Float();
+    if (floating && target.type == DataType::Int()) Emit(OpCode::ToFloat, 0, source);
+    CompileExpression(value);
+    if (stringConcat && value->inferredType != DataType::String()) Emit(OpCode::ToString, 0, source);
+    if (floating && value->inferredType == DataType::Int()) Emit(OpCode::ToFloat, 0, source);
+    OpCode opcode = OpCode::Nop;
+    if (operation == TokenKind::PlusEqual)
+        opcode = stringConcat ? OpCode::Concat : (floating ? OpCode::AddFloat : OpCode::AddInt);
+    else if (operation == TokenKind::MinusEqual) opcode = floating ? OpCode::SubFloat : OpCode::SubInt;
+    else if (operation == TokenKind::StarEqual) opcode = floating ? OpCode::MulFloat : OpCode::MulInt;
+    else if (operation == TokenKind::SlashEqual) opcode = floating ? OpCode::DivFloat : OpCode::DivInt;
+    else if (operation == TokenKind::PercentEqual) opcode = OpCode::ModInt;
+    else { Error(source, "compound assignment operator cannot be compiled"); return; }
+    Emit(opcode, 0, source);
+    switch (target.kind) {
+    case LValueRef::Kind::Local:
+        Emit(OpCode::Dup, 0, source);
+        Emit(OpCode::StoreLocal, static_cast<std::int32_t>(target.variable.value), source);
+        break;
+    case LValueRef::Kind::Global:
+        Emit(OpCode::Dup, 0, source);
+        Emit(OpCode::StoreGlobal, static_cast<std::int32_t>(target.global.value), source);
+        break;
+    case LValueRef::Kind::Field:
+        Emit(OpCode::StoreField, static_cast<std::int32_t>(target.field), source);
         break;
     case LValueRef::Kind::Index:
         Error(source, "lvalue kind is not implemented");

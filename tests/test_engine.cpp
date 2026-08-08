@@ -328,3 +328,30 @@ TEST_CASE(switch_rejects_duplicate_and_nonconstant_cases) {
     CHECK(nonconstant);
 }
 
+TEST_CASE(break_exits_the_nearest_loop_or_switch) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("break");
+    module->AddScriptSection("success",
+        "int value() { int total = 0; for (int i = 0; i < 5; i = i + 1) { "
+        "switch (i) { case 2: break; default: total = total + 1; break; } "
+        "total = total + 10; if (i == 3) break; } return total; }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByName("value")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 43);
+}
+
+TEST_CASE(break_outside_loop_or_switch_is_rejected) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) { diagnostics.push_back(diagnostic); });
+    auto* module = engine->GetModule("break-invalid");
+    module->AddScriptSection("invalid", "int value() { break; return 0; }");
+    CHECK(!module->Build());
+    bool rejected = false;
+    for (const auto& diagnostic : diagnostics)
+        rejected = rejected || diagnostic.message.find("break statement is not inside") != std::string::npos;
+    CHECK(rejected);
+}
+

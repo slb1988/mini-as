@@ -10,7 +10,7 @@ namespace mini_as {
 enum class NodeKind {
     Program, FunctionDecl, Parameter, ClassDecl, InterfaceDecl, FieldDecl,
     Block, DeclList, VarDecl, IfStmt, WhileStmt, DoWhileStmt, ForStmt,
-    SwitchStmt, CaseClause, DefaultClause, ReturnStmt, ExprStmt, EmptyStmt,
+    SwitchStmt, CaseClause, DefaultClause, ReturnStmt, BreakStmt, ExprStmt, EmptyStmt,
     Assign, Binary, Unary, Call, Member, Literal, Identifier
 };
 

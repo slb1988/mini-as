@@ -94,6 +94,12 @@ private:
         AstNode* receiver = nullptr;
     };
 
+    struct ControlFlowContext {
+        std::vector<std::size_t> breakJumps;
+        bool loop = false;
+        std::size_t continueTarget = 0;
+    };
+
     void CompileFunction(AstNode* node, std::size_t functionIndex);
     void CompileGlobalInitializer(AstNode* root);
     void CompileBlock(AstNode* node, bool createScope = true);
@@ -127,6 +133,7 @@ private:
     std::unordered_map<std::string, TypeId> classIds_;
     std::vector<GlobalSignature> globals_;
     std::unordered_map<std::string, GlobalSignature> globalSymbols_;
+    std::vector<ControlFlowContext> controlFlow_;
 };
 
 } // namespace mini_as

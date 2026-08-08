@@ -129,6 +129,11 @@ AstNode* Parser::ParseStatement() {
     if (Match(TokenKind::KwFor)) return ParseFor();
     if (Match(TokenKind::KwSwitch)) return ParseSwitch();
     if (Match(TokenKind::KwReturn)) return ParseReturn();
+    if (Match(TokenKind::KwBreak)) {
+        AstNode* statement = arena_->Make(NodeKind::BreakStmt, Previous());
+        Consume(TokenKind::Semicolon, "expected ';' after break");
+        return statement;
+    }
     if (IsVariableDeclarationStart()) return ParseVariableDeclaration();
     AstNode* statement = arena_->Make(NodeKind::ExprStmt, Current());
     statement->AppendChild(ParseExpression());
@@ -383,7 +388,7 @@ void Parser::Synchronize() {
         switch (Current().kind) {
         case TokenKind::KwIf: case TokenKind::KwWhile: case TokenKind::KwDo:
         case TokenKind::KwFor: case TokenKind::KwSwitch: case TokenKind::KwCase:
-        case TokenKind::KwDefault: case TokenKind::KwReturn:
+        case TokenKind::KwDefault: case TokenKind::KwReturn: case TokenKind::KwBreak:
         case TokenKind::KwClass: case TokenKind::KwInterface: return;
         default: Advance();
         }

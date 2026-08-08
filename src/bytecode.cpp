@@ -128,6 +128,7 @@ void BytecodeCompiler::CompileGlobalInitializer(AstNode* root) {
     function_->constants.clear();
     scopes_.clear();
     scopes_.emplace_back();
+    controlFlow_.clear();
     nextLocal_ = 0;
     auto compileDeclaration = [&](AstNode* declaration) {
         if (!declaration || !declaration->isGlobal || !declaration->firstChild) return;
@@ -159,6 +160,7 @@ void BytecodeCompiler::CompileFunction(AstNode* node, std::size_t functionIndex)
     function_->constants.clear();
     scopes_.clear();
     scopes_.emplace_back();
+    controlFlow_.clear();
     nextLocal_ = 0;
     AstNode* child = node->firstChild;
     while (child && child->kind == NodeKind::Parameter) {
@@ -223,9 +225,12 @@ void BytecodeCompiler::CompileStatement(AstNode* node) {
         const auto loopStart = function_->code.size();
         CompileExpression(children[0]);
         const auto exitJump = Emit(OpCode::JumpIfFalse, -1, node);
+        controlFlow_.push_back({{}, true, loopStart});
         CompileStatement(children[1]);
         Emit(OpCode::Jump, static_cast<std::int32_t>(loopStart), node);
         PatchJump(exitJump, function_->code.size());
+        for (const auto jump : controlFlow_.back().breakJumps) PatchJump(jump, function_->code.size());
+        controlFlow_.pop_back();
         break;
     }
     case NodeKind::ForStmt: {
@@ -237,6 +242,7 @@ void BytecodeCompiler::CompileStatement(AstNode* node) {
             Emit(OpCode::PushConst, AddConstant(Value(true)), node);
         else CompileExpression(children[1]);
         const auto exitJump = Emit(OpCode::JumpIfFalse, -1, node);
+        controlFlow_.push_back({{}, true, condition});
         CompileStatement(children[3]);
         if (children[2]->kind != NodeKind::EmptyStmt) {
             CompileExpression(children[2]);
@@ -244,17 +250,23 @@ void BytecodeCompiler::CompileStatement(AstNode* node) {
         }
         Emit(OpCode::Jump, static_cast<std::int32_t>(condition), node);
         PatchJump(exitJump, function_->code.size());
+        for (const auto jump : controlFlow_.back().breakJumps) PatchJump(jump, function_->code.size());
+        controlFlow_.pop_back();
         scopes_.pop_back();
         break;
     }
     case NodeKind::DoWhileStmt: {
         const auto children = node->Children();
         const auto body = function_->code.size();
+        controlFlow_.push_back({{}, true, 0});
         CompileStatement(children[0]);
+        controlFlow_.back().continueTarget = function_->code.size();
         CompileExpression(children[1]);
         const auto exitJump = Emit(OpCode::JumpIfFalse, -1, node);
         Emit(OpCode::Jump, static_cast<std::int32_t>(body), node);
         PatchJump(exitJump, function_->code.size());
+        for (const auto jump : controlFlow_.back().breakJumps) PatchJump(jump, function_->code.size());
+        controlFlow_.pop_back();
         break;
     }
     case NodeKind::SwitchStmt: {
@@ -285,6 +297,7 @@ void BytecodeCompiler::CompileStatement(AstNode* node) {
             PatchJump(nextComparison, function_->code.size());
         }
         const auto defaultJump = Emit(OpCode::Jump, -1, node);
+        controlFlow_.push_back({{}, false, 0});
         for (AstNode* clause = selector ? selector->nextSibling : nullptr; clause;
              clause = clause->nextSibling) {
             for (const auto& pending : caseJumps)
@@ -295,9 +308,15 @@ void BytecodeCompiler::CompileStatement(AstNode* node) {
             for (; statement; statement = statement->nextSibling) CompileStatement(statement);
         }
         if (!defaultClause) PatchJump(defaultJump, function_->code.size());
+        for (const auto jump : controlFlow_.back().breakJumps) PatchJump(jump, function_->code.size());
+        controlFlow_.pop_back();
         scopes_.pop_back();
         break;
     }
+    case NodeKind::BreakStmt:
+        if (controlFlow_.empty()) Error(node, "break target is unavailable");
+        else controlFlow_.back().breakJumps.push_back(Emit(OpCode::Jump, -1, node));
+        break;
     default: Error(node, "statement cannot be compiled"); break;
     }
 }

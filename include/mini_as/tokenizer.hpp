@@ -12,7 +12,7 @@ enum class TokenKind {
     End, Identifier, Integer, Float, String,
     KwVoid, KwBool, KwInt, KwFloat, KwString, KwTrue, KwFalse, KwConst, KwAuto,
     KwIf, KwElse, KwWhile, KwDo, KwFor, KwSwitch, KwCase, KwDefault,
-    KwReturn, KwClass, KwInterface, KwIs, KwNull,
+    KwReturn, KwBreak, KwClass, KwInterface, KwIs, KwNull,
     LeftParen, RightParen, LeftBrace, RightBrace,
     Comma, Dot, Semicolon, Colon, At,
     Plus, Minus, Star, Slash, Percent,

@@ -128,4 +128,11 @@ if(MINI_AS_BUILD_COMPAT_TESTS)
       -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
       -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/switch_fallthrough.as
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_break_statements
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/break_statements.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
 endif()

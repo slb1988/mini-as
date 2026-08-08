@@ -163,13 +163,20 @@ void TypeChecker::CheckNode(AstNode* node) {
         if (!node->isGlobal) Declare(node->token, node->declaredType, node->isConst);
         break;
     }
-    case NodeKind::IfStmt:
-    case NodeKind::WhileStmt: {
+    case NodeKind::IfStmt: {
         AstNode* condition = node->firstChild;
         if (CheckExpression(condition) != DataType::Bool()) Error(condition, "condition must be bool");
         for (AstNode* branch = condition ? condition->nextSibling : nullptr; branch; branch = branch->nextSibling) {
             CheckNode(branch);
         }
+        break;
+    }
+    case NodeKind::WhileStmt: {
+        AstNode* condition = node->firstChild;
+        if (CheckExpression(condition) != DataType::Bool()) Error(condition, "condition must be bool");
+        ++breakableDepth_;
+        CheckNode(condition ? condition->nextSibling : nullptr);
+        --breakableDepth_;
         break;
     }
     case NodeKind::ForStmt: {
@@ -179,13 +186,17 @@ void TypeChecker::CheckNode(AstNode* node) {
         if (children[1]->kind != NodeKind::EmptyStmt &&
             CheckExpression(children[1]) != DataType::Bool()) Error(children[1], "condition must be bool");
         if (children[2]->kind != NodeKind::EmptyStmt) CheckExpression(children[2]);
+        ++breakableDepth_;
         CheckNode(children[3]);
+        --breakableDepth_;
         scopes_.pop_back();
         break;
     }
     case NodeKind::DoWhileStmt: {
         const auto children = node->Children();
+        ++breakableDepth_;
         CheckNode(children[0]);
+        --breakableDepth_;
         if (CheckExpression(children[1]) != DataType::Bool()) Error(children[1], "condition must be bool");
         break;
     }
@@ -195,6 +206,7 @@ void TypeChecker::CheckNode(AstNode* node) {
         std::unordered_set<std::int32_t> values;
         bool hasDefault = false;
         scopes_.emplace_back();
+        ++breakableDepth_;
         for (AstNode* clause = selector ? selector->nextSibling : nullptr; clause;
              clause = clause->nextSibling) {
             AstNode* statement = clause->firstChild;
@@ -214,6 +226,7 @@ void TypeChecker::CheckNode(AstNode* node) {
             }
             for (; statement; statement = statement->nextSibling) CheckNode(statement);
         }
+        --breakableDepth_;
         scopes_.pop_back();
         break;
     }
@@ -224,6 +237,9 @@ void TypeChecker::CheckNode(AstNode* node) {
         }
         break;
     }
+    case NodeKind::BreakStmt:
+        if (breakableDepth_ == 0) Error(node, "break statement is not inside a loop or switch");
+        break;
     case NodeKind::ExprStmt: CheckExpression(node->firstChild); break;
     case NodeKind::ClassDecl: case NodeKind::InterfaceDecl: case NodeKind::EmptyStmt:
     case NodeKind::CaseClause: case NodeKind::DefaultClause: break;

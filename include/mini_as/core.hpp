@@ -59,7 +59,12 @@ private:
     std::vector<Diagnostic> diagnostics_;
 };
 
-enum class TypeKind { Void, Bool, Int, Float, String, Object, Invalid };
+enum class TypeKind {
+    Void, Bool,
+    Int8, Int16, Int, Int64,
+    UInt8, UInt16, UInt, UInt64,
+    Float, String, Object, Invalid
+};
 
 struct DataType {
     TypeKind kind = TypeKind::Invalid;
@@ -68,7 +73,16 @@ struct DataType {
 
     static DataType Void();
     static DataType Bool();
+    static DataType Int8();
+    static DataType Int16();
     static DataType Int();
+    static DataType Int32();
+    static DataType Int64();
+    static DataType UInt8();
+    static DataType UInt16();
+    static DataType UInt();
+    static DataType UInt32();
+    static DataType UInt64();
     static DataType Float();
     static DataType String();
     static DataType Object(std::string name, bool handle = false);
@@ -76,15 +90,29 @@ struct DataType {
 
     std::string Name() const;
     bool IsNumeric() const;
+    bool IsInteger() const;
+    bool IsSignedInteger() const;
+    bool IsUnsignedInteger() const;
+    unsigned IntegerBits() const;
     bool IsValid() const;
 };
 
 bool operator==(const DataType& left, const DataType& right);
 bool operator!=(const DataType& left, const DataType& right);
 
+DataType CommonNumericType(const DataType& left, const DataType& right);
+
+struct IntegerStorage {
+    TypeKind kind = TypeKind::Int;
+    std::uint64_t bits = 0;
+};
+
+bool operator==(const IntegerStorage& left, const IntegerStorage& right);
+
 class Value {
 public:
-    using Storage = std::variant<std::monostate, bool, std::int32_t, float, std::string, ObjectHandle>;
+    using Storage = std::variant<std::monostate, bool, std::int32_t, IntegerStorage,
+                                 float, std::string, ObjectHandle>;
 
     Value() = default;
     explicit Value(bool value);
@@ -94,8 +122,12 @@ public:
     explicit Value(const char* value);
     explicit Value(ObjectHandle value);
 
+    static Value Integer(const DataType& type, std::uint64_t bits);
+
     DataType Type() const;
     bool IsVoid() const;
+    std::int64_t SignedInteger() const;
+    std::uint64_t UnsignedInteger() const;
     const Storage& Raw() const;
 
     template <typename T>
@@ -111,6 +143,8 @@ public:
 private:
     Storage storage_;
 };
+
+Value ConvertInteger(const Value& value, const DataType& target);
 
 bool operator==(const Value& left, const Value& right);
 

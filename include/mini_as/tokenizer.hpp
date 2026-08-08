@@ -10,7 +10,9 @@ namespace mini_as {
 
 enum class TokenKind {
     End, Identifier, Integer, Float, String,
-    KwVoid, KwBool, KwInt, KwFloat, KwString, KwTrue, KwFalse, KwConst, KwAuto,
+    KwVoid, KwBool, KwInt8, KwInt16, KwInt, KwInt64,
+    KwUInt8, KwUInt16, KwUInt, KwUInt64,
+    KwFloat, KwString, KwTrue, KwFalse, KwConst, KwAuto,
     KwIf, KwElse, KwWhile, KwDo, KwFor, KwSwitch, KwCase, KwDefault,
     KwReturn, KwBreak, KwContinue, KwClass, KwInterface, KwIs, KwNull,
     LeftParen, RightParen, LeftBrace, RightBrace,

@@ -14,7 +14,7 @@ struct RegisteredHostFunction;
 enum class OpCode : std::uint8_t {
     Nop, Suspend,
     PushConst, PushVoid, LoadLocal, StoreLocal, LoadGlobal, StoreGlobal, Dup, Swap, Pop,
-    ToFloat, ToString,
+    ToFloat, ToInteger, ToString,
     AddInt, SubInt, MulInt, DivInt, ModInt,
     AddFloat, SubFloat, MulFloat, DivFloat,
     Concat, NegInt, NegFloat, LogicalNot,
@@ -128,6 +128,8 @@ private:
     void CompileCompoundAssignment(const LValueRef& target, AstNode* value,
                                    TokenKind operation, const AstNode* source);
     void CompileIncrement(AstNode* node);
+    void EmitConversion(const DataType& from, const DataType& to, const AstNode* source);
+    std::optional<int> ConversionCost(const DataType& from, const DataType& to) const;
     std::int32_t AddCallable(CallableRef callable);
     std::optional<std::pair<std::size_t, DataType>> FindField(const AstNode* member) const;
     std::size_t Emit(OpCode opcode, std::int32_t operand, const AstNode* node);

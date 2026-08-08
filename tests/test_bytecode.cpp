@@ -111,3 +111,20 @@ TEST_CASE(bytecode_globals_use_stable_ids_for_load_and_store) {
     CHECK(stored);
 }
 
+TEST_CASE(bytecode_emits_explicit_integer_width_conversions) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("integer-conversion",
+        "int64 widen(int8 value) { uint16 next = value; return next + 1; }", diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    mini_as::TypeChecker checker(diagnostics);
+    CHECK(checker.Check(tree.root));
+    mini_as::BytecodeCompiler compiler(diagnostics);
+    auto module = compiler.Compile(tree.root, checker.Functions());
+    CHECK(!diagnostics.HasErrors());
+    int conversions = 0;
+    for (const auto& instruction : module.functions[0].code)
+        if (instruction.opcode == mini_as::OpCode::ToInteger) ++conversions;
+    CHECK(conversions >= 3);
+}
+

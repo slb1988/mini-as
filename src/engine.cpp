@@ -8,7 +8,7 @@ namespace {
 
 Value DefaultGlobalValue(const DataType& type) {
     if (type == DataType::Bool()) return Value(false);
-    if (type == DataType::Int()) return Value(std::int32_t{0});
+    if (type.IsInteger()) return Value::Integer(type, 0);
     if (type == DataType::Float()) return Value(0.0f);
     if (type == DataType::String()) return Value(std::string{});
     if (type.kind == TypeKind::Object) return Value(ObjectHandle{});
@@ -176,7 +176,11 @@ const std::vector<StackFrameInfo>& ScriptContext::GetCallStack() const { return 
 bool ScriptContext::SetArgument(std::size_t index, Value value) {
     if (!function_ || index >= arguments_.size() || result_.state != ExecutionState::Prepared) return false;
     const DataType expected = function_->signature.parameters[index];
-    if (value.Type() == DataType::Int() && expected == DataType::Float()) value = Value(static_cast<float>(value.As<std::int32_t>()));
+    if (value.Type().IsInteger() && expected.IsInteger()) value = ConvertInteger(value, expected);
+    else if (value.Type().IsSignedInteger() && expected == DataType::Float())
+        value = Value(static_cast<float>(value.SignedInteger()));
+    else if (value.Type().IsUnsignedInteger() && expected == DataType::Float())
+        value = Value(static_cast<float>(value.UnsignedInteger()));
     else if (value.Type() != expected) {
         if (value.Type().kind == TypeKind::Object && value.Type().objectName == "<null>" && expected.isHandle) {
             arguments_[index] = std::move(value);

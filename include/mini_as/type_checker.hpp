@@ -69,6 +69,7 @@ private:
     const ClassSignature* FindClass(std::string_view name) const;
     void Declare(const Token& name, const DataType& type, bool isConst = false);
     bool CanConvert(const DataType& from, const DataType& to) const;
+    std::optional<int> ConversionCost(const DataType& from, const DataType& to) const;
     void Error(const AstNode* node, std::string message);
 
     DiagnosticSink& diagnostics_;

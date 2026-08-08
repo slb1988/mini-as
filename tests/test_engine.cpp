@@ -608,3 +608,35 @@ TEST_CASE(null_interface_dispatch_reports_the_call_location) {
     CHECK(context->GetExceptionLocation().row == 3);
 }
 
+TEST_CASE(integer_family_preserves_width_signedness_and_wraparound) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("integer-family");
+    module->AddScriptSection("success",
+        "int run() { int8 sb = 127; sb++; uint8 ub = 255; ub++; "
+        "int16 a = 1; uint16 b = 1; int32 c = 1; uint32 d = 1; "
+        "int64 e = 1; uint64 f = 1; int64 sum = a + b + c + d + e + f; "
+        "return sb == -128 && ub == 0 ? sum + 36 : 0; }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByName("run")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+}
+
+TEST_CASE(integer_family_rejects_bad_initializers_and_locates_division_by_zero) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* invalid = engine->GetModule("integer-invalid");
+    invalid->AddScriptSection("invalid", "uint8 bad = \"not an integer\";");
+    CHECK(!invalid->Build());
+
+    auto* runtime = engine->GetModule("integer-runtime");
+    runtime->AddScriptSection("runtime",
+        "uint64 divide() {\n uint64 value = 1;\n uint64 zero = 0;\n return value / zero;\n}");
+    CHECK(runtime->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(runtime->GetFunctionByName("divide")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Exception);
+    CHECK(context->GetExceptionString() == "division by zero");
+    CHECK(context->GetExceptionLocation().row == 4);
+}
+

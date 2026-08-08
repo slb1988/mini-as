@@ -360,7 +360,14 @@ DataType Parser::ParseType(bool allowVoid) {
     DataType type;
     if (allowVoid && Match(TokenKind::KwVoid)) type = DataType::Void();
     else if (Match(TokenKind::KwBool)) type = DataType::Bool();
+    else if (Match(TokenKind::KwInt8)) type = DataType::Int8();
+    else if (Match(TokenKind::KwInt16)) type = DataType::Int16();
     else if (Match(TokenKind::KwInt)) type = DataType::Int();
+    else if (Match(TokenKind::KwInt64)) type = DataType::Int64();
+    else if (Match(TokenKind::KwUInt8)) type = DataType::UInt8();
+    else if (Match(TokenKind::KwUInt16)) type = DataType::UInt16();
+    else if (Match(TokenKind::KwUInt)) type = DataType::UInt();
+    else if (Match(TokenKind::KwUInt64)) type = DataType::UInt64();
     else if (Match(TokenKind::KwFloat)) type = DataType::Float();
     else if (Match(TokenKind::KwString)) type = DataType::String();
     else if (Match(TokenKind::Identifier)) type = DataType::Object(Previous().lexeme);
@@ -371,7 +378,9 @@ DataType Parser::ParseType(bool allowVoid) {
 
 bool Parser::IsTypeStart(bool allowIdentifier) const {
     switch (Current().kind) {
-    case TokenKind::KwVoid: case TokenKind::KwBool: case TokenKind::KwInt:
+    case TokenKind::KwVoid: case TokenKind::KwBool:
+    case TokenKind::KwInt8: case TokenKind::KwInt16: case TokenKind::KwInt: case TokenKind::KwInt64:
+    case TokenKind::KwUInt8: case TokenKind::KwUInt16: case TokenKind::KwUInt: case TokenKind::KwUInt64:
     case TokenKind::KwFloat: case TokenKind::KwString: return true;
     case TokenKind::Identifier: return allowIdentifier;
     default: return false;

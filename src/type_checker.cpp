@@ -215,8 +215,9 @@ void TypeChecker::CheckNode(AstNode* node) {
     }
     case NodeKind::SwitchStmt: {
         AstNode* selector = node->firstChild;
-        if (CheckExpression(selector) != DataType::Int()) Error(selector, "switch expression must be int");
-        std::unordered_set<std::int32_t> values;
+        const DataType selectorType = CheckExpression(selector);
+        if (!selectorType.IsInteger()) Error(selector, "switch expression must be an integer");
+        std::unordered_set<std::string> values;
         bool hasDefault = false;
         scopes_.emplace_back();
         ++breakableDepth_;
@@ -227,9 +228,10 @@ void TypeChecker::CheckNode(AstNode* node) {
                 AstNode* valueExpression = statement;
                 const DataType valueType = CheckExpression(valueExpression);
                 auto value = ConstantExpressionEvaluator{}.Evaluate(valueExpression);
-                if (valueType != DataType::Int() || !value || value->Type() != DataType::Int()) {
+                if (!valueType.IsInteger() || !value || !value->Type().IsInteger()) {
                     Error(valueExpression, "case value must be an integer constant expression");
-                } else if (!values.insert(value->As<std::int32_t>()).second) {
+                } else if (selectorType.IsInteger() &&
+                           !values.insert(ConvertInteger(*value, selectorType).ToString()).second) {
                     Error(valueExpression, "duplicate case value");
                 }
                 statement = statement ? statement->nextSibling : nullptr;
@@ -344,7 +346,8 @@ DataType TypeChecker::CheckExpression(AstNode* node) {
             Error(children[0], "conditional expression requires a bool condition");
         const DataType whenTrue = CheckExpression(children[1]);
         const DataType whenFalse = CheckExpression(children[2]);
-        if (whenTrue == whenFalse) result = whenTrue;
+        if (whenTrue.IsNumeric() && whenFalse.IsNumeric()) result = CommonNumericType(whenTrue, whenFalse);
+        else if (whenTrue == whenFalse) result = whenTrue;
         else if (CanConvert(whenTrue, whenFalse)) result = whenFalse;
         else if (CanConvert(whenFalse, whenTrue)) result = whenTrue;
         else Error(node, "conditional branches have incompatible types");
@@ -381,11 +384,10 @@ DataType TypeChecker::CheckExpression(AstNode* node) {
                 operationType = DataType::String();
             } else if (target.IsNumeric() && value.IsNumeric()) {
                 if (node->token.kind == TokenKind::PercentEqual &&
-                    (target != DataType::Int() || value != DataType::Int())) {
-                    Error(node, "'%=' requires int operands");
+                    (!target.IsInteger() || !value.IsInteger())) {
+                    Error(node, "'%=' requires integer operands");
                 }
-                operationType = target == DataType::Float() || value == DataType::Float()
-                    ? DataType::Float() : DataType::Int();
+                operationType = CommonNumericType(target, value);
             } else {
                 Error(node, "compound assignment requires compatible numeric operands");
             }
@@ -422,7 +424,7 @@ DataType TypeChecker::CheckBinary(AstNode* node) {
     }
     if (op == TokenKind::Less || op == TokenKind::LessEqual ||
         op == TokenKind::Greater || op == TokenKind::GreaterEqual) return DataType::Bool();
-    return left == DataType::Float() || right == DataType::Float() ? DataType::Float() : DataType::Int();
+    return CommonNumericType(left, right);
 }
 
 DataType TypeChecker::CheckUnary(AstNode* node) {
@@ -459,9 +461,9 @@ DataType TypeChecker::CheckCall(AstNode* node) {
                 int cost = 0;
                 bool viable = true;
                 for (std::size_t i = 0; i < arguments.size(); ++i) {
-                    if (arguments[i] == candidate.parameters[i]) continue;
-                    if (arguments[i] == DataType::Int() && candidate.parameters[i] == DataType::Float()) ++cost;
-                    else viable = false;
+                    const auto conversion = ConversionCost(arguments[i], candidate.parameters[i]);
+                    if (!conversion) { viable = false; break; }
+                    cost += *conversion;
                 }
                 if (viable && cost < bestCost) { constructor = &candidate; bestCost = cost; }
             }
@@ -493,9 +495,9 @@ DataType TypeChecker::CheckCall(AstNode* node) {
         int cost = 0;
         bool viable = true;
         for (std::size_t i = 0; i < arguments.size(); ++i) {
-            if (arguments[i] == function.parameters[i]) continue;
-            if (arguments[i] == DataType::Int() && function.parameters[i] == DataType::Float()) ++cost;
-            else viable = false;
+            const auto conversion = ConversionCost(arguments[i], function.parameters[i]);
+            if (!conversion) { viable = false; break; }
+            cost += *conversion;
         }
         if (viable && cost < bestCost) { best = &function; bestCost = cost; }
     }
@@ -525,9 +527,9 @@ const FunctionSignature* TypeChecker::FindMethod(
         int cost = 0;
         bool viable = true;
         for (std::size_t i = 0; i < arguments.size(); ++i) {
-            if (arguments[i] == method.parameters[i]) continue;
-            if (arguments[i] == DataType::Int() && method.parameters[i] == DataType::Float()) ++cost;
-            else viable = false;
+            const auto conversion = ConversionCost(arguments[i], method.parameters[i]);
+            if (!conversion) { viable = false; break; }
+            cost += *conversion;
         }
         if (viable && cost < bestCost) { best = &method; bestCost = cost; }
     }
@@ -558,7 +560,7 @@ void TypeChecker::Declare(const Token& name, const DataType& type, bool isConst)
 
 bool TypeChecker::CanConvert(const DataType& from, const DataType& to) const {
     if (from == to) return true;
-    if (from == DataType::Int() && to == DataType::Float()) return true;
+    if (from.IsInteger() && (to.IsInteger() || to == DataType::Float())) return true;
     if (from.kind == TypeKind::Object && from.objectName == "<null>" && to.isHandle) return true;
     if (from.kind == TypeKind::Object && to.kind == TypeKind::Object && from.isHandle && to.isHandle) {
         if (const auto* type = FindClass(from.objectName)) {
@@ -566,6 +568,17 @@ bool TypeChecker::CanConvert(const DataType& from, const DataType& to) const {
         }
     }
     return false;
+}
+
+std::optional<int> TypeChecker::ConversionCost(const DataType& from, const DataType& to) const {
+    if (from == to) return 0;
+    if (from.IsInteger() && to.IsInteger()) {
+        const int widthCost = static_cast<int>(from.IntegerBits() > to.IntegerBits()
+            ? from.IntegerBits() - to.IntegerBits() : to.IntegerBits() - from.IntegerBits());
+        return 1 + widthCost + (from.IsSignedInteger() != to.IsSignedInteger() ? 1 : 0);
+    }
+    if (from.IsInteger() && to == DataType::Float()) return 100;
+    return CanConvert(from, to) ? std::optional<int>{1} : std::nullopt;
 }
 
 void TypeChecker::Error(const AstNode* node, std::string message) {

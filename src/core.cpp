@@ -1,6 +1,7 @@
 #include "mini_as/core.hpp"
 #include "mini_as/object.hpp"
 
+#include <algorithm>
 #include <iomanip>
 #include <sstream>
 #include <utility>
@@ -30,7 +31,16 @@ void DiagnosticSink::Clear() { diagnostics_.clear(); }
 
 DataType DataType::Void() { return {TypeKind::Void, {}, false}; }
 DataType DataType::Bool() { return {TypeKind::Bool, {}, false}; }
+DataType DataType::Int8() { return {TypeKind::Int8, {}, false}; }
+DataType DataType::Int16() { return {TypeKind::Int16, {}, false}; }
 DataType DataType::Int() { return {TypeKind::Int, {}, false}; }
+DataType DataType::Int32() { return Int(); }
+DataType DataType::Int64() { return {TypeKind::Int64, {}, false}; }
+DataType DataType::UInt8() { return {TypeKind::UInt8, {}, false}; }
+DataType DataType::UInt16() { return {TypeKind::UInt16, {}, false}; }
+DataType DataType::UInt() { return {TypeKind::UInt, {}, false}; }
+DataType DataType::UInt32() { return UInt(); }
+DataType DataType::UInt64() { return {TypeKind::UInt64, {}, false}; }
 DataType DataType::Float() { return {TypeKind::Float, {}, false}; }
 DataType DataType::String() { return {TypeKind::String, {}, false}; }
 DataType DataType::Object(std::string name, bool handle) {
@@ -42,7 +52,14 @@ std::string DataType::Name() const {
     switch (kind) {
     case TypeKind::Void: return "void";
     case TypeKind::Bool: return "bool";
+    case TypeKind::Int8: return "int8";
+    case TypeKind::Int16: return "int16";
     case TypeKind::Int: return "int";
+    case TypeKind::Int64: return "int64";
+    case TypeKind::UInt8: return "uint8";
+    case TypeKind::UInt16: return "uint16";
+    case TypeKind::UInt: return "uint";
+    case TypeKind::UInt64: return "uint64";
     case TypeKind::Float: return "float";
     case TypeKind::String: return "string";
     case TypeKind::Object: return objectName + (isHandle ? "@" : "");
@@ -51,7 +68,25 @@ std::string DataType::Name() const {
     return "<invalid>";
 }
 
-bool DataType::IsNumeric() const { return kind == TypeKind::Int || kind == TypeKind::Float; }
+bool DataType::IsNumeric() const { return IsInteger() || kind == TypeKind::Float; }
+bool DataType::IsInteger() const { return IsSignedInteger() || IsUnsignedInteger(); }
+bool DataType::IsSignedInteger() const {
+    return kind == TypeKind::Int8 || kind == TypeKind::Int16 ||
+           kind == TypeKind::Int || kind == TypeKind::Int64;
+}
+bool DataType::IsUnsignedInteger() const {
+    return kind == TypeKind::UInt8 || kind == TypeKind::UInt16 ||
+           kind == TypeKind::UInt || kind == TypeKind::UInt64;
+}
+unsigned DataType::IntegerBits() const {
+    switch (kind) {
+    case TypeKind::Int8: case TypeKind::UInt8: return 8;
+    case TypeKind::Int16: case TypeKind::UInt16: return 16;
+    case TypeKind::Int: case TypeKind::UInt: return 32;
+    case TypeKind::Int64: case TypeKind::UInt64: return 64;
+    default: return 0;
+    }
+}
 bool DataType::IsValid() const { return kind != TypeKind::Invalid; }
 
 bool operator==(const DataType& left, const DataType& right) {
@@ -60,6 +95,24 @@ bool operator==(const DataType& left, const DataType& right) {
 }
 bool operator!=(const DataType& left, const DataType& right) { return !(left == right); }
 
+DataType CommonNumericType(const DataType& left, const DataType& right) {
+    if (!left.IsNumeric() || !right.IsNumeric()) return DataType::Invalid();
+    if (left == DataType::Float() || right == DataType::Float()) return DataType::Float();
+    DataType promotedLeft = left.IntegerBits() < 32 ? DataType::Int() : left;
+    DataType promotedRight = right.IntegerBits() < 32 ? DataType::Int() : right;
+    if (promotedLeft == promotedRight) return promotedLeft;
+    const unsigned width = std::max(promotedLeft.IntegerBits(), promotedRight.IntegerBits());
+    const bool unsignedResult =
+        (promotedLeft.IsUnsignedInteger() && promotedLeft.IntegerBits() >= promotedRight.IntegerBits()) ||
+        (promotedRight.IsUnsignedInteger() && promotedRight.IntegerBits() >= promotedLeft.IntegerBits());
+    if (width == 64) return unsignedResult ? DataType::UInt64() : DataType::Int64();
+    return unsignedResult ? DataType::UInt() : DataType::Int();
+}
+
+bool operator==(const IntegerStorage& left, const IntegerStorage& right) {
+    return left.kind == right.kind && left.bits == right.bits;
+}
+
 Value::Value(bool value) : storage_(value) {}
 Value::Value(std::int32_t value) : storage_(value) {}
 Value::Value(float value) : storage_(value) {}
@@ -67,14 +120,25 @@ Value::Value(std::string value) : storage_(std::move(value)) {}
 Value::Value(const char* value) : storage_(std::string(value)) {}
 Value::Value(ObjectHandle value) : storage_(std::move(value)) {}
 
+Value Value::Integer(const DataType& type, std::uint64_t bits) {
+    if (!type.IsInteger()) throw std::runtime_error("integer value requires an integer type");
+    const unsigned width = type.IntegerBits();
+    if (width < 64) bits &= (std::uint64_t{1} << width) - 1;
+    if (type == DataType::Int()) return Value(static_cast<std::int32_t>(static_cast<std::uint32_t>(bits)));
+    Value value;
+    value.storage_ = IntegerStorage{type.kind, bits};
+    return value;
+}
+
 DataType Value::Type() const {
     switch (storage_.index()) {
     case 0: return DataType::Void();
     case 1: return DataType::Bool();
     case 2: return DataType::Int();
-    case 3: return DataType::Float();
-    case 4: return DataType::String();
-    case 5: {
+    case 3: return {std::get<IntegerStorage>(storage_).kind, {}, false};
+    case 4: return DataType::Float();
+    case 5: return DataType::String();
+    case 6: {
         const auto& handle = std::get<ObjectHandle>(storage_);
         return handle ? DataType::Object(handle.Get()->GetTypeInfo()->name, true)
                       : DataType::Object("<null>", true);
@@ -84,12 +148,31 @@ DataType Value::Type() const {
 }
 
 bool Value::IsVoid() const { return std::holds_alternative<std::monostate>(storage_); }
+std::uint64_t Value::UnsignedInteger() const {
+    if (const auto* value = std::get_if<std::int32_t>(&storage_))
+        return static_cast<std::uint32_t>(*value);
+    if (const auto* value = std::get_if<IntegerStorage>(&storage_)) return value->bits;
+    throw std::runtime_error("value is not an integer");
+}
+std::int64_t Value::SignedInteger() const {
+    if (const auto* value = std::get_if<std::int32_t>(&storage_)) return *value;
+    const auto* value = std::get_if<IntegerStorage>(&storage_);
+    if (!value || !Type().IsSignedInteger()) throw std::runtime_error("value is not a signed integer");
+    const unsigned width = Type().IntegerBits();
+    if (width == 64) return static_cast<std::int64_t>(value->bits);
+    const std::uint64_t sign = std::uint64_t{1} << (width - 1);
+    return static_cast<std::int64_t>((value->bits ^ sign) - sign);
+}
 const Value::Storage& Value::Raw() const { return storage_; }
 
 std::string Value::ToString() const {
     if (IsVoid()) return "void";
     if (const auto* value = std::get_if<bool>(&storage_)) return *value ? "true" : "false";
     if (const auto* value = std::get_if<std::int32_t>(&storage_)) return std::to_string(*value);
+    if (std::holds_alternative<IntegerStorage>(storage_)) {
+        return Type().IsSignedInteger() ? std::to_string(SignedInteger())
+                                        : std::to_string(UnsignedInteger());
+    }
     if (const auto* value = std::get_if<float>(&storage_)) {
         std::ostringstream stream;
         stream << std::setprecision(7) << *value;
@@ -101,5 +184,13 @@ std::string Value::ToString() const {
 }
 
 bool operator==(const Value& left, const Value& right) { return left.Raw() == right.Raw(); }
+
+Value ConvertInteger(const Value& value, const DataType& target) {
+    if (!value.Type().IsInteger() || !target.IsInteger())
+        throw std::runtime_error("integer conversion requires integer types");
+    const std::uint64_t bits = value.Type().IsSignedInteger()
+        ? static_cast<std::uint64_t>(value.SignedInteger()) : value.UnsignedInteger();
+    return Value::Integer(target, bits);
+}
 
 } // namespace mini_as

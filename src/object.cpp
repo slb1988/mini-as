@@ -48,7 +48,9 @@ ScriptObject::ScriptObject(const TypeInfo* type) : RefObject(type) {
     for (const auto& field : type->fields) {
         switch (field.second.kind) {
         case TypeKind::Bool: fields_.emplace_back(false); break;
-        case TypeKind::Int: fields_.emplace_back(std::int32_t{0}); break;
+        case TypeKind::Int8: case TypeKind::Int16: case TypeKind::Int: case TypeKind::Int64:
+        case TypeKind::UInt8: case TypeKind::UInt16: case TypeKind::UInt: case TypeKind::UInt64:
+            fields_.push_back(Value::Integer(field.second, 0)); break;
         case TypeKind::Float: fields_.emplace_back(0.0f); break;
         case TypeKind::String: fields_.emplace_back(std::string{}); break;
         case TypeKind::Object: fields_.emplace_back(ObjectHandle{}); break;

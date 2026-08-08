@@ -13,7 +13,14 @@ DataType ReadType(const std::vector<Token>& tokens, std::size_t& index) {
     switch (tokens[index].kind) {
     case TokenKind::KwVoid: type = DataType::Void(); break;
     case TokenKind::KwBool: type = DataType::Bool(); break;
+    case TokenKind::KwInt8: type = DataType::Int8(); break;
+    case TokenKind::KwInt16: type = DataType::Int16(); break;
     case TokenKind::KwInt: type = DataType::Int(); break;
+    case TokenKind::KwInt64: type = DataType::Int64(); break;
+    case TokenKind::KwUInt8: type = DataType::UInt8(); break;
+    case TokenKind::KwUInt16: type = DataType::UInt16(); break;
+    case TokenKind::KwUInt: type = DataType::UInt(); break;
+    case TokenKind::KwUInt64: type = DataType::UInt64(); break;
     case TokenKind::KwFloat: type = DataType::Float(); break;
     case TokenKind::KwString: type = DataType::String(); break;
     case TokenKind::Identifier: type = DataType::Object(tokens[index].lexeme); break;

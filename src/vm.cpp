@@ -2,6 +2,7 @@
 #include "mini_as/generic.hpp"
 
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -10,11 +11,23 @@ namespace {
 
 float AsFloat(const Value& value) {
     if (value.Type() == DataType::Float()) return value.As<float>();
-    if (value.Type() == DataType::Int()) return static_cast<float>(value.As<std::int32_t>());
+    if (value.Type().IsSignedInteger()) return static_cast<float>(value.SignedInteger());
+    if (value.Type().IsUnsignedInteger()) return static_cast<float>(value.UnsignedInteger());
     throw std::runtime_error("expected numeric value");
 }
 
 bool ValuesEqual(const Value& left, const Value& right) {
+    if (left.Type().IsInteger() && right.Type().IsInteger()) {
+        if (left.Type().IsSignedInteger() && right.Type().IsSignedInteger())
+            return left.SignedInteger() == right.SignedInteger();
+        if (left.Type().IsUnsignedInteger() && right.Type().IsUnsignedInteger())
+            return left.UnsignedInteger() == right.UnsignedInteger();
+        if (left.Type().IsSignedInteger())
+            return left.SignedInteger() >= 0 &&
+                   static_cast<std::uint64_t>(left.SignedInteger()) == right.UnsignedInteger();
+        return right.SignedInteger() >= 0 &&
+               left.UnsignedInteger() == static_cast<std::uint64_t>(right.SignedInteger());
+    }
     if (left.Type().IsNumeric() && right.Type().IsNumeric()) return AsFloat(left) == AsFloat(right);
     return left == right;
 }
@@ -130,12 +143,22 @@ bool VirtualMachine::Step() {
     }
     case OpCode::Pop: Pop(); break;
     case OpCode::ToFloat: Push(Value(AsFloat(Pop()))); break;
+    case OpCode::ToInteger: {
+        const DataType target{static_cast<TypeKind>(instruction.operand), {}, false};
+        if (!target.IsInteger()) throw std::runtime_error("invalid integer conversion target");
+        Push(ConvertInteger(Pop(), target));
+        break;
+    }
     case OpCode::ToString: Push(Value(Pop().ToString())); break;
     case OpCode::AddInt: case OpCode::SubInt: case OpCode::MulInt: case OpCode::DivInt: case OpCode::ModInt:
     case OpCode::AddFloat: case OpCode::SubFloat: case OpCode::MulFloat: case OpCode::DivFloat:
         BinaryArithmetic(instruction); break;
     case OpCode::Concat: { Value right = Pop(), left = Pop(); Push(Value(left.As<std::string>() + right.As<std::string>())); break; }
-    case OpCode::NegInt: Push(Value(-Pop().As<std::int32_t>())); break;
+    case OpCode::NegInt: {
+        Value operand = Pop();
+        Push(Value::Integer(operand.Type(), std::uint64_t{0} - operand.UnsignedInteger()));
+        break;
+    }
     case OpCode::NegFloat: Push(Value(-Pop().As<float>())); break;
     case OpCode::LogicalNot: Push(Value(!Pop().As<bool>())); break;
     case OpCode::Equal: case OpCode::NotEqual: case OpCode::Less: case OpCode::LessEqual:
@@ -298,15 +321,32 @@ void VirtualMachine::BinaryArithmetic(const Instruction& instruction) {
         }
         return;
     }
-    const auto a = left.As<std::int32_t>(), b = right.As<std::int32_t>();
+    if (!left.Type().IsInteger() || left.Type() != right.Type())
+        throw std::runtime_error("integer operands have incompatible types");
+    const DataType type = left.Type();
+    const std::uint64_t a = left.UnsignedInteger(), b = right.UnsignedInteger();
     if ((instruction.opcode == OpCode::DivInt || instruction.opcode == OpCode::ModInt) && b == 0)
         throw std::runtime_error("division by zero");
     switch (instruction.opcode) {
-    case OpCode::AddInt: Push(Value(a + b)); break;
-    case OpCode::SubInt: Push(Value(a - b)); break;
-    case OpCode::MulInt: Push(Value(a * b)); break;
-    case OpCode::DivInt: Push(Value(a / b)); break;
-    case OpCode::ModInt: Push(Value(a % b)); break;
+    case OpCode::AddInt: Push(Value::Integer(type, a + b)); break;
+    case OpCode::SubInt: Push(Value::Integer(type, a - b)); break;
+    case OpCode::MulInt: Push(Value::Integer(type, a * b)); break;
+    case OpCode::DivInt:
+        if (type.IsSignedInteger()) {
+            const auto signedA = left.SignedInteger(), signedB = right.SignedInteger();
+            if (signedA == std::numeric_limits<std::int64_t>::min() && signedB == -1)
+                Push(Value::Integer(type, static_cast<std::uint64_t>(signedA)));
+            else Push(Value::Integer(type, static_cast<std::uint64_t>(signedA / signedB)));
+        } else Push(Value::Integer(type, a / b));
+        break;
+    case OpCode::ModInt:
+        if (type.IsSignedInteger()) {
+            const auto signedA = left.SignedInteger(), signedB = right.SignedInteger();
+            if (signedA == std::numeric_limits<std::int64_t>::min() && signedB == -1)
+                Push(Value::Integer(type, 0));
+            else Push(Value::Integer(type, static_cast<std::uint64_t>(signedA % signedB)));
+        } else Push(Value::Integer(type, a % b));
+        break;
     default: break;
     }
 }
@@ -318,11 +358,27 @@ void VirtualMachine::Compare(const Instruction& instruction) {
         result = ValuesEqual(left, right);
         if (instruction.opcode == OpCode::NotEqual) result = !result;
     } else {
-        const float a = AsFloat(left), b = AsFloat(right);
-        if (instruction.opcode == OpCode::Less) result = a < b;
-        else if (instruction.opcode == OpCode::LessEqual) result = a <= b;
-        else if (instruction.opcode == OpCode::Greater) result = a > b;
-        else result = a >= b;
+        if (left.Type().IsInteger() && right.Type().IsInteger() && left.Type() == right.Type()) {
+            if (left.Type().IsSignedInteger()) {
+                const auto a = left.SignedInteger(), b = right.SignedInteger();
+                if (instruction.opcode == OpCode::Less) result = a < b;
+                else if (instruction.opcode == OpCode::LessEqual) result = a <= b;
+                else if (instruction.opcode == OpCode::Greater) result = a > b;
+                else result = a >= b;
+            } else {
+                const auto a = left.UnsignedInteger(), b = right.UnsignedInteger();
+                if (instruction.opcode == OpCode::Less) result = a < b;
+                else if (instruction.opcode == OpCode::LessEqual) result = a <= b;
+                else if (instruction.opcode == OpCode::Greater) result = a > b;
+                else result = a >= b;
+            }
+        } else {
+            const float a = AsFloat(left), b = AsFloat(right);
+            if (instruction.opcode == OpCode::Less) result = a < b;
+            else if (instruction.opcode == OpCode::LessEqual) result = a <= b;
+            else if (instruction.opcode == OpCode::Greater) result = a > b;
+            else result = a >= b;
+        }
     }
     Push(Value(result));
 }

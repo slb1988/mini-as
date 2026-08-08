@@ -8,7 +8,12 @@ namespace {
 
 const std::unordered_map<std::string, TokenKind> kKeywords = {
     {"void", TokenKind::KwVoid}, {"bool", TokenKind::KwBool},
-    {"int", TokenKind::KwInt}, {"float", TokenKind::KwFloat},
+    {"int8", TokenKind::KwInt8}, {"int16", TokenKind::KwInt16},
+    {"int", TokenKind::KwInt}, {"int32", TokenKind::KwInt},
+    {"int64", TokenKind::KwInt64},
+    {"uint8", TokenKind::KwUInt8}, {"uint16", TokenKind::KwUInt16},
+    {"uint", TokenKind::KwUInt}, {"uint32", TokenKind::KwUInt},
+    {"uint64", TokenKind::KwUInt64}, {"float", TokenKind::KwFloat},
     {"string", TokenKind::KwString}, {"true", TokenKind::KwTrue},
     {"false", TokenKind::KwFalse}, {"const", TokenKind::KwConst}, {"auto", TokenKind::KwAuto},
     {"if", TokenKind::KwIf},

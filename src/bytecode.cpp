@@ -18,7 +18,7 @@ std::string_view OpCodeName(OpCode opcode) {
     static const char* names[] = {
         "NOP", "SUSPEND", "PUSH_CONST", "PUSH_VOID", "LOAD_LOCAL", "STORE_LOCAL",
         "LOAD_GLOBAL", "STORE_GLOBAL", "DUP", "SWAP", "POP",
-        "TO_FLOAT", "TO_STRING", "ADD_I", "SUB_I", "MUL_I", "DIV_I", "MOD_I",
+        "TO_FLOAT", "TO_INTEGER", "TO_STRING", "ADD_I", "SUB_I", "MUL_I", "DIV_I", "MOD_I",
         "ADD_F", "SUB_F", "MUL_F", "DIV_F", "CONCAT", "NEG_I", "NEG_F", "NOT",
         "EQ", "NE", "LT", "LE", "GT", "GE", "JMP", "JZ", "CALL", "CALL_HOST",
         "CALL_VIRTUAL", "NEW_OBJECT", "LOAD_FIELD", "STORE_FIELD", "RET"
@@ -36,6 +36,7 @@ std::string Disassemble(const BytecodeFunction& function) {
         if (instruction.opcode == OpCode::PushConst || instruction.opcode == OpCode::LoadLocal ||
             instruction.opcode == OpCode::StoreLocal || instruction.opcode == OpCode::LoadGlobal ||
             instruction.opcode == OpCode::StoreGlobal || instruction.opcode == OpCode::Jump ||
+            instruction.opcode == OpCode::ToInteger ||
             instruction.opcode == OpCode::JumpIfFalse || instruction.opcode == OpCode::Call ||
             instruction.opcode == OpCode::CallHost || instruction.opcode == OpCode::CallVirtual ||
             instruction.opcode == OpCode::NewObject ||
@@ -199,8 +200,7 @@ void BytecodeCompiler::CompileGlobalInitializer(AstNode* root) {
         const auto found = globalSymbols_.find(declaration->token.lexeme);
         if (found == globalSymbols_.end()) return;
         CompileExpression(declaration->firstChild);
-        if (declaration->firstChild->inferredType == DataType::Int() &&
-            declaration->declaredType == DataType::Float()) Emit(OpCode::ToFloat, 0, declaration);
+        EmitConversion(declaration->firstChild->inferredType, declaration->declaredType, declaration);
         Emit(OpCode::StoreGlobal, static_cast<std::int32_t>(found->second.id.value), declaration);
     };
     if (root) {
@@ -266,8 +266,7 @@ void BytecodeCompiler::CompileStatement(AstNode* node) {
         const auto slot = DeclareLocal(node->token);
         if (node->firstChild) CompileExpression(node->firstChild);
         else Emit(OpCode::PushVoid, 0, node);
-        if (node->firstChild && node->firstChild->inferredType == DataType::Int() &&
-            node->declaredType == DataType::Float()) Emit(OpCode::ToFloat, 0, node);
+        if (node->firstChild) EmitConversion(node->firstChild->inferredType, node->declaredType, node);
         Emit(OpCode::StoreLocal, static_cast<std::int32_t>(slot.value), node);
         break;
     }
@@ -275,8 +274,8 @@ void BytecodeCompiler::CompileStatement(AstNode* node) {
     case NodeKind::ReturnStmt:
         if (node->firstChild) CompileExpression(node->firstChild);
         else Emit(OpCode::PushVoid, 0, node);
-        if (node->firstChild && node->firstChild->inferredType == DataType::Int() &&
-            function_->signature.returnType == DataType::Float()) Emit(OpCode::ToFloat, 0, node);
+        if (node->firstChild)
+            EmitConversion(node->firstChild->inferredType, function_->signature.returnType, node);
         Emit(OpCode::Return, 0, node);
         break;
     case NodeKind::IfStmt: {
@@ -364,12 +363,12 @@ void BytecodeCompiler::CompileStatement(AstNode* node) {
             }
             AstNode* valueExpression = clause->firstChild;
             auto value = ConstantExpressionEvaluator{}.Evaluate(valueExpression);
-            if (!value || value->Type() != DataType::Int()) {
+            if (!value || !value->Type().IsInteger()) {
                 Error(valueExpression, "case value cannot be compiled");
                 continue;
             }
             Emit(OpCode::LoadLocal, static_cast<std::int32_t>(selectorSlot.value), clause);
-            Emit(OpCode::PushConst, AddConstant(std::move(*value)), valueExpression);
+            Emit(OpCode::PushConst, AddConstant(ConvertInteger(*value, selector->inferredType)), valueExpression);
             Emit(OpCode::Equal, 0, clause);
             const auto nextComparison = Emit(OpCode::JumpIfFalse, -1, clause);
             caseJumps.push_back({clause, Emit(OpCode::Jump, -1, clause)});
@@ -443,13 +442,11 @@ void BytecodeCompiler::CompileExpression(AstNode* node) {
         CompileExpression(children[0]);
         const auto elseJump = Emit(OpCode::JumpIfFalse, -1, node);
         CompileExpression(children[1]);
-        if (children[1]->inferredType == DataType::Int() && node->inferredType == DataType::Float())
-            Emit(OpCode::ToFloat, 0, children[1]);
+        EmitConversion(children[1]->inferredType, node->inferredType, children[1]);
         const auto endJump = Emit(OpCode::Jump, -1, node);
         PatchJump(elseJump, function_->code.size());
         CompileExpression(children[2]);
-        if (children[2]->inferredType == DataType::Int() && node->inferredType == DataType::Float())
-            Emit(OpCode::ToFloat, 0, children[2]);
+        EmitConversion(children[2]->inferredType, node->inferredType, children[2]);
         PatchJump(endJump, function_->code.size());
         break;
     }
@@ -543,8 +540,7 @@ void BytecodeCompiler::CompileLValueStore(const LValueRef& target, AstNode* valu
         else Emit(OpCode::LoadLocal, static_cast<std::int32_t>(implicitThisSlot_), source);
     }
     CompileExpression(value);
-    if (value->inferredType == DataType::Int() && target.type == DataType::Float())
-        Emit(OpCode::ToFloat, 0, source);
+    EmitConversion(value->inferredType, target.type, source);
     switch (target.kind) {
     case LValueRef::Kind::Local:
         Emit(OpCode::Dup, 0, source);
@@ -574,11 +570,13 @@ void BytecodeCompiler::CompileCompoundAssignment(const LValueRef& target, AstNod
         CompileLValueLoad(target, source);
     }
     const bool stringConcat = operation == TokenKind::PlusEqual && target.type == DataType::String();
-    const bool floating = target.type == DataType::Float() || value->inferredType == DataType::Float();
-    if (floating && target.type == DataType::Int()) Emit(OpCode::ToFloat, 0, source);
+    const DataType operationType = stringConcat
+        ? DataType::String() : CommonNumericType(target.type, value->inferredType);
+    const bool floating = operationType == DataType::Float();
+    if (!stringConcat) EmitConversion(target.type, operationType, source);
     CompileExpression(value);
     if (stringConcat && value->inferredType != DataType::String()) Emit(OpCode::ToString, 0, source);
-    if (floating && value->inferredType == DataType::Int()) Emit(OpCode::ToFloat, 0, source);
+    if (!stringConcat) EmitConversion(value->inferredType, operationType, source);
     OpCode opcode = OpCode::Nop;
     if (operation == TokenKind::PlusEqual)
         opcode = stringConcat ? OpCode::Concat : (floating ? OpCode::AddFloat : OpCode::AddInt);
@@ -588,6 +586,7 @@ void BytecodeCompiler::CompileCompoundAssignment(const LValueRef& target, AstNod
     else if (operation == TokenKind::PercentEqual) opcode = OpCode::ModInt;
     else { Error(source, "compound assignment operator cannot be compiled"); return; }
     Emit(opcode, 0, source);
+    if (!stringConcat) EmitConversion(operationType, target.type, source);
     switch (target.kind) {
     case LValueRef::Kind::Local:
         Emit(OpCode::Dup, 0, source);
@@ -624,7 +623,8 @@ void BytecodeCompiler::CompileIncrement(AstNode* node) {
         if (node->isPostfix) Emit(OpCode::Dup, 0, node);
     }
     const bool floating = target->type == DataType::Float();
-    Emit(OpCode::PushConst, AddConstant(floating ? Value(1.0f) : Value(std::int32_t{1})), node);
+    Emit(OpCode::PushConst,
+         AddConstant(floating ? Value(1.0f) : Value::Integer(target->type, 1)), node);
     Emit(node->token.kind == TokenKind::PlusPlus
              ? (floating ? OpCode::AddFloat : OpCode::AddInt)
              : (floating ? OpCode::SubFloat : OpCode::SubInt),
@@ -651,13 +651,18 @@ void BytecodeCompiler::CompileIncrement(AstNode* node) {
 void BytecodeCompiler::CompileBinary(AstNode* node) {
     const auto children = node->Children();
     const DataType result = node->inferredType;
+    const bool stringOperation = node->token.kind == TokenKind::Plus && result == DataType::String();
+    const DataType operationType = children[0]->inferredType.IsNumeric() &&
+                                   children[1]->inferredType.IsNumeric()
+        ? CommonNumericType(children[0]->inferredType, children[1]->inferredType)
+        : result;
     CompileExpression(children[0]);
-    if (result == DataType::Float() && children[0]->inferredType == DataType::Int()) Emit(OpCode::ToFloat, 0, node);
-    if (result == DataType::String() && children[0]->inferredType != DataType::String()) Emit(OpCode::ToString, 0, node);
+    if (!stringOperation) EmitConversion(children[0]->inferredType, operationType, node);
+    if (stringOperation && children[0]->inferredType != DataType::String()) Emit(OpCode::ToString, 0, node);
     CompileExpression(children[1]);
-    if (result == DataType::Float() && children[1]->inferredType == DataType::Int()) Emit(OpCode::ToFloat, 0, node);
-    if (result == DataType::String() && children[1]->inferredType != DataType::String()) Emit(OpCode::ToString, 0, node);
-    const bool floating = children[0]->inferredType == DataType::Float() || children[1]->inferredType == DataType::Float();
+    if (!stringOperation) EmitConversion(children[1]->inferredType, operationType, node);
+    if (stringOperation && children[1]->inferredType != DataType::String()) Emit(OpCode::ToString, 0, node);
+    const bool floating = operationType == DataType::Float();
     OpCode opcode = OpCode::Nop;
     switch (node->token.kind) {
     case TokenKind::Plus: opcode = result == DataType::String() ? OpCode::Concat : (floating ? OpCode::AddFloat : OpCode::AddInt); break;
@@ -717,8 +722,7 @@ void BytecodeCompiler::CompileFieldInitializers(std::string_view typeName, const
         if (member->firstChild) {
             Emit(OpCode::LoadLocal, static_cast<std::int32_t>(receiver.value), member);
             CompileExpression(member->firstChild);
-            if (member->firstChild->inferredType == DataType::Int() &&
-                member->declaredType == DataType::Float()) Emit(OpCode::ToFloat, 0, member);
+            EmitConversion(member->firstChild->inferredType, member->declaredType, member);
             Emit(OpCode::StoreField, static_cast<std::int32_t>(fieldIndex), member);
             Emit(OpCode::Pop, 0, member);
         }
@@ -750,10 +754,9 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
             int cost = 0;
             bool viable = true;
             for (std::size_t i = 0; i < arguments.size(); ++i) {
-                if (arguments[i]->inferredType == signature.parameters[i]) continue;
-                if (arguments[i]->inferredType == DataType::Int() &&
-                    signature.parameters[i] == DataType::Float()) ++cost;
-                else viable = false;
+                const auto conversion = ConversionCost(arguments[i]->inferredType, signature.parameters[i]);
+                if (!conversion) { viable = false; break; }
+                cost += *conversion;
             }
             if (viable && cost < bestCost) { constructor = &signature; bestCost = cost; }
         }
@@ -761,9 +764,7 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
             Emit(OpCode::Dup, 0, node);
             for (std::size_t i = 0; i < arguments.size(); ++i) {
                 CompileExpression(arguments[i]);
-                if (arguments[i]->inferredType == DataType::Int() &&
-                    constructor->parameters[i] == DataType::Float())
-                    Emit(OpCode::ToFloat, 0, arguments[i]);
+                EmitConversion(arguments[i]->inferredType, constructor->parameters[i], arguments[i]);
             }
             const auto target = functionIds_.find(FunctionKey(*constructor));
             if (target == functionIds_.end()) { Error(node, "constructor target is missing"); return; }
@@ -789,9 +790,9 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
         int cost = (!explicitMethod && !currentObjectType_.empty() && !signature.method) ? 1000 : 0;
         bool viable = true;
         for (std::size_t i = 0; i < arguments.size(); ++i) {
-            if (arguments[i]->inferredType == signature.parameters[i]) continue;
-            if (arguments[i]->inferredType == DataType::Int() && signature.parameters[i] == DataType::Float()) ++cost;
-            else viable = false;
+            const auto conversion = ConversionCost(arguments[i]->inferredType, signature.parameters[i]);
+            if (!conversion) { viable = false; break; }
+            cost += *conversion;
         }
         if (viable && cost < bestCost) { target = &signature; bestCost = cost; }
     }
@@ -802,8 +803,7 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
     }
     for (std::size_t i = 0; i < arguments.size(); ++i) {
         CompileExpression(arguments[i]);
-        if (arguments[i]->inferredType == DataType::Int() && target->parameters[i] == DataType::Float())
-            Emit(OpCode::ToFloat, 0, arguments[i]);
+        EmitConversion(arguments[i]->inferredType, target->parameters[i], arguments[i]);
     }
     if (target->method) {
         const ClassSignature* ownerType = nullptr;
@@ -845,6 +845,28 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
                                        found->second, owner, 0,
                                        static_cast<std::uint32_t>(target->parameters.size())}), node);
     }
+}
+
+void BytecodeCompiler::EmitConversion(const DataType& from, const DataType& to,
+                                      const AstNode* source) {
+    if (from == to) return;
+    if (from.IsInteger() && to.IsInteger()) {
+        Emit(OpCode::ToInteger, static_cast<std::int32_t>(to.kind), source);
+    } else if (from.IsInteger() && to == DataType::Float()) {
+        Emit(OpCode::ToFloat, 0, source);
+    }
+}
+
+std::optional<int> BytecodeCompiler::ConversionCost(const DataType& from,
+                                                     const DataType& to) const {
+    if (from == to) return 0;
+    if (from.IsInteger() && to.IsInteger()) {
+        const int widthCost = static_cast<int>(from.IntegerBits() > to.IntegerBits()
+            ? from.IntegerBits() - to.IntegerBits() : to.IntegerBits() - from.IntegerBits());
+        return 1 + widthCost + (from.IsSignedInteger() != to.IsSignedInteger() ? 1 : 0);
+    }
+    if (from.IsInteger() && to == DataType::Float()) return 100;
+    return std::nullopt;
 }
 
 std::int32_t BytecodeCompiler::AddCallable(CallableRef callable) {

@@ -73,6 +73,7 @@ private:
     std::vector<std::unordered_map<std::string, VariableSymbol>> scopes_;
     DataType currentReturn_ = DataType::Void();
     int breakableDepth_ = 0;
+    int loopDepth_ = 0;
 };
 
 } // namespace mini_as

@@ -355,3 +355,32 @@ TEST_CASE(break_outside_loop_or_switch_is_rejected) {
     CHECK(rejected);
 }
 
+TEST_CASE(continue_targets_each_loop_condition_or_increment) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("continue");
+    module->AddScriptSection("success",
+        "int value() { int total = 0; "
+        "for (int i = 1; i <= 3; i = i + 1) { if (i == 2) continue; total = total + i; } "
+        "int w = 0; while (w < 3) { w = w + 1; if (w == 2) continue; total = total + 10; } "
+        "int d = 0; do { d = d + 1; if (d < 2) continue; total = total + 100; } while (d < 2); "
+        "return total; }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByName("value")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 124);
+}
+
+TEST_CASE(continue_outside_loop_is_rejected) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) { diagnostics.push_back(diagnostic); });
+    auto* module = engine->GetModule("continue-invalid");
+    module->AddScriptSection("invalid", "int value() { continue; return 0; }");
+    CHECK(!module->Build());
+    bool rejected = false;
+    for (const auto& diagnostic : diagnostics)
+        rejected = rejected || diagnostic.message.find("continue statement is not inside a loop") != std::string::npos;
+    CHECK(rejected);
+}
+

@@ -96,6 +96,7 @@ private:
 
     struct ControlFlowContext {
         std::vector<std::size_t> breakJumps;
+        std::vector<std::size_t> continueJumps;
         bool loop = false;
         std::size_t continueTarget = 0;
     };

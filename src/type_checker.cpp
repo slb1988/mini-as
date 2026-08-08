@@ -175,7 +175,9 @@ void TypeChecker::CheckNode(AstNode* node) {
         AstNode* condition = node->firstChild;
         if (CheckExpression(condition) != DataType::Bool()) Error(condition, "condition must be bool");
         ++breakableDepth_;
+        ++loopDepth_;
         CheckNode(condition ? condition->nextSibling : nullptr);
+        --loopDepth_;
         --breakableDepth_;
         break;
     }
@@ -187,7 +189,9 @@ void TypeChecker::CheckNode(AstNode* node) {
             CheckExpression(children[1]) != DataType::Bool()) Error(children[1], "condition must be bool");
         if (children[2]->kind != NodeKind::EmptyStmt) CheckExpression(children[2]);
         ++breakableDepth_;
+        ++loopDepth_;
         CheckNode(children[3]);
+        --loopDepth_;
         --breakableDepth_;
         scopes_.pop_back();
         break;
@@ -195,7 +199,9 @@ void TypeChecker::CheckNode(AstNode* node) {
     case NodeKind::DoWhileStmt: {
         const auto children = node->Children();
         ++breakableDepth_;
+        ++loopDepth_;
         CheckNode(children[0]);
+        --loopDepth_;
         --breakableDepth_;
         if (CheckExpression(children[1]) != DataType::Bool()) Error(children[1], "condition must be bool");
         break;
@@ -239,6 +245,9 @@ void TypeChecker::CheckNode(AstNode* node) {
     }
     case NodeKind::BreakStmt:
         if (breakableDepth_ == 0) Error(node, "break statement is not inside a loop or switch");
+        break;
+    case NodeKind::ContinueStmt:
+        if (loopDepth_ == 0) Error(node, "continue statement is not inside a loop");
         break;
     case NodeKind::ExprStmt: CheckExpression(node->firstChild); break;
     case NodeKind::ClassDecl: case NodeKind::InterfaceDecl: case NodeKind::EmptyStmt:

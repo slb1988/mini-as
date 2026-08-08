@@ -225,11 +225,13 @@ void BytecodeCompiler::CompileStatement(AstNode* node) {
         const auto loopStart = function_->code.size();
         CompileExpression(children[0]);
         const auto exitJump = Emit(OpCode::JumpIfFalse, -1, node);
-        controlFlow_.push_back({{}, true, loopStart});
+        controlFlow_.push_back({{}, {}, true, loopStart});
         CompileStatement(children[1]);
         Emit(OpCode::Jump, static_cast<std::int32_t>(loopStart), node);
         PatchJump(exitJump, function_->code.size());
         for (const auto jump : controlFlow_.back().breakJumps) PatchJump(jump, function_->code.size());
+        for (const auto jump : controlFlow_.back().continueJumps)
+            PatchJump(jump, controlFlow_.back().continueTarget);
         controlFlow_.pop_back();
         break;
     }
@@ -242,8 +244,9 @@ void BytecodeCompiler::CompileStatement(AstNode* node) {
             Emit(OpCode::PushConst, AddConstant(Value(true)), node);
         else CompileExpression(children[1]);
         const auto exitJump = Emit(OpCode::JumpIfFalse, -1, node);
-        controlFlow_.push_back({{}, true, condition});
+        controlFlow_.push_back({{}, {}, true, condition});
         CompileStatement(children[3]);
+        controlFlow_.back().continueTarget = function_->code.size();
         if (children[2]->kind != NodeKind::EmptyStmt) {
             CompileExpression(children[2]);
             Emit(OpCode::Pop, 0, children[2]);
@@ -251,6 +254,8 @@ void BytecodeCompiler::CompileStatement(AstNode* node) {
         Emit(OpCode::Jump, static_cast<std::int32_t>(condition), node);
         PatchJump(exitJump, function_->code.size());
         for (const auto jump : controlFlow_.back().breakJumps) PatchJump(jump, function_->code.size());
+        for (const auto jump : controlFlow_.back().continueJumps)
+            PatchJump(jump, controlFlow_.back().continueTarget);
         controlFlow_.pop_back();
         scopes_.pop_back();
         break;
@@ -258,7 +263,7 @@ void BytecodeCompiler::CompileStatement(AstNode* node) {
     case NodeKind::DoWhileStmt: {
         const auto children = node->Children();
         const auto body = function_->code.size();
-        controlFlow_.push_back({{}, true, 0});
+        controlFlow_.push_back({{}, {}, true, 0});
         CompileStatement(children[0]);
         controlFlow_.back().continueTarget = function_->code.size();
         CompileExpression(children[1]);
@@ -266,6 +271,8 @@ void BytecodeCompiler::CompileStatement(AstNode* node) {
         Emit(OpCode::Jump, static_cast<std::int32_t>(body), node);
         PatchJump(exitJump, function_->code.size());
         for (const auto jump : controlFlow_.back().breakJumps) PatchJump(jump, function_->code.size());
+        for (const auto jump : controlFlow_.back().continueJumps)
+            PatchJump(jump, controlFlow_.back().continueTarget);
         controlFlow_.pop_back();
         break;
     }
@@ -297,7 +304,7 @@ void BytecodeCompiler::CompileStatement(AstNode* node) {
             PatchJump(nextComparison, function_->code.size());
         }
         const auto defaultJump = Emit(OpCode::Jump, -1, node);
-        controlFlow_.push_back({{}, false, 0});
+        controlFlow_.push_back({{}, {}, false, 0});
         for (AstNode* clause = selector ? selector->nextSibling : nullptr; clause;
              clause = clause->nextSibling) {
             for (const auto& pending : caseJumps)
@@ -317,6 +324,15 @@ void BytecodeCompiler::CompileStatement(AstNode* node) {
         if (controlFlow_.empty()) Error(node, "break target is unavailable");
         else controlFlow_.back().breakJumps.push_back(Emit(OpCode::Jump, -1, node));
         break;
+    case NodeKind::ContinueStmt: {
+        auto target = controlFlow_.rend();
+        for (auto context = controlFlow_.rbegin(); context != controlFlow_.rend(); ++context) {
+            if (context->loop) { target = context; break; }
+        }
+        if (target == controlFlow_.rend()) Error(node, "continue target is unavailable");
+        else target->continueJumps.push_back(Emit(OpCode::Jump, -1, node));
+        break;
+    }
     default: Error(node, "statement cannot be compiled"); break;
     }
 }

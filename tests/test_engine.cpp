@@ -56,3 +56,38 @@ TEST_CASE(function_call_stack_preserves_caller_locals) {
     CHECK(context->GetReturnInt() == 31);
 }
 
+TEST_CASE(failed_module_rebuild_preserves_last_successful_image) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("rebuild");
+    module->AddScriptSection("good", "int value() { return 41; }");
+    CHECK(module->Build());
+
+    module->AddScriptSection("bad", "int value() { return missing; }");
+    CHECK(!module->Build());
+
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByName("value")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 41);
+}
+
+TEST_CASE(prepared_context_keeps_its_module_image_across_rebuild) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("snapshots");
+    module->AddScriptSection("v1", "int value() { return 1; }");
+    CHECK(module->Build());
+
+    auto oldContext = engine->CreateContext();
+    CHECK(oldContext->Prepare(module->GetFunctionByName("value")));
+
+    module->AddScriptSection("v2", "int value() { return 2; }");
+    CHECK(module->Build());
+
+    auto newContext = engine->CreateContext();
+    CHECK(newContext->Prepare(module->GetFunctionByName("value")));
+    CHECK(oldContext->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(newContext->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(oldContext->GetReturnInt() == 1);
+    CHECK(newContext->GetReturnInt() == 2);
+}
+

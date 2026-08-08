@@ -19,6 +19,10 @@ enum class ModulePolicy { AlwaysCreate, CreateIfMissing, OnlyIfExists };
 
 class ScriptEngine;
 
+struct ModuleImage {
+    BytecodeModule bytecode;
+};
+
 class ScriptModule {
 public:
     ScriptModule(ScriptEngine& engine, std::string name);
@@ -34,7 +38,7 @@ private:
     ScriptEngine& engine_;
     std::string name_;
     std::vector<Section> sections_;
-    BytecodeModule bytecode_;
+    std::shared_ptr<const ModuleImage> image_;
 };
 
 class ScriptContext {
@@ -62,6 +66,7 @@ public:
 private:
     bool SetArgument(std::size_t index, Value value);
     ScriptEngine& engine_;
+    std::shared_ptr<const ModuleImage> image_;
     const BytecodeFunction* function_ = nullptr;
     std::vector<Value> arguments_;
     VirtualMachine vm_;
@@ -85,14 +90,18 @@ public:
 
 private:
     friend class ScriptModule;
+    friend class ScriptContext;
     void ForwardDiagnostic(const Diagnostic& diagnostic) const;
     std::vector<FunctionSignature> HostSignatures() const;
     const TypeInfo* RegisterScriptType(const ClassSignature& type);
+    void RegisterModuleImage(const std::shared_ptr<const ModuleImage>& image);
+    std::shared_ptr<const ModuleImage> FindModuleImage(const BytecodeFunction* function);
     MessageCallback messageCallback_;
     std::unordered_map<std::string, std::unique_ptr<ScriptModule>> modules_;
     std::deque<RegisteredHostFunction> hostFunctions_;
     GarbageCollector garbageCollector_;
     std::unordered_map<std::string, std::unique_ptr<TypeInfo>> objectTypes_;
+    std::unordered_map<const BytecodeFunction*, std::weak_ptr<const ModuleImage>> moduleImages_;
 };
 
 std::unique_ptr<ScriptEngine> CreateScriptEngine();

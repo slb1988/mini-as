@@ -8,7 +8,7 @@ namespace mini_as {
 std::string_view Version() { return "0.1.0-learning"; }
 
 ScriptModule::ScriptModule(ScriptEngine& engine, std::string name)
-    : engine_(engine), name_(std::move(name)) {}
+    : engine_(engine), name_(std::move(name)), image_(std::make_shared<ModuleImage>()) {}
 
 const std::string& ScriptModule::GetName() const { return name_; }
 
@@ -33,10 +33,10 @@ bool ScriptModule::Build() {
     TypeChecker checker(diagnostics);
     for (const auto& signature : engine_.HostSignatures()) checker.RegisterFunction(signature);
     const bool typed = !diagnostics.HasErrors() && checker.Check(tree.root);
-    if (!typed) { bytecode_ = {}; return false; }
+    if (!typed) return false;
     BytecodeCompiler compiler(diagnostics);
     BytecodeModule candidate = compiler.Compile(tree.root, checker.Functions(), checker.Classes());
-    if (diagnostics.HasErrors()) { bytecode_ = {}; return false; }
+    if (diagnostics.HasErrors()) return false;
     std::vector<const TypeInfo*> concreteTypes;
     for (const auto& type : checker.Classes()) {
         const TypeInfo* linked = engine_.RegisterScriptType(type);
@@ -46,24 +46,27 @@ bool ScriptModule::Build() {
         for (const auto& host : engine_.hostFunctions_) function.hostTargets.push_back(&host);
         function.objectTypes = concreteTypes;
     }
-    bytecode_ = std::move(candidate);
+    auto nextImage = std::make_shared<ModuleImage>();
+    nextImage->bytecode = std::move(candidate);
+    engine_.RegisterModuleImage(nextImage);
+    image_ = std::move(nextImage);
     sections_.clear();
     return true;
 }
 
 const BytecodeFunction* ScriptModule::GetFunctionByDecl(std::string_view declaration) const {
-    for (const auto& function : bytecode_.functions) {
+    for (const auto& function : image_->bytecode.functions) {
         if (function.signature.Declaration() == declaration) return &function;
     }
     return nullptr;
 }
 
 const BytecodeFunction* ScriptModule::GetFunctionByName(std::string_view name) const {
-    for (const auto& function : bytecode_.functions) if (function.signature.name == name) return &function;
+    for (const auto& function : image_->bytecode.functions) if (function.signature.name == name) return &function;
     return nullptr;
 }
 
-const BytecodeModule& ScriptModule::Bytecode() const { return bytecode_; }
+const BytecodeModule& ScriptModule::Bytecode() const { return image_->bytecode; }
 
 ScriptContext::ScriptContext(ScriptEngine& engine) : engine_(engine) {
     vm_.SetLineCallback([this](const SourceLocation& location) {
@@ -72,13 +75,25 @@ ScriptContext::ScriptContext(ScriptEngine& engine) : engine_(engine) {
 }
 
 bool ScriptContext::Prepare(const BytecodeFunction* function) {
-    function_ = function;
-    if (!function_) {
-        result_ = {ExecutionState::Exception, {}, "cannot prepare a null function"};
+    image_.reset();
+    function_ = nullptr;
+    if (!function) {
+        result_ = {};
+        result_.state = ExecutionState::Exception;
+        result_.exception = "cannot prepare a null function";
         return false;
     }
+    image_ = engine_.FindModuleImage(function);
+    if (!image_) {
+        result_ = {};
+        result_.state = ExecutionState::Exception;
+        result_.exception = "function does not belong to a live module image";
+        return false;
+    }
+    function_ = function;
     arguments_.assign(function_->signature.parameters.size(), Value{});
-    result_ = {ExecutionState::Prepared};
+    result_ = {};
+    result_.state = ExecutionState::Prepared;
     return true;
 }
 
@@ -90,7 +105,9 @@ bool ScriptContext::SetArgObject(std::size_t index, ObjectHandle value) { return
 
 ExecutionState ScriptContext::Execute() {
     if (!function_) {
-        result_ = {ExecutionState::Exception, {}, "context has no prepared function"};
+        result_ = {};
+        result_.state = ExecutionState::Exception;
+        result_.exception = "context has no prepared function";
         return result_.state;
     }
     if (result_.state == ExecutionState::Prepared) {
@@ -222,6 +239,18 @@ std::vector<FunctionSignature> ScriptEngine::HostSignatures() const {
     signatures.reserve(hostFunctions_.size());
     for (const auto& host : hostFunctions_) signatures.push_back(host.signature);
     return signatures;
+}
+
+void ScriptEngine::RegisterModuleImage(const std::shared_ptr<const ModuleImage>& image) {
+    for (const auto& function : image->bytecode.functions) moduleImages_[&function] = image;
+}
+
+std::shared_ptr<const ModuleImage> ScriptEngine::FindModuleImage(const BytecodeFunction* function) {
+    const auto found = moduleImages_.find(function);
+    if (found == moduleImages_.end()) return {};
+    auto image = found->second.lock();
+    if (!image) moduleImages_.erase(found);
+    return image;
 }
 
 std::unique_ptr<ScriptEngine> CreateScriptEngine() { return std::make_unique<ScriptEngine>(); }

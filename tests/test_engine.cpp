@@ -415,3 +415,36 @@ TEST_CASE(compound_assignments_protect_const_and_report_runtime_location) {
     CHECK(context->GetExceptionLocation().row == 3);
 }
 
+TEST_CASE(prefix_and_postfix_increment_preserve_expression_values) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("increment");
+    module->AddScriptSection("success",
+        "int global = 1; class Box { int value; } int run() { int local = 1; "
+        "int prefix = ++local; int postfix = local++; Box@ box = Box(); box.value = 5; "
+        "int fieldOld = box.value++; int globalNew = ++global; "
+        "return local * 10000 + prefix * 1000 + postfix * 100 + fieldOld * 10 + globalNew; }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByName("run")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 32252);
+}
+
+TEST_CASE(increment_rejects_const_and_non_lvalue_operands) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) { diagnostics.push_back(diagnostic); });
+    auto* module = engine->GetModule("increment-invalid");
+    module->AddScriptSection("invalid",
+        "int run() { const int fixed = 1; ++fixed; int value = 2; (value + 1)++; return value; }");
+    CHECK(!module->Build());
+    bool constRejected = false;
+    bool lvalueRejected = false;
+    for (const auto& diagnostic : diagnostics) {
+        constRejected = constRejected || diagnostic.message.find("cannot modify const variable") != std::string::npos;
+        lvalueRejected = lvalueRejected || diagnostic.message.find("increment operand is not assignable") != std::string::npos;
+    }
+    CHECK(constRejected);
+    CHECK(lvalueRejected);
+}
+

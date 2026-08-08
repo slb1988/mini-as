@@ -9,7 +9,7 @@ namespace mini_as {
 std::string_view OpCodeName(OpCode opcode) {
     static const char* names[] = {
         "NOP", "SUSPEND", "PUSH_CONST", "PUSH_VOID", "LOAD_LOCAL", "STORE_LOCAL",
-        "LOAD_GLOBAL", "STORE_GLOBAL", "DUP", "POP",
+        "LOAD_GLOBAL", "STORE_GLOBAL", "DUP", "SWAP", "POP",
         "TO_FLOAT", "TO_STRING", "ADD_I", "SUB_I", "MUL_I", "DIV_I", "MOD_I",
         "ADD_F", "SUB_F", "MUL_F", "DIV_F", "CONCAT", "NEG_I", "NEG_F", "NOT",
         "EQ", "NE", "LT", "LE", "GT", "GE", "JMP", "JZ", "CALL", "CALL_HOST",
@@ -377,6 +377,7 @@ void BytecodeCompiler::CompileExpression(AstNode* node) {
             Emit(node->inferredType == DataType::Float() ? OpCode::NegFloat : OpCode::NegInt, 0, node);
         }
         break;
+    case NodeKind::Increment: CompileIncrement(node); break;
     case NodeKind::Call: CompileCall(node); break;
     default: Error(node, "expression cannot be compiled"); break;
     }
@@ -498,6 +499,47 @@ void BytecodeCompiler::CompileCompoundAssignment(const LValueRef& target, AstNod
         Error(source, "lvalue kind is not implemented");
         break;
     }
+}
+
+void BytecodeCompiler::CompileIncrement(AstNode* node) {
+    const auto target = ResolveLValue(node ? node->firstChild : nullptr);
+    if (!target) { Error(node, "increment target cannot be compiled"); return; }
+    if (target->kind == LValueRef::Kind::Field) {
+        CompileExpression(target->receiver);
+        Emit(OpCode::Dup, 0, node);
+        Emit(OpCode::LoadField, static_cast<std::int32_t>(target->field), node);
+        if (node->isPostfix) {
+            Emit(OpCode::Swap, 0, node);
+            Emit(OpCode::Dup, 0, node);
+            Emit(OpCode::LoadField, static_cast<std::int32_t>(target->field), node);
+        }
+    } else {
+        CompileLValueLoad(*target, node);
+        if (node->isPostfix) Emit(OpCode::Dup, 0, node);
+    }
+    const bool floating = target->type == DataType::Float();
+    Emit(OpCode::PushConst, AddConstant(floating ? Value(1.0f) : Value(std::int32_t{1})), node);
+    Emit(node->token.kind == TokenKind::PlusPlus
+             ? (floating ? OpCode::AddFloat : OpCode::AddInt)
+             : (floating ? OpCode::SubFloat : OpCode::SubInt),
+         0, node);
+    switch (target->kind) {
+    case LValueRef::Kind::Local:
+        Emit(OpCode::Dup, 0, node);
+        Emit(OpCode::StoreLocal, static_cast<std::int32_t>(target->variable.value), node);
+        break;
+    case LValueRef::Kind::Global:
+        Emit(OpCode::Dup, 0, node);
+        Emit(OpCode::StoreGlobal, static_cast<std::int32_t>(target->global.value), node);
+        break;
+    case LValueRef::Kind::Field:
+        Emit(OpCode::StoreField, static_cast<std::int32_t>(target->field), node);
+        break;
+    case LValueRef::Kind::Index:
+        Error(node, "lvalue kind is not implemented");
+        return;
+    }
+    if (node->isPostfix) Emit(OpCode::Pop, 0, node);
 }
 
 void BytecodeCompiler::CompileBinary(AstNode* node) {

@@ -308,6 +308,15 @@ DataType TypeChecker::CheckExpression(AstNode* node) {
     }
     case NodeKind::Binary: result = CheckBinary(node); break;
     case NodeKind::Unary: result = CheckUnary(node); break;
+    case NodeKind::Increment: {
+        AstNode* operand = node->firstChild;
+        if (!operand || (operand->kind != NodeKind::Identifier && operand->kind != NodeKind::Member))
+            Error(operand, "increment operand is not assignable");
+        if (IsReadOnlyLValue(operand)) Error(operand, "cannot modify const variable");
+        result = CheckExpression(operand);
+        if (!result.IsNumeric()) Error(node, "increment operator requires a numeric operand");
+        break;
+    }
     case NodeKind::Call: result = CheckCall(node); break;
     case NodeKind::Assign: {
         const auto children = node->Children();

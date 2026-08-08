@@ -11,7 +11,7 @@ enum class NodeKind {
     Program, FunctionDecl, Parameter, ClassDecl, InterfaceDecl, FieldDecl,
     Block, DeclList, VarDecl, IfStmt, WhileStmt, DoWhileStmt, ForStmt,
     SwitchStmt, CaseClause, DefaultClause, ReturnStmt, BreakStmt, ContinueStmt, ExprStmt, EmptyStmt,
-    Assign, Binary, Unary, Call, Member, Literal, Identifier
+    Assign, Binary, Unary, Increment, Call, Member, Literal, Identifier
 };
 
 struct AstNode {
@@ -22,6 +22,7 @@ struct AstNode {
     bool isConst = false;
     bool isAuto = false;
     bool isGlobal = false;
+    bool isPostfix = false;
     AstNode* firstChild = nullptr;
     AstNode* nextSibling = nullptr;
 

@@ -292,6 +292,11 @@ BINARY_LEVEL(ParseFactor, ParseUnary, TokenKind::Star, TokenKind::Slash, TokenKi
 #undef BINARY_LEVEL
 
 AstNode* Parser::ParseUnary() {
+    if (MatchAny({TokenKind::PlusPlus, TokenKind::MinusMinus})) {
+        AstNode* node = arena_->Make(NodeKind::Increment, Previous());
+        node->AppendChild(ParseUnary());
+        return node;
+    }
     if (MatchAny({TokenKind::Bang, TokenKind::Minus, TokenKind::Plus, TokenKind::At})) {
         AstNode* node = arena_->Make(NodeKind::Unary, Previous());
         node->AppendChild(ParseUnary());
@@ -316,6 +321,11 @@ AstNode* Parser::ParseCall() {
                             Consume(TokenKind::Identifier, "expected member name"));
             member->AppendChild(expression);
             expression = member;
+        } else if (MatchAny({TokenKind::PlusPlus, TokenKind::MinusMinus})) {
+            AstNode* increment = arena_->Make(NodeKind::Increment, Previous());
+            increment->isPostfix = true;
+            increment->AppendChild(expression);
+            expression = increment;
         } else break;
     }
     return expression;

@@ -122,6 +122,12 @@ bool VirtualMachine::Step() {
         break;
     }
     case OpCode::Dup: { Value value = Pop(); Push(value); Push(std::move(value)); break; }
+    case OpCode::Swap: {
+        Value top = Pop(), below = Pop();
+        Push(std::move(top));
+        Push(std::move(below));
+        break;
+    }
     case OpCode::Pop: Pop(); break;
     case OpCode::ToFloat: Push(Value(AsFloat(Pop()))); break;
     case OpCode::ToString: Push(Value(Pop().ToString())); break;

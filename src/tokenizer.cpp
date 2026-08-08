@@ -37,6 +37,7 @@ std::string_view TokenName(TokenKind kind) {
         "if", "else", "while", "do", "for", "switch", "case", "default",
         "return", "break", "continue", "class", "interface", "is", "null",
         "(", ")", "{", "}", ",", ".", ";", ":", "@", "+", "-", "*", "/", "%",
+        "++", "--",
         "+=", "-=", "*=", "/=", "%=",
         "!", "!=", "=", "==", "<", "<=", ">", ">=", "&&", "||"
     };
@@ -93,8 +94,12 @@ void Tokenizer::ScanToken() {
     case ';': Add(TokenKind::Semicolon, start, location); return;
     case ':': Add(TokenKind::Colon, start, location); return;
     case '@': Add(TokenKind::At, start, location); return;
-    case '+': Add(Match('=') ? TokenKind::PlusEqual : TokenKind::Plus, start, location); return;
-    case '-': Add(Match('=') ? TokenKind::MinusEqual : TokenKind::Minus, start, location); return;
+    case '+':
+        Add(Match('+') ? TokenKind::PlusPlus : (Match('=') ? TokenKind::PlusEqual : TokenKind::Plus),
+            start, location); return;
+    case '-':
+        Add(Match('-') ? TokenKind::MinusMinus : (Match('=') ? TokenKind::MinusEqual : TokenKind::Minus),
+            start, location); return;
     case '*': Add(Match('=') ? TokenKind::StarEqual : TokenKind::Star, start, location); return;
     case '%': Add(Match('=') ? TokenKind::PercentEqual : TokenKind::Percent, start, location); return;
     case '!': Add(Match('=') ? TokenKind::BangEqual : TokenKind::Bang, start, location); return;

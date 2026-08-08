@@ -104,6 +104,7 @@ private:
     void CompileFunction(AstNode* node, std::size_t functionIndex,
                          std::string objectType = {});
     void CompileGlobalInitializer(AstNode* root);
+    void CompileFieldInitializers(std::string_view typeName, const AstNode* source);
     void CompileBlock(AstNode* node, bool createScope = true);
     void CompileStatement(AstNode* node);
     void CompileExpression(AstNode* node);
@@ -140,6 +141,8 @@ private:
     std::unordered_map<std::string, GlobalSignature> globalSymbols_;
     std::vector<ControlFlowContext> controlFlow_;
     std::string currentObjectType_;
+    std::uint32_t implicitThisSlot_ = 0;
+    std::unordered_map<std::string, AstNode*> classNodes_;
 };
 
 } // namespace mini_as

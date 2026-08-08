@@ -544,3 +544,33 @@ TEST_CASE(constructors_reject_missing_overloads_and_duplicates) {
     CHECK(missing);
 }
 
+TEST_CASE(field_initializers_run_in_declaration_order) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("field-initializers");
+    module->AddScriptSection("success",
+        "class Box { int base = 20; int value = base * 2; "
+        "int get() { return value; } } int run() { Box@ box = Box(); return box.get(); }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByName("run")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 40);
+}
+
+TEST_CASE(field_initializers_check_types_and_report_runtime_locations) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* invalid = engine->GetModule("field-invalid");
+    invalid->AddScriptSection("invalid", "class Box { int value = \"wrong\"; }");
+    CHECK(!invalid->Build());
+
+    auto* runtime = engine->GetModule("field-runtime");
+    runtime->AddScriptSection("runtime",
+        "int zero = 0;\nclass Box {\n int value = 1 / zero;\n}\nint run() { Box@ box = Box(); return 0; }");
+    CHECK(runtime->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(runtime->GetFunctionByName("run")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Exception);
+    CHECK(context->GetExceptionString() == "division by zero");
+    CHECK(context->GetExceptionLocation().row == 3);
+}
+

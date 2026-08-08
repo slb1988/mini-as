@@ -260,8 +260,16 @@ void TypeChecker::CheckNode(AstNode* node) {
     case NodeKind::ClassDecl: {
         const ClassSignature* previousClass = currentClass_;
         currentClass_ = FindClass(node->token.lexeme);
-        for (AstNode* member = node->firstChild; member; member = member->nextSibling)
+        for (AstNode* member = node->firstChild; member; member = member->nextSibling) {
+            if (member->kind == NodeKind::FieldDecl && member->firstChild) {
+                const DataType value = CheckExpression(member->firstChild);
+                if (!CanConvert(value, member->declaredType)) {
+                    Error(member, "cannot initialize field " + member->declaredType.Name() +
+                                  " with " + value.Name());
+                }
+            }
             if (member->kind == NodeKind::FunctionDecl && member->firstChild) CheckFunction(member);
+        }
         currentClass_ = previousClass;
         break;
     }

@@ -89,6 +89,7 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
         module_.globals.push_back({global});
     }
     classIds_.clear();
+    classNodes_.clear();
     std::uint32_t nextFunctionId = 0;
     for (const auto& signature : signatures_) {
         if (signature.id.IsValid() && signature.id.value >= nextFunctionId)
@@ -106,6 +107,8 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
         if (!type.interfaceType) classIds_[type.name] = type.id;
     }
     if (!root) return module_;
+    for (AstNode* node = root->firstChild; node; node = node->nextSibling)
+        if (node->kind == NodeKind::ClassDecl) classNodes_[node->token.lexeme] = node;
     for (const auto& signature : signatures_) {
         if (signature.host) {
             hostIds_[FunctionKey(signature)] = signature.id;
@@ -187,6 +190,7 @@ void BytecodeCompiler::CompileFunction(AstNode* node, std::size_t functionIndex,
     scopes_.emplace_back();
     controlFlow_.clear();
     currentObjectType_ = std::move(objectType);
+    implicitThisSlot_ = 0;
     nextLocal_ = 0;
     if (!currentObjectType_.empty()) {
         Token thisToken{TokenKind::Identifier, "this", node->token.location};
@@ -483,7 +487,7 @@ void BytecodeCompiler::CompileLValueLoad(const LValueRef& target, const AstNode*
         break;
     case LValueRef::Kind::Field:
         if (target.receiver) CompileExpression(target.receiver);
-        else Emit(OpCode::LoadLocal, 0, source);
+        else Emit(OpCode::LoadLocal, static_cast<std::int32_t>(implicitThisSlot_), source);
         Emit(OpCode::LoadField, static_cast<std::int32_t>(target.field), source);
         break;
     case LValueRef::Kind::Global:
@@ -499,7 +503,7 @@ void BytecodeCompiler::CompileLValueStore(const LValueRef& target, AstNode* valu
                                           const AstNode* source) {
     if (target.kind == LValueRef::Kind::Field) {
         if (target.receiver) CompileExpression(target.receiver);
-        else Emit(OpCode::LoadLocal, 0, source);
+        else Emit(OpCode::LoadLocal, static_cast<std::int32_t>(implicitThisSlot_), source);
     }
     CompileExpression(value);
     if (value->inferredType == DataType::Int() && target.type == DataType::Float())
@@ -526,7 +530,7 @@ void BytecodeCompiler::CompileCompoundAssignment(const LValueRef& target, AstNod
                                                  TokenKind operation, const AstNode* source) {
     if (target.kind == LValueRef::Kind::Field) {
         if (target.receiver) CompileExpression(target.receiver);
-        else Emit(OpCode::LoadLocal, 0, source);
+        else Emit(OpCode::LoadLocal, static_cast<std::int32_t>(implicitThisSlot_), source);
         Emit(OpCode::Dup, 0, source);
         Emit(OpCode::LoadField, static_cast<std::int32_t>(target.field), source);
     } else {
@@ -570,7 +574,7 @@ void BytecodeCompiler::CompileIncrement(AstNode* node) {
     if (!target) { Error(node, "increment target cannot be compiled"); return; }
     if (target->kind == LValueRef::Kind::Field) {
         if (target->receiver) CompileExpression(target->receiver);
-        else Emit(OpCode::LoadLocal, 0, node);
+        else Emit(OpCode::LoadLocal, static_cast<std::int32_t>(implicitThisSlot_), node);
         Emit(OpCode::Dup, 0, node);
         Emit(OpCode::LoadField, static_cast<std::int32_t>(target->field), node);
         if (node->isPostfix) {
@@ -654,6 +658,39 @@ void BytecodeCompiler::CompileLogical(AstNode* node) {
     }
 }
 
+void BytecodeCompiler::CompileFieldInitializers(std::string_view typeName, const AstNode* source) {
+    const auto found = classNodes_.find(std::string(typeName));
+    if (found == classNodes_.end()) return;
+    bool hasInitializers = false;
+    for (AstNode* member = found->second->firstChild; member; member = member->nextSibling)
+        hasInitializers = hasInitializers || (member->kind == NodeKind::FieldDecl && member->firstChild);
+    if (!hasInitializers) return;
+
+    Token temporary{TokenKind::Identifier, "$fieldinit", source ? source->token.location : SourceLocation{}};
+    const VariableId receiver = DeclareLocal(temporary);
+    Emit(OpCode::Dup, 0, source);
+    Emit(OpCode::StoreLocal, static_cast<std::int32_t>(receiver.value), source);
+    const std::string previousObjectType = currentObjectType_;
+    const std::uint32_t previousThisSlot = implicitThisSlot_;
+    currentObjectType_ = std::string(typeName);
+    implicitThisSlot_ = receiver.value;
+    std::uint32_t fieldIndex = 0;
+    for (AstNode* member = found->second->firstChild; member; member = member->nextSibling) {
+        if (member->kind != NodeKind::FieldDecl) continue;
+        if (member->firstChild) {
+            Emit(OpCode::LoadLocal, static_cast<std::int32_t>(receiver.value), member);
+            CompileExpression(member->firstChild);
+            if (member->firstChild->inferredType == DataType::Int() &&
+                member->declaredType == DataType::Float()) Emit(OpCode::ToFloat, 0, member);
+            Emit(OpCode::StoreField, static_cast<std::int32_t>(fieldIndex), member);
+            Emit(OpCode::Pop, 0, member);
+        }
+        ++fieldIndex;
+    }
+    currentObjectType_ = previousObjectType;
+    implicitThisSlot_ = previousThisSlot;
+}
+
 void BytecodeCompiler::CompileCall(AstNode* node) {
     AstNode* callee = node->firstChild;
     if (!callee || (callee->kind != NodeKind::Identifier && callee->kind != NodeKind::Member)) {
@@ -667,6 +704,7 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
     const auto classFound = classIds_.find(callName);
     if (!explicitMethod && classFound != classIds_.end()) {
         Emit(OpCode::NewObject, static_cast<std::int32_t>(classFound->second.value), node);
+        CompileFieldInitializers(callName, node);
         const FunctionSignature* constructor = nullptr;
         int bestCost = 1000000;
         for (const auto& signature : signatures_) {
@@ -722,7 +760,7 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
     if (!target) { Error(node, "cannot resolve script call"); return; }
     if (target->method) {
         if (explicitMethod) CompileExpression(callee->firstChild);
-        else Emit(OpCode::LoadLocal, 0, callee);
+        else Emit(OpCode::LoadLocal, static_cast<std::int32_t>(implicitThisSlot_), callee);
     }
     for (std::size_t i = 0; i < arguments.size(); ++i) {
         CompileExpression(arguments[i]);

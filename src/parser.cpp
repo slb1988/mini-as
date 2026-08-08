@@ -89,6 +89,7 @@ AstNode* Parser::ParseClass(bool isInterface) {
         } else {
             AstNode* field = arena_->Make(NodeKind::FieldDecl, memberName);
             field->declaredType = type;
+            if (Match(TokenKind::Equal)) field->AppendChild(ParseExpression());
             Consume(TokenKind::Semicolon, "expected ';' after field");
             node->AppendChild(field);
         }

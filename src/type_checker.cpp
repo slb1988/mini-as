@@ -170,6 +170,17 @@ void TypeChecker::CheckNode(AstNode* node) {
         }
         break;
     }
+    case NodeKind::ForStmt: {
+        const auto children = node->Children();
+        scopes_.emplace_back();
+        if (children[0]->kind != NodeKind::EmptyStmt) CheckNode(children[0]);
+        if (children[1]->kind != NodeKind::EmptyStmt &&
+            CheckExpression(children[1]) != DataType::Bool()) Error(children[1], "condition must be bool");
+        if (children[2]->kind != NodeKind::EmptyStmt) CheckExpression(children[2]);
+        CheckNode(children[3]);
+        scopes_.pop_back();
+        break;
+    }
     case NodeKind::ReturnStmt: {
         DataType value = node->firstChild ? CheckExpression(node->firstChild) : DataType::Void();
         if (!CanConvert(value, currentReturn_)) {
@@ -178,7 +189,7 @@ void TypeChecker::CheckNode(AstNode* node) {
         break;
     }
     case NodeKind::ExprStmt: CheckExpression(node->firstChild); break;
-    case NodeKind::ClassDecl: case NodeKind::InterfaceDecl: break;
+    case NodeKind::ClassDecl: case NodeKind::InterfaceDecl: case NodeKind::EmptyStmt: break;
     default: CheckExpression(node); break;
     }
 }

@@ -242,3 +242,28 @@ TEST_CASE(failed_global_initialization_preserves_previous_image_and_state) {
     CHECK(preserved->GetReturnInt() == 42);
 }
 
+TEST_CASE(for_loops_execute_initializer_condition_and_increment) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("for-loop");
+    module->AddScriptSection("success",
+        "int sum() { int total = 0; for (int i = 1; i <= 6; i = i + 1) total = total + i; return total; }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByName("sum")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 21);
+}
+
+TEST_CASE(for_loop_conditions_must_be_boolean) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) { diagnostics.push_back(diagnostic); });
+    auto* module = engine->GetModule("for-invalid");
+    module->AddScriptSection("invalid", "int value() { for (int i = 0; 3; i = i + 1) { } return 0; }");
+    CHECK(!module->Build());
+    bool rejectedCondition = false;
+    for (const auto& diagnostic : diagnostics)
+        rejectedCondition = rejectedCondition || diagnostic.message.find("condition must be bool") != std::string::npos;
+    CHECK(rejectedCondition);
+}
+

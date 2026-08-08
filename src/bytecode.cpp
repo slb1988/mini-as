@@ -228,6 +228,25 @@ void BytecodeCompiler::CompileStatement(AstNode* node) {
         PatchJump(exitJump, function_->code.size());
         break;
     }
+    case NodeKind::ForStmt: {
+        const auto children = node->Children();
+        scopes_.emplace_back();
+        if (children[0]->kind != NodeKind::EmptyStmt) CompileStatement(children[0]);
+        const auto condition = function_->code.size();
+        if (children[1]->kind == NodeKind::EmptyStmt)
+            Emit(OpCode::PushConst, AddConstant(Value(true)), node);
+        else CompileExpression(children[1]);
+        const auto exitJump = Emit(OpCode::JumpIfFalse, -1, node);
+        CompileStatement(children[3]);
+        if (children[2]->kind != NodeKind::EmptyStmt) {
+            CompileExpression(children[2]);
+            Emit(OpCode::Pop, 0, children[2]);
+        }
+        Emit(OpCode::Jump, static_cast<std::int32_t>(condition), node);
+        PatchJump(exitJump, function_->code.size());
+        scopes_.pop_back();
+        break;
+    }
     default: Error(node, "statement cannot be compiled"); break;
     }
 }

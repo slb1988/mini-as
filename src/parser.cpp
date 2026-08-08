@@ -125,14 +125,9 @@ AstNode* Parser::ParseStatement() {
     if (Check(TokenKind::LeftBrace)) return ParseBlock();
     if (Match(TokenKind::KwIf)) return ParseIf();
     if (Match(TokenKind::KwWhile)) return ParseWhile();
+    if (Match(TokenKind::KwFor)) return ParseFor();
     if (Match(TokenKind::KwReturn)) return ParseReturn();
-    if ((Check(TokenKind::KwConst) || Check(TokenKind::KwAuto) || IsTypeStart()) &&
-        (Current().kind == TokenKind::KwConst || Current().kind == TokenKind::KwAuto ||
-         Current().kind != TokenKind::Identifier ||
-        (current_ + 1 < tokens_.size() && (tokens_[current_ + 1].kind == TokenKind::Identifier ||
-                                          tokens_[current_ + 1].kind == TokenKind::At)))) {
-        return ParseVariableDeclaration();
-    }
+    if (IsVariableDeclarationStart()) return ParseVariableDeclaration();
     AstNode* statement = arena_->Make(NodeKind::ExprStmt, Current());
     statement->AppendChild(ParseExpression());
     Consume(TokenKind::Semicolon, "expected ';' after expression");
@@ -179,6 +174,27 @@ AstNode* Parser::ParseWhile() {
     Consume(TokenKind::LeftParen, "expected '(' after while");
     node->AppendChild(ParseExpression());
     Consume(TokenKind::RightParen, "expected ')' after condition");
+    node->AppendChild(ParseStatement());
+    return node;
+}
+
+AstNode* Parser::ParseFor() {
+    AstNode* node = arena_->Make(NodeKind::ForStmt, Previous());
+    Consume(TokenKind::LeftParen, "expected '(' after for");
+    if (Match(TokenKind::Semicolon)) node->AppendChild(arena_->Make(NodeKind::EmptyStmt, Previous()));
+    else if (IsVariableDeclarationStart()) node->AppendChild(ParseVariableDeclaration());
+    else {
+        AstNode* initializer = arena_->Make(NodeKind::ExprStmt, Current());
+        initializer->AppendChild(ParseExpression());
+        Consume(TokenKind::Semicolon, "expected ';' after for initializer");
+        node->AppendChild(initializer);
+    }
+    if (Check(TokenKind::Semicolon)) node->AppendChild(arena_->Make(NodeKind::EmptyStmt, Current()));
+    else node->AppendChild(ParseExpression());
+    Consume(TokenKind::Semicolon, "expected ';' after for condition");
+    if (Check(TokenKind::RightParen)) node->AppendChild(arena_->Make(NodeKind::EmptyStmt, Current()));
+    else node->AppendChild(ParseExpression());
+    Consume(TokenKind::RightParen, "expected ')' after for clauses");
     node->AppendChild(ParseStatement());
     return node;
 }
@@ -287,6 +303,15 @@ bool Parser::IsTypeStart(bool allowIdentifier) const {
     }
 }
 
+bool Parser::IsVariableDeclarationStart() const {
+    if (Check(TokenKind::KwConst) || Check(TokenKind::KwAuto)) return true;
+    if (!IsTypeStart()) return false;
+    return Current().kind != TokenKind::Identifier ||
+        (current_ + 1 < tokens_.size() &&
+         (tokens_[current_ + 1].kind == TokenKind::Identifier ||
+          tokens_[current_ + 1].kind == TokenKind::At));
+}
+
 bool Parser::Match(TokenKind kind) { if (!Check(kind)) return false; Advance(); return true; }
 bool Parser::MatchAny(std::initializer_list<TokenKind> kinds) {
     for (const auto kind : kinds) if (Match(kind)) return true;
@@ -311,7 +336,7 @@ void Parser::Synchronize() {
     while (!Check(TokenKind::End)) {
         if (current_ && Previous().kind == TokenKind::Semicolon) return;
         switch (Current().kind) {
-        case TokenKind::KwIf: case TokenKind::KwWhile: case TokenKind::KwReturn:
+        case TokenKind::KwIf: case TokenKind::KwWhile: case TokenKind::KwFor: case TokenKind::KwReturn:
         case TokenKind::KwClass: case TokenKind::KwInterface: return;
         default: Advance();
         }

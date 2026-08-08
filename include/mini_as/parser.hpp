@@ -9,7 +9,7 @@ namespace mini_as {
 
 enum class NodeKind {
     Program, FunctionDecl, Parameter, ClassDecl, InterfaceDecl, FieldDecl,
-    Block, DeclList, VarDecl, IfStmt, WhileStmt, ReturnStmt, ExprStmt,
+    Block, DeclList, VarDecl, IfStmt, WhileStmt, ForStmt, ReturnStmt, ExprStmt, EmptyStmt,
     Assign, Binary, Unary, Call, Member, Literal, Identifier
 };
 
@@ -55,6 +55,7 @@ private:
     AstNode* ParseVariableDeclaration();
     AstNode* ParseIf();
     AstNode* ParseWhile();
+    AstNode* ParseFor();
     AstNode* ParseReturn();
     AstNode* ParseExpression();
     AstNode* ParseAssignment();
@@ -70,6 +71,7 @@ private:
     DataType ParseType(bool allowVoid = false);
 
     bool IsTypeStart(bool allowIdentifier = true) const;
+    bool IsVariableDeclarationStart() const;
     bool Match(TokenKind kind);
     bool MatchAny(std::initializer_list<TokenKind> kinds);
     bool Check(TokenKind kind) const;

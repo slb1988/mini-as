@@ -45,3 +45,19 @@ TEST_CASE(parser_marks_const_auto_declarations_for_type_inference) {
     CHECK(declaration->isConst);
 }
 
+TEST_CASE(parser_builds_four_clause_for_statement) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer lexer("parse", "int f() { for (int i = 0; i < 3; i = i + 1) { } return 0; }", diagnostics);
+    mini_as::Parser parser(lexer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    CHECK(!diagnostics.HasErrors());
+    auto* loop = tree.root->firstChild->Children().back()->firstChild;
+    CHECK(loop->kind == mini_as::NodeKind::ForStmt);
+    const auto clauses = loop->Children();
+    CHECK(clauses.size() == 4);
+    CHECK(clauses[0]->kind == mini_as::NodeKind::VarDecl);
+    CHECK(clauses[1]->kind == mini_as::NodeKind::Binary);
+    CHECK(clauses[2]->kind == mini_as::NodeKind::Assign);
+    CHECK(clauses[3]->kind == mini_as::NodeKind::Block);
+}
+

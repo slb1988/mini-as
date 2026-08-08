@@ -1,0 +1,6 @@
+int main() {
+    int value = 0;
+    do { value = value + 1; } while (value < 4);
+    do value = value + 10; while (false);
+    return value;
+}

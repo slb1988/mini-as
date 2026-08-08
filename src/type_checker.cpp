@@ -181,6 +181,12 @@ void TypeChecker::CheckNode(AstNode* node) {
         scopes_.pop_back();
         break;
     }
+    case NodeKind::DoWhileStmt: {
+        const auto children = node->Children();
+        CheckNode(children[0]);
+        if (CheckExpression(children[1]) != DataType::Bool()) Error(children[1], "condition must be bool");
+        break;
+    }
     case NodeKind::ReturnStmt: {
         DataType value = node->firstChild ? CheckExpression(node->firstChild) : DataType::Void();
         if (!CanConvert(value, currentReturn_)) {

@@ -267,3 +267,29 @@ TEST_CASE(for_loop_conditions_must_be_boolean) {
     CHECK(rejectedCondition);
 }
 
+TEST_CASE(do_while_loops_execute_body_before_condition) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("do-while");
+    module->AddScriptSection("success",
+        "int count() { int value = 0; do { value = value + 1; } while (value < 4); "
+        "do value = value + 10; while (false); return value; }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByName("count")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 14);
+}
+
+TEST_CASE(do_while_conditions_must_be_boolean) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) { diagnostics.push_back(diagnostic); });
+    auto* module = engine->GetModule("do-while-invalid");
+    module->AddScriptSection("invalid", "int value() { do { } while (1); return 0; }");
+    CHECK(!module->Build());
+    bool rejectedCondition = false;
+    for (const auto& diagnostic : diagnostics)
+        rejectedCondition = rejectedCondition || diagnostic.message.find("condition must be bool") != std::string::npos;
+    CHECK(rejectedCondition);
+}
+

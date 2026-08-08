@@ -247,6 +247,16 @@ void BytecodeCompiler::CompileStatement(AstNode* node) {
         scopes_.pop_back();
         break;
     }
+    case NodeKind::DoWhileStmt: {
+        const auto children = node->Children();
+        const auto body = function_->code.size();
+        CompileStatement(children[0]);
+        CompileExpression(children[1]);
+        const auto exitJump = Emit(OpCode::JumpIfFalse, -1, node);
+        Emit(OpCode::Jump, static_cast<std::int32_t>(body), node);
+        PatchJump(exitJump, function_->code.size());
+        break;
+    }
     default: Error(node, "statement cannot be compiled"); break;
     }
 }

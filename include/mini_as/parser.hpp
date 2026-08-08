@@ -9,7 +9,7 @@ namespace mini_as {
 
 enum class NodeKind {
     Program, FunctionDecl, Parameter, ClassDecl, InterfaceDecl, FieldDecl,
-    Block, DeclList, VarDecl, IfStmt, WhileStmt, ForStmt, ReturnStmt, ExprStmt, EmptyStmt,
+    Block, DeclList, VarDecl, IfStmt, WhileStmt, DoWhileStmt, ForStmt, ReturnStmt, ExprStmt, EmptyStmt,
     Assign, Binary, Unary, Call, Member, Literal, Identifier
 };
 
@@ -55,6 +55,7 @@ private:
     AstNode* ParseVariableDeclaration();
     AstNode* ParseIf();
     AstNode* ParseWhile();
+    AstNode* ParseDoWhile();
     AstNode* ParseFor();
     AstNode* ParseReturn();
     AstNode* ParseExpression();

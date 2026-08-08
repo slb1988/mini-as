@@ -125,6 +125,7 @@ AstNode* Parser::ParseStatement() {
     if (Check(TokenKind::LeftBrace)) return ParseBlock();
     if (Match(TokenKind::KwIf)) return ParseIf();
     if (Match(TokenKind::KwWhile)) return ParseWhile();
+    if (Match(TokenKind::KwDo)) return ParseDoWhile();
     if (Match(TokenKind::KwFor)) return ParseFor();
     if (Match(TokenKind::KwReturn)) return ParseReturn();
     if (IsVariableDeclarationStart()) return ParseVariableDeclaration();
@@ -175,6 +176,17 @@ AstNode* Parser::ParseWhile() {
     node->AppendChild(ParseExpression());
     Consume(TokenKind::RightParen, "expected ')' after condition");
     node->AppendChild(ParseStatement());
+    return node;
+}
+
+AstNode* Parser::ParseDoWhile() {
+    AstNode* node = arena_->Make(NodeKind::DoWhileStmt, Previous());
+    node->AppendChild(ParseStatement());
+    Consume(TokenKind::KwWhile, "expected 'while' after do body");
+    Consume(TokenKind::LeftParen, "expected '(' after while");
+    node->AppendChild(ParseExpression());
+    Consume(TokenKind::RightParen, "expected ')' after do-while condition");
+    Consume(TokenKind::Semicolon, "expected ';' after do-while");
     return node;
 }
 
@@ -336,7 +348,8 @@ void Parser::Synchronize() {
     while (!Check(TokenKind::End)) {
         if (current_ && Previous().kind == TokenKind::Semicolon) return;
         switch (Current().kind) {
-        case TokenKind::KwIf: case TokenKind::KwWhile: case TokenKind::KwFor: case TokenKind::KwReturn:
+        case TokenKind::KwIf: case TokenKind::KwWhile: case TokenKind::KwDo:
+        case TokenKind::KwFor: case TokenKind::KwReturn:
         case TokenKind::KwClass: case TokenKind::KwInterface: return;
         default: Advance();
         }

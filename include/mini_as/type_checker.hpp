@@ -37,6 +37,11 @@ public:
     const std::vector<ClassSignature>& Classes() const;
 
 private:
+    struct VariableSymbol {
+        DataType type;
+        bool isConst = false;
+    };
+
     void Predeclare(AstNode* root);
     void CheckNode(AstNode* node);
     void CheckFunction(AstNode* node);
@@ -45,16 +50,17 @@ private:
     DataType CheckBinary(AstNode* node);
     DataType CheckUnary(AstNode* node);
     DataType CheckCall(AstNode* node);
-    std::optional<DataType> Lookup(std::string_view name) const;
+    std::optional<VariableSymbol> Lookup(std::string_view name) const;
+    bool IsReadOnlyLValue(const AstNode* node) const;
     const ClassSignature* FindClass(std::string_view name) const;
-    void Declare(const Token& name, const DataType& type);
+    void Declare(const Token& name, const DataType& type, bool isConst = false);
     bool CanConvert(const DataType& from, const DataType& to) const;
     void Error(const AstNode* node, std::string message);
 
     DiagnosticSink& diagnostics_;
     std::vector<FunctionSignature> functions_;
     std::vector<ClassSignature> classes_;
-    std::vector<std::unordered_map<std::string, DataType>> scopes_;
+    std::vector<std::unordered_map<std::string, VariableSymbol>> scopes_;
     DataType currentReturn_ = DataType::Void();
 };
 

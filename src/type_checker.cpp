@@ -103,7 +103,7 @@ void TypeChecker::CheckNode(AstNode* node) {
                 Error(node, "cannot initialize " + node->declaredType.Name() + " with " + value.Name());
             }
         }
-        Declare(node->token, node->declaredType);
+        Declare(node->token, node->declaredType, node->isConst);
         break;
     }
     case NodeKind::IfStmt:
@@ -165,7 +165,7 @@ DataType TypeChecker::CheckExpression(AstNode* node) {
     case NodeKind::Identifier: {
         const auto type = Lookup(node->token.lexeme);
         if (!type) Error(node, "unknown variable '" + node->token.lexeme + "'");
-        else result = *type;
+        else result = type->type;
         break;
     }
     case NodeKind::Member: {
@@ -185,6 +185,9 @@ DataType TypeChecker::CheckExpression(AstNode* node) {
         const auto children = node->Children();
         if (children[0]->kind != NodeKind::Identifier && children[0]->kind != NodeKind::Member) {
             Error(children[0], "left side of assignment is not assignable");
+        }
+        if (IsReadOnlyLValue(children[0])) {
+            Error(children[0], "cannot assign to const variable '" + children[0]->token.lexeme + "'");
         }
         DataType target = CheckExpression(children[0]);
         DataType value = CheckExpression(children[1]);
@@ -272,7 +275,7 @@ DataType TypeChecker::CheckCall(AstNode* node) {
     return best->returnType;
 }
 
-std::optional<DataType> TypeChecker::Lookup(std::string_view name) const {
+std::optional<TypeChecker::VariableSymbol> TypeChecker::Lookup(std::string_view name) const {
     for (auto scope = scopes_.rbegin(); scope != scopes_.rend(); ++scope) {
         const auto found = scope->find(std::string(name));
         if (found != scope->end()) return found->second;
@@ -280,16 +283,26 @@ std::optional<DataType> TypeChecker::Lookup(std::string_view name) const {
     return std::nullopt;
 }
 
+bool TypeChecker::IsReadOnlyLValue(const AstNode* node) const {
+    if (!node) return false;
+    if (node->kind == NodeKind::Identifier) {
+        const auto symbol = Lookup(node->token.lexeme);
+        return symbol && symbol->isConst;
+    }
+    if (node->kind == NodeKind::Member) return IsReadOnlyLValue(node->firstChild);
+    return false;
+}
+
 const ClassSignature* TypeChecker::FindClass(std::string_view name) const {
     for (const auto& type : classes_) if (type.name == name) return &type;
     return nullptr;
 }
 
-void TypeChecker::Declare(const Token& name, const DataType& type) {
+void TypeChecker::Declare(const Token& name, const DataType& type, bool isConst) {
     auto& scope = scopes_.back();
     if (scope.find(name.lexeme) != scope.end()) {
         diagnostics_.Report(name.location, Severity::Error, "duplicate variable '" + name.lexeme + "'");
-    } else scope.emplace(name.lexeme, type);
+    } else scope.emplace(name.lexeme, VariableSymbol{type, isConst});
 }
 
 bool TypeChecker::CanConvert(const DataType& from, const DataType& to) const {

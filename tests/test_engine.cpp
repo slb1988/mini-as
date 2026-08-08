@@ -132,3 +132,25 @@ TEST_CASE(multiple_declarations_report_duplicate_names) {
     CHECK(foundDuplicate);
 }
 
+TEST_CASE(const_locals_can_be_read_but_not_assigned) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* valid = engine->GetModule("const-valid");
+    valid->AddScriptSection("success", "int value() { const int base = 6, factor = 7; return base * factor; }");
+    CHECK(valid->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(valid->GetFunctionByName("value")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) { diagnostics.push_back(diagnostic); });
+    auto* invalid = engine->GetModule("const-invalid");
+    invalid->AddScriptSection("invalid", "int value() { const int answer = 41; answer = 42; return answer; }");
+    CHECK(!invalid->Build());
+    bool protectedAssignment = false;
+    for (const auto& diagnostic : diagnostics)
+        protectedAssignment = protectedAssignment ||
+            diagnostic.message.find("cannot assign to const variable 'answer'") != std::string::npos;
+    CHECK(protectedAssignment);
+}
+

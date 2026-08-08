@@ -18,6 +18,7 @@ struct AstNode {
     Token token;
     DataType declaredType = DataType::Invalid();
     DataType inferredType = DataType::Invalid();
+    bool isConst = false;
     AstNode* firstChild = nullptr;
     AstNode* nextSibling = nullptr;
 

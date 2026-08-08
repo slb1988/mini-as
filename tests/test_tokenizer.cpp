@@ -20,3 +20,12 @@ TEST_CASE(tokenizer_reports_unterminated_input) {
     CHECK(diagnostics.All()[0].location.row == 1);
 }
 
+TEST_CASE(tokenizer_recognizes_const_qualifier) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer lexer("const", "const int answer = 42;", diagnostics);
+    const auto tokens = lexer.ScanAll();
+    CHECK(!diagnostics.HasErrors());
+    CHECK(tokens[0].kind == mini_as::TokenKind::KwConst);
+    CHECK(tokens[1].kind == mini_as::TokenKind::KwInt);
+}
+

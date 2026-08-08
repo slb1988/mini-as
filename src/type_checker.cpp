@@ -48,7 +48,7 @@ void TypeChecker::Predeclare(AstNode* root) {
         for (; child; child = child->nextSibling) {
             if (child->kind == NodeKind::FieldDecl) type.fields.push_back({child->token.lexeme, child->declaredType});
             else if (child->kind == NodeKind::FunctionDecl) {
-                FunctionSignature method{child->token.lexeme, child->declaredType, {}, false};
+                FunctionSignature method{child->token.lexeme, child->declaredType, {}, false, {}};
                 for (AstNode* parameter = child->firstChild;
                      parameter && parameter->kind == NodeKind::Parameter; parameter = parameter->nextSibling)
                     method.parameters.push_back(parameter->declaredType);
@@ -75,7 +75,7 @@ void TypeChecker::Predeclare(AstNode* root) {
     }
     for (AstNode* node = root->firstChild; node; node = node->nextSibling) {
         if (node->kind != NodeKind::FunctionDecl) continue;
-        FunctionSignature signature{node->token.lexeme, node->declaredType, {}, false};
+        FunctionSignature signature{node->token.lexeme, node->declaredType, {}, false, {}};
         for (AstNode* child = node->firstChild; child && child->kind == NodeKind::Parameter;
              child = child->nextSibling) signature.parameters.push_back(child->declaredType);
         for (const auto& existing : functions_) {

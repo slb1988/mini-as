@@ -1,6 +1,7 @@
 #pragma once
 
 #include "mini_as/core.hpp"
+#include "mini_as/symbols.hpp"
 
 #include <atomic>
 #include <functional>
@@ -17,6 +18,7 @@ class GarbageCollector;
 
 struct TypeInfo {
     std::string name;
+    TypeId id;
     bool script = false;
     std::vector<std::pair<std::string, DataType>> fields;
     std::vector<std::string> interfaces;

@@ -21,14 +21,17 @@ bool ValuesEqual(const Value& left, const Value& right) {
 
 } // namespace
 
-bool VirtualMachine::Prepare(const BytecodeFunction& function, const std::vector<Value>& arguments) {
+bool VirtualMachine::Prepare(const BytecodeFunction& function, const std::vector<Value>& arguments,
+                             const BytecodeModule* module) {
     stack_.clear();
     callStack_.clear();
     locals_.assign(function.localCount, Value{});
     function_ = &function;
+    module_ = module;
     pc_ = 0;
     suspendRequested_ = false;
-    result_ = {ExecutionState::Prepared};
+    result_ = {};
+    result_.state = ExecutionState::Prepared;
     if (arguments.size() != function.signature.parameters.size()) {
         result_.state = ExecutionState::Exception;
         result_.exception = "argument count does not match function signature";
@@ -66,8 +69,9 @@ void VirtualMachine::SetLineCallback(std::function<void(const SourceLocation&)> 
 }
 
 ExecutionResult VirtualMachine::Execute(const BytecodeFunction& function,
-                                        const std::vector<Value>& arguments) {
-    if (!Prepare(function, arguments)) return result_;
+                                        const std::vector<Value>& arguments,
+                                        const BytecodeModule* module) {
+    if (!Prepare(function, arguments, module)) return result_;
     return Continue();
 }
 
@@ -140,10 +144,11 @@ bool VirtualMachine::Step() {
         break;
     }
     case OpCode::Call: {
-        if (instruction.operand < 0 || static_cast<std::size_t>(instruction.operand) >= function.callTargets.size())
-            throw std::runtime_error("call target out of range");
+        if (!module_ || instruction.operand < 0) throw std::runtime_error("call target is unavailable");
         if (callStack_.size() >= 1024) throw std::runtime_error("script call stack overflow");
-        const BytecodeFunction* target = function.callTargets[static_cast<std::size_t>(instruction.operand)];
+        const BytecodeFunction* target = module_->FindFunction(
+            FunctionId{static_cast<std::uint32_t>(instruction.operand)});
+        if (!target) throw std::runtime_error("call target is unavailable");
         std::vector<Value> arguments(target->signature.parameters.size());
         for (std::size_t i = arguments.size(); i > 0; --i) arguments[i - 1] = Pop();
         callStack_.push_back({function_, pc_, std::move(locals_)});
@@ -154,9 +159,10 @@ bool VirtualMachine::Step() {
         break;
     }
     case OpCode::CallHost: {
-        if (instruction.operand < 0 || static_cast<std::size_t>(instruction.operand) >= function.hostTargets.size())
-            throw std::runtime_error("host call target out of range");
-        const auto* target = function.hostTargets[static_cast<std::size_t>(instruction.operand)];
+        if (!module_ || instruction.operand < 0) throw std::runtime_error("host call target is unavailable");
+        const auto* target = module_->FindHostFunction(
+            FunctionId{static_cast<std::uint32_t>(instruction.operand)});
+        if (!target) throw std::runtime_error("host call target is unavailable");
         std::vector<Value> arguments(target->signature.parameters.size());
         for (std::size_t i = arguments.size(); i > 0; --i) arguments[i - 1] = Pop();
         GenericCall call(arguments);
@@ -170,11 +176,13 @@ bool VirtualMachine::Step() {
         Push(call.ReturnValue());
         break;
     }
-    case OpCode::NewObject:
-        if (instruction.operand < 0 || static_cast<std::size_t>(instruction.operand) >= function.objectTypes.size())
-            throw std::runtime_error("object type index out of range");
-        Push(Value(ObjectHandle(new ScriptObject(function.objectTypes[static_cast<std::size_t>(instruction.operand)]))));
+    case OpCode::NewObject: {
+        if (!module_ || instruction.operand < 0) throw std::runtime_error("object type is unavailable");
+        const TypeInfo* type = module_->FindType(TypeId{static_cast<std::uint32_t>(instruction.operand)});
+        if (!type) throw std::runtime_error("object type is unavailable");
+        Push(Value(ObjectHandle(new ScriptObject(type))));
         break;
+    }
     case OpCode::LoadField: {
         Value objectValue = Pop();
         const auto& handle = objectValue.As<ObjectHandle>();

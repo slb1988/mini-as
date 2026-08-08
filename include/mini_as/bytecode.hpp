@@ -34,13 +34,16 @@ struct BytecodeFunction {
     std::vector<Instruction> code;
     std::vector<Value> constants;
     std::size_t localCount = 0;
-    std::vector<const BytecodeFunction*> callTargets;
-    std::vector<const RegisteredHostFunction*> hostTargets;
-    std::vector<const TypeInfo*> objectTypes;
 };
 
 struct BytecodeModule {
     std::vector<BytecodeFunction> functions;
+    std::vector<std::pair<FunctionId, const RegisteredHostFunction*>> hostFunctions;
+    std::vector<std::pair<TypeId, const TypeInfo*>> objectTypes;
+
+    const BytecodeFunction* FindFunction(FunctionId id) const;
+    const RegisteredHostFunction* FindHostFunction(FunctionId id) const;
+    const TypeInfo* FindType(TypeId id) const;
 };
 
 std::string_view OpCodeName(OpCode opcode);
@@ -64,20 +67,21 @@ private:
     std::size_t Emit(OpCode opcode, std::int32_t operand, const AstNode* node);
     void PatchJump(std::size_t instruction, std::size_t target);
     std::int32_t AddConstant(Value value);
-    std::optional<std::int32_t> LookupLocal(std::string_view name) const;
-    std::int32_t DeclareLocal(const Token& name);
+    std::optional<VariableId> LookupLocal(std::string_view name) const;
+    VariableId DeclareLocal(const Token& name);
     void Error(const AstNode* node, std::string message);
 
     DiagnosticSink& diagnostics_;
     BytecodeModule module_;
     BytecodeFunction* function_ = nullptr;
-    std::vector<std::unordered_map<std::string, std::int32_t>> scopes_;
-    std::int32_t nextLocal_ = 0;
+    std::vector<std::unordered_map<std::string, VariableId>> scopes_;
+    std::uint32_t nextLocal_ = 0;
     std::vector<FunctionSignature> signatures_;
     std::unordered_map<std::string, std::size_t> functionIndices_;
-    std::unordered_map<std::string, std::size_t> hostIndices_;
+    std::unordered_map<std::string, FunctionId> functionIds_;
+    std::unordered_map<std::string, FunctionId> hostIds_;
     std::vector<ClassSignature> classes_;
-    std::unordered_map<std::string, std::size_t> classIndices_;
+    std::unordered_map<std::string, TypeId> classIds_;
 };
 
 } // namespace mini_as

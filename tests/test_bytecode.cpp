@@ -31,3 +31,26 @@ TEST_CASE(bytecode_disassembly_retains_source_lines) {
     CHECK(mini_as::Disassemble(module.functions[0]).find("2:9") != std::string::npos);
 }
 
+TEST_CASE(bytecode_calls_reference_stable_function_ids) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("ids", "int callee() { return 7; } int caller() { return callee(); }", diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    mini_as::TypeChecker checker(diagnostics);
+    CHECK(checker.Check(tree.root));
+    mini_as::BytecodeCompiler compiler(diagnostics);
+    auto module = compiler.Compile(tree.root, checker.Functions());
+    CHECK(!diagnostics.HasErrors());
+    const auto* callee = module.FindFunction(module.functions[0].signature.id);
+    CHECK(callee != nullptr);
+    const auto& caller = module.functions[1];
+    bool foundCall = false;
+    for (const auto& instruction : caller.code) {
+        if (instruction.opcode == mini_as::OpCode::Call) {
+            foundCall = true;
+            CHECK(static_cast<std::uint32_t>(instruction.operand) == callee->signature.id.value);
+        }
+    }
+    CHECK(foundCall);
+}
+

@@ -53,6 +53,21 @@ std::string Disassemble(const BytecodeFunction& function) {
     return out.str();
 }
 
+const BytecodeFunction* BytecodeModule::FindFunction(FunctionId id) const {
+    for (const auto& function : functions) if (function.signature.id == id) return &function;
+    return nullptr;
+}
+
+const RegisteredHostFunction* BytecodeModule::FindHostFunction(FunctionId id) const {
+    for (const auto& target : hostFunctions) if (target.first == id) return target.second;
+    return nullptr;
+}
+
+const TypeInfo* BytecodeModule::FindType(TypeId id) const {
+    for (const auto& target : objectTypes) if (target.first == id) return target.second;
+    return nullptr;
+}
+
 BytecodeCompiler::BytecodeCompiler(DiagnosticSink& diagnostics) : diagnostics_(diagnostics) {}
 
 BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<FunctionSignature>& signatures,
@@ -60,31 +75,46 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
     module_ = {};
     signatures_ = signatures;
     functionIndices_.clear();
-    hostIndices_.clear();
+    functionIds_.clear();
+    hostIds_.clear();
     classes_ = classes;
-    classIndices_.clear();
-    for (const auto& type : classes_) if (!type.interfaceType) classIndices_[type.name] = classIndices_.size();
+    classIds_.clear();
+    std::uint32_t nextFunctionId = 0;
+    for (const auto& signature : signatures_) {
+        if (signature.id.IsValid() && signature.id.value >= nextFunctionId)
+            nextFunctionId = signature.id.value + 1;
+    }
+    for (auto& signature : signatures_) {
+        if (!signature.id.IsValid()) signature.id = FunctionId{nextFunctionId++};
+    }
+    std::uint32_t nextTypeId = 0;
+    for (const auto& type : classes_) {
+        if (type.id.IsValid() && type.id.value >= nextTypeId) nextTypeId = type.id.value + 1;
+    }
+    for (auto& type : classes_) {
+        if (!type.id.IsValid()) type.id = TypeId{nextTypeId++};
+        if (!type.interfaceType) classIds_[type.name] = type.id;
+    }
     if (!root) return module_;
     for (const auto& signature : signatures_) {
         if (signature.host) {
-            hostIndices_[signature.Declaration()] = hostIndices_.size();
+            hostIds_[signature.Declaration()] = signature.id;
             continue;
         }
         const auto index = module_.functions.size();
-        module_.functions.push_back({signature});
+        BytecodeFunction function;
+        function.signature = signature;
+        module_.functions.push_back(std::move(function));
         functionIndices_[signature.Declaration()] = index;
+        functionIds_[signature.Declaration()] = signature.id;
     }
     for (AstNode* node = root->firstChild; node; node = node->nextSibling) {
         if (node->kind != NodeKind::FunctionDecl) continue;
-        FunctionSignature astSignature{node->token.lexeme, node->declaredType, {}, false};
+        FunctionSignature astSignature{node->token.lexeme, node->declaredType, {}, false, {}};
         for (AstNode* child = node->firstChild; child && child->kind == NodeKind::Parameter; child = child->nextSibling)
             astSignature.parameters.push_back(child->declaredType);
         const auto found = functionIndices_.find(astSignature.Declaration());
         if (found != functionIndices_.end()) CompileFunction(node, found->second);
-    }
-    for (auto& function : module_.functions) {
-        function.callTargets.reserve(module_.functions.size());
-        for (const auto& target : module_.functions) function.callTargets.push_back(&target);
     }
     return std::move(module_);
 }
@@ -93,9 +123,6 @@ void BytecodeCompiler::CompileFunction(AstNode* node, std::size_t functionIndex)
     function_ = &module_.functions.at(functionIndex);
     function_->code.clear();
     function_->constants.clear();
-    function_->callTargets.clear();
-    function_->hostTargets.clear();
-    function_->objectTypes.clear();
     scopes_.clear();
     scopes_.emplace_back();
     nextLocal_ = 0;
@@ -129,7 +156,7 @@ void BytecodeCompiler::CompileStatement(AstNode* node) {
         else Emit(OpCode::PushVoid, 0, node);
         if (node->firstChild && node->firstChild->inferredType == DataType::Int() &&
             node->declaredType == DataType::Float()) Emit(OpCode::ToFloat, 0, node);
-        Emit(OpCode::StoreLocal, slot, node);
+        Emit(OpCode::StoreLocal, static_cast<std::int32_t>(slot.value), node);
         break;
     }
     case NodeKind::ExprStmt: CompileExpression(node->firstChild); Emit(OpCode::Pop, 0, node); break;
@@ -186,7 +213,7 @@ void BytecodeCompiler::CompileExpression(AstNode* node) {
     case NodeKind::Identifier: {
         const auto slot = LookupLocal(node->token.lexeme);
         if (!slot) Error(node, "unknown local '" + node->token.lexeme + "'");
-        else Emit(OpCode::LoadLocal, *slot, node);
+        else Emit(OpCode::LoadLocal, static_cast<std::int32_t>(slot->value), node);
         break;
     }
     case NodeKind::Assign: {
@@ -206,7 +233,7 @@ void BytecodeCompiler::CompileExpression(AstNode* node) {
             Emit(OpCode::Dup, 0, node);
             const auto slot = LookupLocal(children[0]->token.lexeme);
             if (!slot) Error(node, "unknown assignment target");
-            else Emit(OpCode::StoreLocal, *slot, node);
+            else Emit(OpCode::StoreLocal, static_cast<std::int32_t>(slot->value), node);
         }
         break;
     }
@@ -285,10 +312,10 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
     if (!callee || callee->kind != NodeKind::Identifier) {
         Error(node, "only named calls can be compiled"); return;
     }
-    const auto classFound = classIndices_.find(callee->token.lexeme);
-    if (classFound != classIndices_.end()) {
+    const auto classFound = classIds_.find(callee->token.lexeme);
+    if (classFound != classIds_.end()) {
         if (callee->nextSibling) { Error(node, "class factory expects no arguments"); return; }
-        Emit(OpCode::NewObject, static_cast<std::int32_t>(classFound->second), node);
+        Emit(OpCode::NewObject, static_cast<std::int32_t>(classFound->second.value), node);
         return;
     }
     std::vector<AstNode*> arguments;
@@ -313,13 +340,13 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
             Emit(OpCode::ToFloat, 0, arguments[i]);
     }
     if (target->host) {
-        const auto found = hostIndices_.find(target->Declaration());
-        if (found == hostIndices_.end()) { Error(node, "host call target is missing"); return; }
-        Emit(OpCode::CallHost, static_cast<std::int32_t>(found->second), node);
+        const auto found = hostIds_.find(target->Declaration());
+        if (found == hostIds_.end()) { Error(node, "host call target is missing"); return; }
+        Emit(OpCode::CallHost, static_cast<std::int32_t>(found->second.value), node);
     } else {
-        const auto found = functionIndices_.find(target->Declaration());
-        if (found == functionIndices_.end()) { Error(node, "script call target is missing"); return; }
-        Emit(OpCode::Call, static_cast<std::int32_t>(found->second), node);
+        const auto found = functionIds_.find(target->Declaration());
+        if (found == functionIds_.end()) { Error(node, "script call target is missing"); return; }
+        Emit(OpCode::Call, static_cast<std::int32_t>(found->second.value), node);
     }
 }
 
@@ -350,7 +377,7 @@ std::int32_t BytecodeCompiler::AddConstant(Value value) {
     return static_cast<std::int32_t>(function_->constants.size() - 1);
 }
 
-std::optional<std::int32_t> BytecodeCompiler::LookupLocal(std::string_view name) const {
+std::optional<VariableId> BytecodeCompiler::LookupLocal(std::string_view name) const {
     for (auto scope = scopes_.rbegin(); scope != scopes_.rend(); ++scope) {
         const auto found = scope->find(std::string(name));
         if (found != scope->end()) return found->second;
@@ -358,8 +385,8 @@ std::optional<std::int32_t> BytecodeCompiler::LookupLocal(std::string_view name)
     return std::nullopt;
 }
 
-std::int32_t BytecodeCompiler::DeclareLocal(const Token& name) {
-    const auto slot = nextLocal_++;
+VariableId BytecodeCompiler::DeclareLocal(const Token& name) {
+    const VariableId slot{nextLocal_++};
     scopes_.back()[name.lexeme] = slot;
     return slot;
 }

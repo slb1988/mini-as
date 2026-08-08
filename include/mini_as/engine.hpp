@@ -94,6 +94,8 @@ private:
     void ForwardDiagnostic(const Diagnostic& diagnostic) const;
     std::vector<FunctionSignature> HostSignatures() const;
     const TypeInfo* RegisterScriptType(const ClassSignature& type);
+    FunctionId GetOrCreateFunctionId(std::string key);
+    TypeId GetOrCreateTypeId(std::string_view name);
     void RegisterModuleImage(const std::shared_ptr<const ModuleImage>& image);
     std::shared_ptr<const ModuleImage> FindModuleImage(const BytecodeFunction* function);
     MessageCallback messageCallback_;
@@ -101,6 +103,10 @@ private:
     std::deque<RegisteredHostFunction> hostFunctions_;
     GarbageCollector garbageCollector_;
     std::unordered_map<std::string, std::unique_ptr<TypeInfo>> objectTypes_;
+    std::unordered_map<std::string, FunctionId> functionIds_;
+    std::unordered_map<std::string, TypeId> typeIds_;
+    std::uint32_t nextFunctionId_ = 0;
+    std::uint32_t nextTypeId_ = 0;
     std::unordered_map<const BytecodeFunction*, std::weak_ptr<const ModuleImage>> moduleImages_;
 };
 

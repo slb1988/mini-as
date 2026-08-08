@@ -34,18 +34,25 @@ bool ScriptModule::Build() {
     for (const auto& signature : engine_.HostSignatures()) checker.RegisterFunction(signature);
     const bool typed = !diagnostics.HasErrors() && checker.Check(tree.root);
     if (!typed) return false;
+    auto functions = checker.Functions();
+    for (auto& function : functions) {
+        if (!function.id.IsValid()) {
+            function.id = engine_.GetOrCreateFunctionId(name_ + "\n" + function.Declaration());
+        }
+    }
+    auto classes = checker.Classes();
+    for (auto& type : classes) type.id = engine_.GetOrCreateTypeId(type.name);
     BytecodeCompiler compiler(diagnostics);
-    BytecodeModule candidate = compiler.Compile(tree.root, checker.Functions(), checker.Classes());
+    BytecodeModule candidate = compiler.Compile(tree.root, functions, classes);
     if (diagnostics.HasErrors()) return false;
     std::vector<const TypeInfo*> concreteTypes;
-    for (const auto& type : checker.Classes()) {
+    for (const auto& type : classes) {
         const TypeInfo* linked = engine_.RegisterScriptType(type);
         if (!type.interfaceType) concreteTypes.push_back(linked);
     }
-    for (auto& function : candidate.functions) {
-        for (const auto& host : engine_.hostFunctions_) function.hostTargets.push_back(&host);
-        function.objectTypes = concreteTypes;
-    }
+    for (const auto& host : engine_.hostFunctions_)
+        candidate.hostFunctions.push_back({host.signature.id, &host});
+    for (const auto* type : concreteTypes) candidate.objectTypes.push_back({type->id, type});
     auto nextImage = std::make_shared<ModuleImage>();
     nextImage->bytecode = std::move(candidate);
     engine_.RegisterModuleImage(nextImage);
@@ -111,7 +118,7 @@ ExecutionState ScriptContext::Execute() {
         return result_.state;
     }
     if (result_.state == ExecutionState::Prepared) {
-        if (!vm_.Prepare(*function_, arguments_)) {
+        if (!vm_.Prepare(*function_, arguments_, &image_->bytecode)) {
             result_ = vm_.Continue();
             return result_.state;
         }
@@ -162,6 +169,7 @@ bool ScriptEngine::RegisterGlobalFunction(std::string declaration, GenericFuncti
             return false;
         }
     }
+    signature->id = GetOrCreateFunctionId("$host\n" + signature->Declaration());
     hostFunctions_.push_back({std::move(*signature), std::move(callback)});
     return true;
 }
@@ -170,6 +178,7 @@ const TypeInfo* ScriptEngine::RegisterObjectType(std::string name) {
     if (name.empty() || objectTypes_.find(name) != objectTypes_.end()) return nullptr;
     auto type = std::make_unique<TypeInfo>();
     type->name = name;
+    type->id = GetOrCreateTypeId(name);
     const TypeInfo* result = type.get();
     objectTypes_.emplace(std::move(name), std::move(type));
     return result;
@@ -189,6 +198,7 @@ const TypeInfo* ScriptEngine::RegisterScriptType(const ClassSignature& signature
     if (found == objectTypes_.end()) {
         auto created = std::make_unique<TypeInfo>();
         created->name = signature.name;
+        created->id = signature.id.IsValid() ? signature.id : GetOrCreateTypeId(signature.name);
         type = created.get();
         objectTypes_.emplace(signature.name, std::move(created));
     } else type = found->second.get();
@@ -239,6 +249,22 @@ std::vector<FunctionSignature> ScriptEngine::HostSignatures() const {
     signatures.reserve(hostFunctions_.size());
     for (const auto& host : hostFunctions_) signatures.push_back(host.signature);
     return signatures;
+}
+
+FunctionId ScriptEngine::GetOrCreateFunctionId(std::string key) {
+    const auto found = functionIds_.find(key);
+    if (found != functionIds_.end()) return found->second;
+    const FunctionId id{nextFunctionId_++};
+    functionIds_.emplace(std::move(key), id);
+    return id;
+}
+
+TypeId ScriptEngine::GetOrCreateTypeId(std::string_view name) {
+    const auto found = typeIds_.find(std::string(name));
+    if (found != typeIds_.end()) return found->second;
+    const TypeId id{nextTypeId_++};
+    typeIds_.emplace(name, id);
+    return id;
 }
 
 void ScriptEngine::RegisterModuleImage(const std::shared_ptr<const ModuleImage>& image) {

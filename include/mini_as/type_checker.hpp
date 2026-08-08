@@ -1,6 +1,7 @@
 #pragma once
 
 #include "mini_as/parser.hpp"
+#include "mini_as/symbols.hpp"
 
 #include <optional>
 #include <string>
@@ -13,6 +14,7 @@ struct FunctionSignature {
     DataType returnType;
     std::vector<DataType> parameters;
     bool host = false;
+    FunctionId id;
 
     std::string Declaration() const;
 };
@@ -23,6 +25,7 @@ struct ClassSignature {
     std::vector<std::string> interfaces;
     std::vector<std::pair<std::string, DataType>> fields;
     std::vector<FunctionSignature> methods;
+    TypeId id;
 };
 
 class TypeChecker {

@@ -91,3 +91,19 @@ TEST_CASE(prepared_context_keeps_its_module_image_across_rebuild) {
     CHECK(newContext->GetReturnInt() == 2);
 }
 
+TEST_CASE(module_rebuild_preserves_function_and_type_ids) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("stable-ids");
+    module->AddScriptSection("v1", "class Box { int value; } int answer() { return 1; }");
+    CHECK(module->Build());
+    const auto functionId = module->GetFunctionByName("answer")->signature.id;
+    const auto typeId = engine->GetTypeInfo("Box")->id;
+    CHECK(functionId.IsValid());
+    CHECK(typeId.IsValid());
+
+    module->AddScriptSection("v2", "class Box { int value; } int answer() { return 2; }");
+    CHECK(module->Build());
+    CHECK(module->GetFunctionByName("answer")->signature.id == functionId);
+    CHECK(engine->GetTypeInfo("Box")->id == typeId);
+}
+

@@ -44,9 +44,9 @@ std::string_view TokenName(TokenKind kind) {
         "true", "false", "const", "auto",
         "if", "else", "while", "do", "for", "switch", "case", "default",
         "return", "break", "continue", "class", "interface", "is", "null",
-        "(", ")", "{", "}", ",", ".", ";", ":", "?", "@", "+", "-", "*", "/", "%",
+        "(", ")", "{", "}", ",", ".", ";", ":", "?", "@", "+", "-", "*", "**", "/", "%",
         "++", "--",
-        "+=", "-=", "*=", "/=", "%=",
+        "+=", "-=", "*=", "**=", "/=", "%=",
         "&", "|", "^", "~", "<<", ">>", ">>>",
         "&=", "|=", "^=", "<<=", ">>=", ">>>=",
         "!", "!=", "=", "==", "<", "<=", ">", ">=", "&&", "||"
@@ -116,7 +116,10 @@ void Tokenizer::ScanToken() {
     case '-':
         Add(Match('-') ? TokenKind::MinusMinus : (Match('=') ? TokenKind::MinusEqual : TokenKind::Minus),
             start, location); return;
-    case '*': Add(Match('=') ? TokenKind::StarEqual : TokenKind::Star, start, location); return;
+    case '*':
+        if (Match('*')) Add(Match('=') ? TokenKind::StarStarEqual : TokenKind::StarStar, start, location);
+        else Add(Match('=') ? TokenKind::StarEqual : TokenKind::Star, start, location);
+        return;
     case '%': Add(Match('=') ? TokenKind::PercentEqual : TokenKind::Percent, start, location); return;
     case '!': Add(Match('=') ? TokenKind::BangEqual : TokenKind::Bang, start, location); return;
     case '=': Add(Match('=') ? TokenKind::EqualEqual : TokenKind::Equal, start, location); return;

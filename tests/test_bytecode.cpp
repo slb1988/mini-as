@@ -161,3 +161,19 @@ TEST_CASE(bytecode_emits_typed_bitwise_and_shift_operations) {
     CHECK(listing.find("USHR") != std::string::npos);
 }
 
+TEST_CASE(bytecode_emits_integer_and_double_power_operations) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("power-bytecode",
+        "double power(int exponent) { int value = 2 ** exponent; return value + 2.0 ** exponent; }",
+        diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    mini_as::TypeChecker checker(diagnostics);
+    CHECK(checker.Check(tree.root));
+    mini_as::BytecodeCompiler compiler(diagnostics);
+    auto module = compiler.Compile(tree.root, checker.Functions());
+    const auto listing = mini_as::Disassemble(module.functions[0]);
+    CHECK(listing.find("POW_I") != std::string::npos);
+    CHECK(listing.find("POW_D") != std::string::npos);
+}
+

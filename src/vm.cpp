@@ -41,6 +41,58 @@ bool ValuesEqual(const Value& left, const Value& right) {
     return left == right;
 }
 
+bool CheckedMultiply(std::int64_t left, std::int64_t right, std::int64_t& result) {
+    if (left == 0 || right == 0) { result = 0; return true; }
+    if ((left == -1 && right == std::numeric_limits<std::int64_t>::min()) ||
+        (right == -1 && left == std::numeric_limits<std::int64_t>::min())) return false;
+    if (left > 0) {
+        if (right > 0 && left > std::numeric_limits<std::int64_t>::max() / right) return false;
+        if (right < 0 && right < std::numeric_limits<std::int64_t>::min() / left) return false;
+    } else {
+        if (right > 0 && left < std::numeric_limits<std::int64_t>::min() / right) return false;
+        if (right < 0 && left < std::numeric_limits<std::int64_t>::max() / right) return false;
+    }
+    result = left * right;
+    return true;
+}
+
+std::int64_t SignedPower(std::int64_t base, std::int64_t exponent) {
+    if (exponent < 0) {
+        if (base == 0) throw std::runtime_error("exponent overflow");
+        return 0;
+    }
+    if (base == 0 && exponent == 0) throw std::runtime_error("exponent overflow");
+    std::int64_t result = 1;
+    while (exponent) {
+        if (exponent & 1) {
+            if (!CheckedMultiply(result, base, result)) throw std::runtime_error("exponent overflow");
+        }
+        exponent >>= 1;
+        if (exponent && !CheckedMultiply(base, base, base))
+            throw std::runtime_error("exponent overflow");
+    }
+    return result;
+}
+
+std::uint64_t UnsignedPower(std::uint64_t base, std::uint64_t exponent) {
+    if (base == 0 && exponent == 0) throw std::runtime_error("exponent overflow");
+    std::uint64_t result = 1;
+    while (exponent) {
+        if (exponent & 1) {
+            if (base && result > std::numeric_limits<std::uint64_t>::max() / base)
+                throw std::runtime_error("exponent overflow");
+            result *= base;
+        }
+        exponent >>= 1;
+        if (exponent) {
+            if (base && base > std::numeric_limits<std::uint64_t>::max() / base)
+                throw std::runtime_error("exponent overflow");
+            base *= base;
+        }
+    }
+    return result;
+}
+
 } // namespace
 
 bool VirtualMachine::Prepare(const BytecodeFunction& function, const std::vector<Value>& arguments,
@@ -160,11 +212,14 @@ bool VirtualMachine::Step() {
         break;
     }
     case OpCode::ToString: Push(Value(Pop().ToString())); break;
-    case OpCode::AddInt: case OpCode::SubInt: case OpCode::MulInt: case OpCode::DivInt: case OpCode::ModInt:
+    case OpCode::AddInt: case OpCode::SubInt: case OpCode::MulInt: case OpCode::DivInt:
+    case OpCode::ModInt: case OpCode::PowInt:
     case OpCode::BitAnd: case OpCode::BitOr: case OpCode::BitXor:
     case OpCode::ShiftLeft: case OpCode::ShiftRight: case OpCode::ShiftRightArithmetic:
-    case OpCode::AddFloat: case OpCode::SubFloat: case OpCode::MulFloat: case OpCode::DivFloat:
-    case OpCode::AddDouble: case OpCode::SubDouble: case OpCode::MulDouble: case OpCode::DivDouble:
+    case OpCode::AddFloat: case OpCode::SubFloat: case OpCode::MulFloat:
+    case OpCode::DivFloat: case OpCode::PowFloat:
+    case OpCode::AddDouble: case OpCode::SubDouble: case OpCode::MulDouble:
+    case OpCode::DivDouble: case OpCode::PowDouble:
         BinaryArithmetic(instruction); break;
     case OpCode::Concat: { Value right = Pop(), left = Pop(); Push(Value(left.As<std::string>() + right.As<std::string>())); break; }
     case OpCode::NegInt: {
@@ -328,7 +383,7 @@ void VirtualMachine::Fail(const Instruction& instruction, std::string message) {
 
 void VirtualMachine::BinaryArithmetic(const Instruction& instruction) {
     Value right = Pop(), left = Pop();
-    if (instruction.opcode >= OpCode::AddDouble && instruction.opcode <= OpCode::DivDouble) {
+    if (instruction.opcode >= OpCode::AddDouble && instruction.opcode <= OpCode::PowDouble) {
         const double a = AsDouble(left), b = AsDouble(right);
         if (instruction.opcode == OpCode::DivDouble && b == 0.0)
             throw std::runtime_error("division by zero");
@@ -337,11 +392,12 @@ void VirtualMachine::BinaryArithmetic(const Instruction& instruction) {
         case OpCode::SubDouble: Push(Value(a - b)); break;
         case OpCode::MulDouble: Push(Value(a * b)); break;
         case OpCode::DivDouble: Push(Value(a / b)); break;
+        case OpCode::PowDouble: Push(Value(std::pow(a, b))); break;
         default: break;
         }
         return;
     }
-    if (instruction.opcode >= OpCode::AddFloat && instruction.opcode <= OpCode::DivFloat) {
+    if (instruction.opcode >= OpCode::AddFloat && instruction.opcode <= OpCode::PowFloat) {
         const float a = AsFloat(left), b = AsFloat(right);
         if (instruction.opcode == OpCode::DivFloat && b == 0.0f) throw std::runtime_error("division by zero");
         switch (instruction.opcode) {
@@ -349,6 +405,7 @@ void VirtualMachine::BinaryArithmetic(const Instruction& instruction) {
         case OpCode::SubFloat: Push(Value(a - b)); break;
         case OpCode::MulFloat: Push(Value(a * b)); break;
         case OpCode::DivFloat: Push(Value(a / b)); break;
+        case OpCode::PowFloat: Push(Value(std::pow(a, b))); break;
         default: break;
         }
         return;
@@ -378,6 +435,23 @@ void VirtualMachine::BinaryArithmetic(const Instruction& instruction) {
                 Push(Value::Integer(type, 0));
             else Push(Value::Integer(type, static_cast<std::uint64_t>(signedA % signedB)));
         } else Push(Value::Integer(type, a % b));
+        break;
+    case OpCode::PowInt:
+        if (type.IsSignedInteger()) {
+            const auto powered = SignedPower(left.SignedInteger(), right.SignedInteger());
+            if (type.IntegerBits() < 64) {
+                const auto minimum = -(std::int64_t{1} << (type.IntegerBits() - 1));
+                const auto maximum = (std::int64_t{1} << (type.IntegerBits() - 1)) - 1;
+                if (powered < minimum || powered > maximum)
+                    throw std::runtime_error("exponent overflow");
+            }
+            Push(Value::Integer(type, static_cast<std::uint64_t>(powered)));
+        } else {
+            const auto powered = UnsignedPower(a, b);
+            if (type.IntegerBits() < 64 && powered >= (std::uint64_t{1} << type.IntegerBits()))
+                throw std::runtime_error("exponent overflow");
+            Push(Value::Integer(type, powered));
+        }
         break;
     case OpCode::BitAnd: Push(Value::Integer(type, a & b)); break;
     case OpCode::BitOr: Push(Value::Integer(type, a | b)); break;

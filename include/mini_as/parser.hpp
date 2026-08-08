@@ -76,6 +76,7 @@ private:
     AstNode* ParseShift();
     AstNode* ParseTerm();
     AstNode* ParseFactor();
+    AstNode* ParsePower();
     AstNode* ParseUnary();
     AstNode* ParseCall();
     AstNode* ParsePrimary();

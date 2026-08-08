@@ -85,3 +85,12 @@ TEST_CASE(tokenizer_recognizes_bitwise_shift_and_assignment_tokens) {
     CHECK(tokens[24].kind == mini_as::TokenKind::ShiftRightArithmeticEqual);
 }
 
+TEST_CASE(tokenizer_recognizes_exponent_operators) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer lexer("power", "2 ** 3; value **= 2;", diagnostics);
+    const auto tokens = lexer.ScanAll();
+    CHECK(!diagnostics.HasErrors());
+    CHECK(tokens[1].kind == mini_as::TokenKind::StarStar);
+    CHECK(tokens[5].kind == mini_as::TokenKind::StarStarEqual);
+}
+

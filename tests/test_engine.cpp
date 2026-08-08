@@ -727,3 +727,33 @@ TEST_CASE(bitwise_operators_reject_floating_operands) {
     CHECK(!module->Build());
 }
 
+TEST_CASE(exponent_operators_are_left_associative_and_support_compound_assignment) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("power");
+    module->AddScriptSection("success",
+        "int run() { int associated = 2 ** 3 ** 2; int compound = 3; compound **= 3; "
+        "double reciprocal = 2.0 ** -1; int truncated = 2 ** -1; "
+        "return associated == 64 && compound == 27 && reciprocal == 0.5 && truncated == 0 ? 42 : 0; }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByName("run")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+}
+
+TEST_CASE(exponent_operators_reject_objects_and_locate_integer_overflow) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* invalid = engine->GetModule("power-invalid");
+    invalid->AddScriptSection("invalid", "int bad() { return \"x\" ** 2; }");
+    CHECK(!invalid->Build());
+    auto* runtime = engine->GetModule("power-runtime");
+    runtime->AddScriptSection("runtime", "int power(int base) {\n return base ** 2;\n}");
+    CHECK(runtime->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(runtime->GetFunctionByName("power")));
+    CHECK(context->SetArgInt(0, 50000));
+    CHECK(context->Execute() == mini_as::ExecutionState::Exception);
+    CHECK(context->GetExceptionString() == "exponent overflow");
+    CHECK(context->GetExceptionLocation().row == 2);
+}
+

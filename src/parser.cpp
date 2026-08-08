@@ -275,7 +275,8 @@ AstNode* Parser::ParseExpression() { return ParseAssignment(); }
 AstNode* Parser::ParseAssignment() {
     AstNode* left = ParseConditional();
     if (!MatchAny({TokenKind::Equal, TokenKind::PlusEqual, TokenKind::MinusEqual,
-                   TokenKind::StarEqual, TokenKind::SlashEqual, TokenKind::PercentEqual,
+                   TokenKind::StarEqual, TokenKind::StarStarEqual,
+                   TokenKind::SlashEqual, TokenKind::PercentEqual,
                    TokenKind::AmpEqual, TokenKind::PipeEqual, TokenKind::CaretEqual,
                    TokenKind::ShiftLeftEqual, TokenKind::ShiftRightEqual,
                    TokenKind::ShiftRightArithmeticEqual})) return left;
@@ -304,7 +305,8 @@ BINARY_LEVEL(ParseEquality, ParseComparison, TokenKind::EqualEqual, TokenKind::B
 BINARY_LEVEL(ParseComparison, ParseShift, TokenKind::Less, TokenKind::LessEqual, TokenKind::Greater, TokenKind::GreaterEqual)
 BINARY_LEVEL(ParseShift, ParseTerm, TokenKind::ShiftLeft, TokenKind::ShiftRight, TokenKind::ShiftRightArithmetic)
 BINARY_LEVEL(ParseTerm, ParseFactor, TokenKind::Plus, TokenKind::Minus)
-BINARY_LEVEL(ParseFactor, ParseUnary, TokenKind::Star, TokenKind::Slash, TokenKind::Percent)
+BINARY_LEVEL(ParseFactor, ParsePower, TokenKind::Star, TokenKind::Slash, TokenKind::Percent)
+BINARY_LEVEL(ParsePower, ParseUnary, TokenKind::StarStar)
 #undef BINARY_LEVEL
 
 AstNode* Parser::ParseUnary() {

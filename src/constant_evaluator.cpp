@@ -1,6 +1,7 @@
 #include "mini_as/constant_evaluator.hpp"
 
 #include <charconv>
+#include <cmath>
 #include <cstdlib>
 #include <limits>
 
@@ -71,6 +72,7 @@ std::optional<Value> EvaluateBinary(TokenKind operation, const Value& left, cons
         if (operation == TokenKind::Minus) return result(floatLeft - floatRight);
         if (operation == TokenKind::Star) return result(floatLeft * floatRight);
         if (operation == TokenKind::Slash && floatRight != 0.0) return result(floatLeft / floatRight);
+        if (operation == TokenKind::StarStar) return result(std::pow(floatLeft, floatRight));
         return std::nullopt;
     }
     const DataType common = CommonNumericType(left.Type(), right.Type());
@@ -108,6 +110,21 @@ std::optional<Value> EvaluateBinary(TokenKind operation, const Value& left, cons
     if (operation == TokenKind::Plus) return Value::Integer(common, a + b);
     if (operation == TokenKind::Minus) return Value::Integer(common, a - b);
     if (operation == TokenKind::Star) return Value::Integer(common, a * b);
+    if (operation == TokenKind::StarStar) {
+        if (common.IsSignedInteger() && convertedRight.SignedInteger() < 0)
+            return convertedLeft.UnsignedInteger() == 0 ? std::nullopt
+                                                        : std::optional<Value>{Value::Integer(common, 0)};
+        std::uint64_t exponent = common.IsSignedInteger()
+            ? static_cast<std::uint64_t>(convertedRight.SignedInteger()) : b;
+        if (a == 0 && exponent == 0) return std::nullopt;
+        std::uint64_t base = a, result = 1;
+        while (exponent) {
+            if (exponent & 1) result *= base;
+            exponent >>= 1;
+            if (exponent) base *= base;
+        }
+        return Value::Integer(common, result);
+    }
     if ((operation == TokenKind::Slash || operation == TokenKind::Percent) && b == 0)
         return std::nullopt;
     if (operation == TokenKind::Slash) {

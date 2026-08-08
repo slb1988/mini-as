@@ -19,9 +19,10 @@ std::string_view OpCodeName(OpCode opcode) {
         "NOP", "SUSPEND", "PUSH_CONST", "PUSH_VOID", "LOAD_LOCAL", "STORE_LOCAL",
         "LOAD_GLOBAL", "STORE_GLOBAL", "DUP", "SWAP", "POP",
         "TO_FLOAT", "TO_DOUBLE", "TO_INTEGER", "TO_STRING",
-        "ADD_I", "SUB_I", "MUL_I", "DIV_I", "MOD_I",
+        "ADD_I", "SUB_I", "MUL_I", "DIV_I", "MOD_I", "POW_I",
         "BIT_AND", "BIT_OR", "BIT_XOR", "SHL", "SHR", "USHR",
-        "ADD_F", "SUB_F", "MUL_F", "DIV_F", "ADD_D", "SUB_D", "MUL_D", "DIV_D",
+        "ADD_F", "SUB_F", "MUL_F", "DIV_F", "POW_F",
+        "ADD_D", "SUB_D", "MUL_D", "DIV_D", "POW_D",
         "CONCAT", "NEG_I", "NEG_F", "NEG_D", "BIT_NOT", "NOT",
         "EQ", "NE", "LT", "LE", "GT", "GE", "JMP", "JZ", "CALL", "CALL_HOST",
         "CALL_VIRTUAL", "NEW_OBJECT", "LOAD_FIELD", "STORE_FIELD", "RET"
@@ -598,6 +599,8 @@ void BytecodeCompiler::CompileCompoundAssignment(const LValueRef& target, AstNod
     else if (operation == TokenKind::SlashEqual)
         opcode = doublePrecision ? OpCode::DivDouble : floating ? OpCode::DivFloat : OpCode::DivInt;
     else if (operation == TokenKind::PercentEqual) opcode = OpCode::ModInt;
+    else if (operation == TokenKind::StarStarEqual)
+        opcode = doublePrecision ? OpCode::PowDouble : floating ? OpCode::PowFloat : OpCode::PowInt;
     else if (operation == TokenKind::AmpEqual) opcode = OpCode::BitAnd;
     else if (operation == TokenKind::PipeEqual) opcode = OpCode::BitOr;
     else if (operation == TokenKind::CaretEqual) opcode = OpCode::BitXor;
@@ -701,6 +704,8 @@ void BytecodeCompiler::CompileBinary(AstNode* node) {
     case TokenKind::Slash: opcode = doublePrecision ? OpCode::DivDouble
         : floating ? OpCode::DivFloat : OpCode::DivInt; break;
     case TokenKind::Percent: opcode = OpCode::ModInt; break;
+    case TokenKind::StarStar: opcode = doublePrecision ? OpCode::PowDouble
+        : floating ? OpCode::PowFloat : OpCode::PowInt; break;
     case TokenKind::Amp: opcode = OpCode::BitAnd; break;
     case TokenKind::Pipe: opcode = OpCode::BitOr; break;
     case TokenKind::Caret: opcode = OpCode::BitXor; break;

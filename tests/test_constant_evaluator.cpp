@@ -18,6 +18,7 @@ std::optional<mini_as::Value> EvaluateReturn(std::string_view expression,
 TEST_CASE(constant_evaluator_folds_typed_expression_trees) {
     mini_as::DiagnosticSink diagnostics;
     auto value = EvaluateReturn("(2 + 3) * 4 - 1", diagnostics);
+    CHECK(!diagnostics.HasErrors());
     CHECK(value.has_value());
     CHECK(value->As<std::int32_t>() == 19);
 }

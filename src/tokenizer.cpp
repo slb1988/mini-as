@@ -24,7 +24,8 @@ const std::unordered_map<std::string, TokenKind> kKeywords = {
     {"continue", TokenKind::KwContinue},
     {"return", TokenKind::KwReturn}, {"class", TokenKind::KwClass},
     {"interface", TokenKind::KwInterface}, {"enum", TokenKind::KwEnum},
-    {"typedef", TokenKind::KwTypedef}, {"is", TokenKind::KwIs},
+    {"typedef", TokenKind::KwTypedef}, {"namespace", TokenKind::KwNamespace},
+    {"is", TokenKind::KwIs},
     {"null", TokenKind::KwNull},
 };
 
@@ -44,8 +45,8 @@ std::string_view TokenName(TokenKind kind) {
         "uint8", "uint16", "uint", "uint64", "float", "double", "string",
         "true", "false", "const", "auto",
         "if", "else", "while", "do", "for", "switch", "case", "default",
-        "return", "break", "continue", "class", "interface", "enum", "typedef", "is", "null",
-        "(", ")", "{", "}", ",", ".", ";", ":", "?", "@", "+", "-", "*", "**", "/", "%",
+        "return", "break", "continue", "class", "interface", "enum", "typedef", "namespace", "is", "null",
+        "(", ")", "{", "}", ",", ".", ";", ":", "::", "?", "@", "+", "-", "*", "**", "/", "%",
         "++", "--",
         "+=", "-=", "*=", "**=", "/=", "%=",
         "&", "|", "^", "~", "<<", ">>", ">>>",
@@ -108,7 +109,7 @@ void Tokenizer::ScanToken() {
         else Add(TokenKind::Dot, start, location);
         return;
     case ';': Add(TokenKind::Semicolon, start, location); return;
-    case ':': Add(TokenKind::Colon, start, location); return;
+    case ':': Add(Match(':') ? TokenKind::Scope : TokenKind::Colon, start, location); return;
     case '?': Add(TokenKind::Question, start, location); return;
     case '@': Add(TokenKind::At, start, location); return;
     case '+':

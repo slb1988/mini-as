@@ -84,6 +84,7 @@ private:
     DataType CheckUnary(AstNode* node);
     DataType CheckCall(AstNode* node);
     std::optional<VariableSymbol> Lookup(std::string_view name) const;
+    std::optional<Value> FindEnumConstant(std::string_view name) const;
     bool IsReadOnlyLValue(const AstNode* node) const;
     const FunctionSignature* FindMethod(const DataType& object, std::string_view name,
                                         const std::vector<DataType>& arguments) const;
@@ -105,6 +106,7 @@ private:
     int breakableDepth_ = 0;
     int loopDepth_ = 0;
     const ClassSignature* currentClass_ = nullptr;
+    std::string currentNamespace_;
 };
 
 } // namespace mini_as

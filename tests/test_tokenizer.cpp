@@ -114,3 +114,13 @@ TEST_CASE(tokenizer_recognizes_typedef_declarations) {
     CHECK(tokens[2].lexeme == "EntityId");
 }
 
+TEST_CASE(tokenizer_recognizes_namespaces_and_scope_resolution) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer lexer("namespace", "namespace Math { int x = Math::answer; }", diagnostics);
+    const auto tokens = lexer.ScanAll();
+    CHECK(!diagnostics.HasErrors());
+    CHECK(tokens[0].kind == mini_as::TokenKind::KwNamespace);
+    CHECK(tokens[7].kind == mini_as::TokenKind::Scope);
+    CHECK(tokens[7].lexeme == "::");
+}
+

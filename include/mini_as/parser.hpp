@@ -10,7 +10,8 @@
 namespace mini_as {
 
 enum class NodeKind {
-    Program, FunctionDecl, Parameter, ClassDecl, InterfaceDecl, EnumDecl, EnumValue, TypedefDecl, FieldDecl,
+    Program, NamespaceDecl, FunctionDecl, Parameter, ClassDecl, InterfaceDecl,
+    EnumDecl, EnumValue, TypedefDecl, FieldDecl,
     Block, DeclList, VarDecl, IfStmt, WhileStmt, DoWhileStmt, ForStmt,
     SwitchStmt, CaseClause, DefaultClause, ReturnStmt, BreakStmt, ContinueStmt, ExprStmt, EmptyStmt,
     Assign, Conditional, Binary, Unary, Increment, Call, Member, Literal, Identifier
@@ -54,6 +55,7 @@ public:
 
 private:
     AstNode* ParseTopLevel();
+    AstNode* ParseNamespace();
     AstNode* ParseClass(bool isInterface);
     AstNode* ParseEnum();
     AstNode* ParseTypedef();
@@ -85,6 +87,9 @@ private:
     AstNode* ParseCall();
     AstNode* ParsePrimary();
     DataType ParseType(bool allowVoid = false);
+    Token ParseQualifiedIdentifier(const char* message);
+    std::string QualifyDeclaration(std::string_view name) const;
+    std::string ResolveTypeName(std::string_view name) const;
 
     bool IsTypeStart(bool allowIdentifier = true) const;
     bool IsVariableDeclarationStart() const;
@@ -103,7 +108,9 @@ private:
     std::size_t current_ = 0;
     AstArena* arena_ = nullptr;
     std::unordered_set<std::string> enumTypes_;
+    std::unordered_set<std::string> objectTypes_;
     std::unordered_map<std::string, DataType> typedefTypes_;
+    std::string currentNamespace_;
 };
 
 } // namespace mini_as

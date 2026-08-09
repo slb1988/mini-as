@@ -13,6 +13,47 @@ std::string FunctionKey(const FunctionSignature& signature) {
         signature.Declaration();
 }
 
+void CollectDeclarations(AstNode* owner, std::vector<AstNode*>& result) {
+    if (!owner) return;
+    for (AstNode* node = owner->firstChild; node; node = node->nextSibling) {
+        if (node->kind == NodeKind::NamespaceDecl) CollectDeclarations(node, result);
+        else result.push_back(node);
+    }
+}
+
+std::vector<AstNode*> TopLevelDeclarations(AstNode* root) {
+    std::vector<AstNode*> result;
+    CollectDeclarations(root, result);
+    return result;
+}
+
+std::string NamespaceOf(std::string_view qualifiedName) {
+    const auto separator = qualifiedName.rfind("::");
+    return separator == std::string_view::npos ? std::string{}
+                                               : std::string(qualifiedName.substr(0, separator));
+}
+
+std::vector<std::string> NameCandidates(std::string_view nameSpace, std::string_view name) {
+    if (name.find("::") != std::string_view::npos) return {std::string(name)};
+    std::vector<std::string> result;
+    std::string scope(nameSpace);
+    while (!scope.empty()) {
+        result.push_back(scope + "::" + std::string(name));
+        const auto separator = scope.rfind("::");
+        scope = separator == std::string::npos ? std::string{} : scope.substr(0, separator);
+    }
+    result.push_back(std::string(name));
+    return result;
+}
+
+std::optional<int> NameMatchCost(std::string_view candidate, std::string_view requested,
+                                 std::string_view nameSpace) {
+    const auto names = NameCandidates(nameSpace, requested);
+    for (std::size_t index = 0; index < names.size(); ++index)
+        if (candidate == names[index]) return static_cast<int>(index) * 10;
+    return std::nullopt;
+}
+
 } // namespace
 std::string_view OpCodeName(OpCode opcode) {
     static const char* names[] = {
@@ -107,9 +148,11 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
     enumConstants_.clear();
     for (const auto& type : enums) {
         const DataType enumType = DataType::Enum(type.name);
+        const std::string enumNamespace = NamespaceOf(type.name);
         for (const auto& value : type.values) {
             enumConstants_.emplace(
-                value.name, Value::Integer(enumType, static_cast<std::uint32_t>(value.value)));
+                enumNamespace.empty() ? value.name : enumNamespace + "::" + value.name,
+                Value::Integer(enumType, static_cast<std::uint32_t>(value.value)));
         }
     }
     classIds_.clear();
@@ -131,7 +174,7 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
         classIds_[type.name] = type.id;
     }
     if (!root) return module_;
-    for (AstNode* node = root->firstChild; node; node = node->nextSibling)
+    for (AstNode* node : TopLevelDeclarations(root))
         if (node->kind == NodeKind::ClassDecl) classNodes_[node->token.lexeme] = node;
     for (const auto& signature : signatures_) {
         if (signature.host) {
@@ -172,7 +215,7 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
             }
         }
     }
-    for (AstNode* node = root->firstChild; node; node = node->nextSibling) {
+    for (AstNode* node : TopLevelDeclarations(root)) {
         if (node->kind != NodeKind::FunctionDecl) continue;
         FunctionSignature astSignature{node->token.lexeme, node->declaredType, {}, false, {}, {}, false, false};
         for (AstNode* child = node->firstChild; child && child->kind == NodeKind::Parameter; child = child->nextSibling)
@@ -180,7 +223,7 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
         const auto found = functionIndices_.find(FunctionKey(astSignature));
         if (found != functionIndices_.end()) CompileFunction(node, found->second);
     }
-    for (AstNode* typeNode = root->firstChild; typeNode; typeNode = typeNode->nextSibling) {
+    for (AstNode* typeNode : TopLevelDeclarations(root)) {
         if (typeNode->kind != NodeKind::ClassDecl) continue;
         for (AstNode* methodNode = typeNode->firstChild; methodNode; methodNode = methodNode->nextSibling) {
             if (methodNode->kind != NodeKind::FunctionDecl || !methodNode->firstChild) continue;
@@ -212,12 +255,13 @@ void BytecodeCompiler::CompileGlobalInitializer(AstNode* root) {
         if (!declaration || !declaration->isGlobal || !declaration->firstChild) return;
         const auto found = globalSymbols_.find(declaration->token.lexeme);
         if (found == globalSymbols_.end()) return;
+        currentNamespace_ = NamespaceOf(declaration->token.lexeme);
         CompileExpression(declaration->firstChild);
         EmitConversion(declaration->firstChild->inferredType, declaration->declaredType, declaration);
         Emit(OpCode::StoreGlobal, static_cast<std::int32_t>(found->second.id.value), declaration);
     };
     if (root) {
-        for (AstNode* node = root->firstChild; node; node = node->nextSibling) {
+        for (AstNode* node : TopLevelDeclarations(root)) {
             if (node->kind == NodeKind::VarDecl) compileDeclaration(node);
             if (node->kind == NodeKind::DeclList) {
                 for (AstNode* declaration = node->firstChild; declaration;
@@ -228,6 +272,7 @@ void BytecodeCompiler::CompileGlobalInitializer(AstNode* root) {
     Emit(OpCode::PushVoid, 0, root);
     Emit(OpCode::Return, 0, root);
     function_->localCount = 0;
+    currentNamespace_.clear();
     function_ = nullptr;
 }
 
@@ -240,6 +285,8 @@ void BytecodeCompiler::CompileFunction(AstNode* node, std::size_t functionIndex,
     scopes_.emplace_back();
     controlFlow_.clear();
     currentObjectType_ = std::move(objectType);
+    currentNamespace_ = NamespaceOf(currentObjectType_.empty()
+        ? function_->signature.name : currentObjectType_);
     implicitThisSlot_ = 0;
     nextLocal_ = 0;
     if (!currentObjectType_.empty()) {
@@ -258,6 +305,7 @@ void BytecodeCompiler::CompileFunction(AstNode* node, std::size_t functionIndex,
     }
     function_->localCount = static_cast<std::size_t>(nextLocal_);
     currentObjectType_.clear();
+    currentNamespace_.clear();
     function_ = nullptr;
 }
 
@@ -376,9 +424,11 @@ void BytecodeCompiler::CompileStatement(AstNode* node) {
             }
             AstNode* valueExpression = clause->firstChild;
             ConstantExpressionEvaluator evaluator([this](std::string_view name) -> std::optional<Value> {
-                const auto found = enumConstants_.find(std::string(name));
-                return found == enumConstants_.end() ? std::nullopt
-                                                     : std::optional<Value>{found->second};
+                for (const auto& candidate : NameCandidates(currentNamespace_, name)) {
+                    const auto found = enumConstants_.find(candidate);
+                    if (found != enumConstants_.end()) return found->second;
+                }
+                return std::nullopt;
             });
             auto value = evaluator.Evaluate(valueExpression);
             if (!value || !value->Type().IsInteger()) {
@@ -439,10 +489,13 @@ void BytecodeCompiler::CompileExpression(AstNode* node) {
         const auto target = ResolveLValue(node);
         if (target) CompileLValueLoad(*target, node);
         else {
-            const auto constant = enumConstants_.find(node->token.lexeme);
-            if (constant == enumConstants_.end())
-                Error(node, "unknown local '" + node->token.lexeme + "'");
-            else Emit(OpCode::PushConst, AddConstant(constant->second), node);
+            const Value* constant = nullptr;
+            for (const auto& candidate : NameCandidates(currentNamespace_, node->token.lexeme)) {
+                const auto found = enumConstants_.find(candidate);
+                if (found != enumConstants_.end()) { constant = &found->second; break; }
+            }
+            if (!constant) Error(node, "unknown local '" + node->token.lexeme + "'");
+            else Emit(OpCode::PushConst, AddConstant(*constant), node);
         }
         break;
     }
@@ -517,8 +570,9 @@ std::optional<BytecodeCompiler::LValueRef> BytecodeCompiler::ResolveLValue(AstNo
                 }
             }
         }
-        const auto global = globalSymbols_.find(expression->token.lexeme);
-        if (global != globalSymbols_.end()) {
+        for (const auto& candidate : NameCandidates(currentNamespace_, expression->token.lexeme)) {
+            const auto global = globalSymbols_.find(candidate);
+            if (global == globalSymbols_.end()) continue;
             LValueRef result;
             result.kind = LValueRef::Kind::Global;
             result.type = global->second.type;
@@ -774,8 +828,10 @@ void BytecodeCompiler::CompileFieldInitializers(std::string_view typeName, const
     Emit(OpCode::Dup, 0, source);
     Emit(OpCode::StoreLocal, static_cast<std::int32_t>(receiver.value), source);
     const std::string previousObjectType = currentObjectType_;
+    const std::string previousNamespace = currentNamespace_;
     const std::uint32_t previousThisSlot = implicitThisSlot_;
     currentObjectType_ = std::string(typeName);
+    currentNamespace_ = NamespaceOf(typeName);
     implicitThisSlot_ = receiver.value;
     std::uint32_t fieldIndex = 0;
     for (AstNode* member = found->second->firstChild; member; member = member->nextSibling) {
@@ -790,6 +846,7 @@ void BytecodeCompiler::CompileFieldInitializers(std::string_view typeName, const
         ++fieldIndex;
     }
     currentObjectType_ = previousObjectType;
+    currentNamespace_ = previousNamespace;
     implicitThisSlot_ = previousThisSlot;
 }
 
@@ -803,14 +860,19 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
     std::vector<AstNode*> arguments;
     for (AstNode* argument = callee->nextSibling; argument; argument = argument->nextSibling)
         arguments.push_back(argument);
-    const auto classFound = classIds_.find(callName);
+    auto classFound = classIds_.end();
+    std::string resolvedClassName;
+    for (const auto& candidate : NameCandidates(currentNamespace_, callName)) {
+        classFound = classIds_.find(candidate);
+        if (classFound != classIds_.end()) { resolvedClassName = candidate; break; }
+    }
     if (!explicitMethod && classFound != classIds_.end()) {
         Emit(OpCode::NewObject, static_cast<std::int32_t>(classFound->second.value), node);
-        CompileFieldInitializers(callName, node);
+        CompileFieldInitializers(resolvedClassName, node);
         const FunctionSignature* constructor = nullptr;
         int bestCost = 1000000;
         for (const auto& signature : signatures_) {
-            if (!signature.constructor || signature.objectType != callName ||
+            if (!signature.constructor || signature.objectType != resolvedClassName ||
                 signature.parameters.size() != arguments.size()) continue;
             int cost = 0;
             bool viable = true;
@@ -843,12 +905,17 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
     const std::string receiverType = explicitMethod
         ? callee->firstChild->inferredType.objectName : currentObjectType_;
     for (const auto& signature : signatures_) {
-        if (signature.constructor || signature.name != callName ||
-            signature.parameters.size() != arguments.size()) continue;
+        if (signature.constructor || signature.parameters.size() != arguments.size()) continue;
+        std::optional<int> nameCost;
+        if (signature.method) {
+            if (signature.name == callName) nameCost = 0;
+        } else nameCost = NameMatchCost(signature.name, callName, currentNamespace_);
+        if (!nameCost) continue;
         if (explicitMethod && (!signature.method || signature.objectType != receiverType)) continue;
         if (!explicitMethod && signature.method && signature.objectType != currentObjectType_) continue;
         if (!explicitMethod && currentObjectType_.empty() && signature.method) continue;
-        int cost = (!explicitMethod && !currentObjectType_.empty() && !signature.method) ? 1000 : 0;
+        int cost = *nameCost +
+            ((!explicitMethod && !currentObjectType_.empty() && !signature.method) ? 1000 : 0);
         bool viable = true;
         for (std::size_t i = 0; i < arguments.size(); ++i) {
             const auto conversion = ConversionCost(arguments[i]->inferredType, signature.parameters[i]);

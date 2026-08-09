@@ -7,6 +7,50 @@
 #include <utility>
 
 namespace mini_as {
+namespace {
+
+void CollectDeclarations(AstNode* owner, std::vector<AstNode*>& result) {
+    if (!owner) return;
+    for (AstNode* node = owner->firstChild; node; node = node->nextSibling) {
+        if (node->kind == NodeKind::NamespaceDecl) CollectDeclarations(node, result);
+        else result.push_back(node);
+    }
+}
+
+std::vector<AstNode*> TopLevelDeclarations(AstNode* root) {
+    std::vector<AstNode*> result;
+    CollectDeclarations(root, result);
+    return result;
+}
+
+std::string NamespaceOf(std::string_view qualifiedName) {
+    const auto separator = qualifiedName.rfind("::");
+    return separator == std::string_view::npos ? std::string{}
+                                               : std::string(qualifiedName.substr(0, separator));
+}
+
+std::vector<std::string> NameCandidates(std::string_view nameSpace, std::string_view name) {
+    if (name.find("::") != std::string_view::npos) return {std::string(name)};
+    std::vector<std::string> result;
+    std::string scope(nameSpace);
+    while (!scope.empty()) {
+        result.push_back(scope + "::" + std::string(name));
+        const auto separator = scope.rfind("::");
+        scope = separator == std::string::npos ? std::string{} : scope.substr(0, separator);
+    }
+    result.push_back(std::string(name));
+    return result;
+}
+
+std::optional<int> NameMatchCost(std::string_view candidate, std::string_view requested,
+                                 std::string_view nameSpace) {
+    const auto names = NameCandidates(nameSpace, requested);
+    for (std::size_t index = 0; index < names.size(); ++index)
+        if (candidate == names[index]) return static_cast<int>(index) * 10;
+    return std::nullopt;
+}
+
+} // namespace
 
 std::string FunctionSignature::Declaration() const {
     std::ostringstream out;
@@ -31,7 +75,7 @@ bool TypeChecker::Check(AstNode* root) {
     PredeclareEnums(root);
     Predeclare(root);
     PredeclareGlobals(root);
-    if (root) for (AstNode* child = root->firstChild; child; child = child->nextSibling) CheckNode(child);
+    for (AstNode* child : TopLevelDeclarations(root)) CheckNode(child);
     return !diagnostics_.HasErrors();
 }
 
@@ -44,7 +88,7 @@ const std::vector<TypedefSignature>& TypeChecker::Typedefs() const { return type
 void TypeChecker::PredeclareTypedefs(AstNode* root) {
     typedefs_.clear();
     if (!root) return;
-    for (AstNode* node = root->firstChild; node; node = node->nextSibling) {
+    for (AstNode* node : TopLevelDeclarations(root)) {
         if (node->kind != NodeKind::TypedefDecl) continue;
         bool duplicate = false;
         for (const auto& existing : typedefs_) {
@@ -59,7 +103,7 @@ void TypeChecker::PredeclareEnums(AstNode* root) {
     enums_.clear();
     enumConstants_.clear();
     if (!root) return;
-    for (AstNode* node = root->firstChild; node; node = node->nextSibling) {
+    for (AstNode* node : TopLevelDeclarations(root)) {
         if (node->kind != NodeKind::EnumDecl) continue;
         bool duplicateType = false;
         for (const auto& existing : enums_) {
@@ -72,20 +116,25 @@ void TypeChecker::PredeclareEnums(AstNode* root) {
         EnumSignature signature;
         signature.name = node->token.lexeme;
         const DataType enumType = DataType::Enum(signature.name);
+        const std::string enumNamespace = NamespaceOf(signature.name);
         std::int64_t nextValue = 0;
         std::unordered_set<std::string> localNames;
         for (AstNode* valueNode = node->firstChild; valueNode; valueNode = valueNode->nextSibling) {
             valueNode->declaredType = enumType;
+            const std::string qualifiedValue = enumNamespace.empty()
+                ? valueNode->token.lexeme : enumNamespace + "::" + valueNode->token.lexeme;
             if (!localNames.insert(valueNode->token.lexeme).second ||
-                enumConstants_.find(valueNode->token.lexeme) != enumConstants_.end()) {
+                enumConstants_.find(qualifiedValue) != enumConstants_.end()) {
                 Error(valueNode, "duplicate enum value '" + valueNode->token.lexeme + "'");
                 continue;
             }
             if (valueNode->firstChild) {
-                ConstantExpressionEvaluator evaluator([this](std::string_view name) -> std::optional<Value> {
-                    const auto found = enumConstants_.find(std::string(name));
-                    return found == enumConstants_.end() ? std::nullopt
-                                                         : std::optional<Value>{found->second};
+                ConstantExpressionEvaluator evaluator([this, &enumNamespace](std::string_view name) {
+                    for (const auto& candidate : NameCandidates(enumNamespace, name)) {
+                        const auto found = enumConstants_.find(candidate);
+                        if (found != enumConstants_.end()) return std::optional<Value>{found->second};
+                    }
+                    return std::optional<Value>{};
                 });
                 const auto explicitValue = evaluator.Evaluate(valueNode->firstChild);
                 if (!explicitValue || !explicitValue->Type().IsInteger()) {
@@ -109,7 +158,7 @@ void TypeChecker::PredeclareEnums(AstNode* root) {
             }
             const auto stored = static_cast<std::int32_t>(nextValue);
             signature.values.push_back({valueNode->token.lexeme, stored});
-            enumConstants_.emplace(valueNode->token.lexeme,
+            enumConstants_.emplace(qualifiedValue,
                                    Value::Integer(enumType, static_cast<std::uint32_t>(stored)));
             ++nextValue;
         }
@@ -120,7 +169,7 @@ void TypeChecker::PredeclareEnums(AstNode* root) {
 void TypeChecker::Predeclare(AstNode* root) {
     if (!root) return;
     classes_.clear();
-    for (AstNode* node = root->firstChild; node; node = node->nextSibling) {
+    for (AstNode* node : TopLevelDeclarations(root)) {
         if (node->kind != NodeKind::ClassDecl && node->kind != NodeKind::InterfaceDecl) continue;
         ClassSignature type;
         type.name = node->token.lexeme;
@@ -165,7 +214,7 @@ void TypeChecker::Predeclare(AstNode* root) {
             }
         }
     }
-    for (AstNode* node = root->firstChild; node; node = node->nextSibling) {
+    for (AstNode* node : TopLevelDeclarations(root)) {
         if (node->kind != NodeKind::FunctionDecl) continue;
         FunctionSignature signature{node->token.lexeme, node->declaredType, {}, false, {}, {}, false, false};
         for (AstNode* child = node->firstChild; child && child->kind == NodeKind::Parameter;
@@ -183,7 +232,7 @@ void TypeChecker::PredeclareGlobals(AstNode* root) {
     globals_.clear();
     if (!root) return;
     std::vector<AstNode*> declarations;
-    for (AstNode* node = root->firstChild; node; node = node->nextSibling) {
+    for (AstNode* node : TopLevelDeclarations(root)) {
         if (node->kind == NodeKind::VarDecl && node->isGlobal) declarations.push_back(node);
         if (node->kind == NodeKind::DeclList) {
             for (AstNode* declaration = node->firstChild; declaration;
@@ -196,7 +245,7 @@ void TypeChecker::PredeclareGlobals(AstNode* root) {
         if (!declaration->isAuto)
             Declare(declaration->token, declaration->declaredType, declaration->isConst);
     }
-    for (AstNode* node = root->firstChild; node; node = node->nextSibling) {
+    for (AstNode* node : TopLevelDeclarations(root)) {
         std::vector<AstNode*> group;
         if (node->kind == NodeKind::VarDecl && node->isGlobal) group.push_back(node);
         if (node->kind == NodeKind::DeclList) {
@@ -212,7 +261,10 @@ void TypeChecker::PredeclareGlobals(AstNode* root) {
                 Error(declaration, "auto declaration requires an initializer");
                 continue;
             }
+            const std::string previousNamespace = currentNamespace_;
+            currentNamespace_ = NamespaceOf(declaration->token.lexeme);
             if (!sharedAutoType.IsValid()) sharedAutoType = CheckExpression(declaration->firstChild);
+            currentNamespace_ = previousNamespace;
             declaration->declaredType = sharedAutoType;
             Declare(declaration->token, declaration->declaredType, declaration->isConst);
         }
@@ -238,6 +290,8 @@ void TypeChecker::CheckNode(AstNode* node) {
         break;
     }
     case NodeKind::VarDecl: {
+        const std::string previousNamespace = currentNamespace_;
+        if (node->isGlobal) currentNamespace_ = NamespaceOf(node->token.lexeme);
         if (node->isAuto && !node->firstChild) {
             Error(node, "auto declaration requires an initializer");
         }
@@ -249,6 +303,7 @@ void TypeChecker::CheckNode(AstNode* node) {
             }
         }
         if (!node->isGlobal) Declare(node->token, node->declaredType, node->isConst);
+        currentNamespace_ = previousNamespace;
         break;
     }
     case NodeKind::IfStmt: {
@@ -308,10 +363,8 @@ void TypeChecker::CheckNode(AstNode* node) {
             if (clause->kind == NodeKind::CaseClause) {
                 AstNode* valueExpression = statement;
                 const DataType valueType = CheckExpression(valueExpression);
-                ConstantExpressionEvaluator evaluator([this](std::string_view name) -> std::optional<Value> {
-                    const auto found = enumConstants_.find(std::string(name));
-                    return found == enumConstants_.end() ? std::nullopt
-                                                         : std::optional<Value>{found->second};
+                ConstantExpressionEvaluator evaluator([this](std::string_view name) {
+                    return FindEnumConstant(name);
                 });
                 auto value = evaluator.Evaluate(valueExpression);
                 if (!valueType.IsInteger() || !value || !value->Type().IsInteger()) {
@@ -347,6 +400,8 @@ void TypeChecker::CheckNode(AstNode* node) {
     case NodeKind::ExprStmt: CheckExpression(node->firstChild); break;
     case NodeKind::ClassDecl: {
         const ClassSignature* previousClass = currentClass_;
+        const std::string previousNamespace = currentNamespace_;
+        currentNamespace_ = NamespaceOf(node->token.lexeme);
         currentClass_ = FindClass(node->token.lexeme);
         for (AstNode* member = node->firstChild; member; member = member->nextSibling) {
             if (member->kind == NodeKind::FieldDecl && member->firstChild) {
@@ -359,10 +414,11 @@ void TypeChecker::CheckNode(AstNode* node) {
             if (member->kind == NodeKind::FunctionDecl && member->firstChild) CheckFunction(member);
         }
         currentClass_ = previousClass;
+        currentNamespace_ = previousNamespace;
         break;
     }
     case NodeKind::InterfaceDecl: case NodeKind::EnumDecl: case NodeKind::EnumValue:
-    case NodeKind::TypedefDecl:
+    case NodeKind::TypedefDecl: case NodeKind::NamespaceDecl:
     case NodeKind::EmptyStmt:
     case NodeKind::CaseClause: case NodeKind::DefaultClause: break;
     default: CheckExpression(node); break;
@@ -371,6 +427,9 @@ void TypeChecker::CheckNode(AstNode* node) {
 
 void TypeChecker::CheckFunction(AstNode* node) {
     const DataType previousReturn = currentReturn_;
+    const std::string previousNamespace = currentNamespace_;
+    currentNamespace_ = currentClass_ ? NamespaceOf(currentClass_->name)
+                                      : NamespaceOf(node->token.lexeme);
     currentReturn_ = node->declaredType;
     scopes_.emplace_back();
     AstNode* child = node->firstChild;
@@ -381,6 +440,7 @@ void TypeChecker::CheckFunction(AstNode* node) {
     if (child && child->kind == NodeKind::Block) CheckBlock(child, false);
     scopes_.pop_back();
     currentReturn_ = previousReturn;
+    currentNamespace_ = previousNamespace;
 }
 
 void TypeChecker::CheckBlock(AstNode* node, bool createScope) {
@@ -421,8 +481,8 @@ DataType TypeChecker::CheckExpression(AstNode* node) {
             }
         }
         if (!result.IsValid()) {
-            const auto constant = enumConstants_.find(node->token.lexeme);
-            if (constant != enumConstants_.end()) result = constant->second.Type();
+            const auto constant = FindEnumConstant(node->token.lexeme);
+            if (constant) result = constant->Type();
         }
         if (!result.IsValid()) Error(node, "unknown variable '" + node->token.lexeme + "'");
         break;
@@ -467,8 +527,7 @@ DataType TypeChecker::CheckExpression(AstNode* node) {
         if (children[0]->kind != NodeKind::Identifier && children[0]->kind != NodeKind::Member) {
             Error(children[0], "left side of assignment is not assignable");
         }
-        if (children[0]->kind == NodeKind::Identifier &&
-            enumConstants_.find(children[0]->token.lexeme) != enumConstants_.end()) {
+        if (children[0]->kind == NodeKind::Identifier && FindEnumConstant(children[0]->token.lexeme)) {
             Error(children[0], "cannot assign to enum value '" + children[0]->token.lexeme + "'");
         } else if (IsReadOnlyLValue(children[0])) {
             Error(children[0], "cannot assign to const variable '" + children[0]->token.lexeme + "'");
@@ -611,8 +670,9 @@ DataType TypeChecker::CheckCall(AstNode* node) {
     const FunctionSignature* best = nullptr;
     int bestCost = 1000000;
     for (const auto& function : functions_) {
-        if (function.name != callee->token.lexeme || function.parameters.size() != arguments.size()) continue;
-        int cost = 0;
+        const auto nameCost = NameMatchCost(function.name, callee->token.lexeme, currentNamespace_);
+        if (!nameCost || function.parameters.size() != arguments.size()) continue;
+        int cost = *nameCost;
         bool viable = true;
         for (std::size_t i = 0; i < arguments.size(); ++i) {
             const auto conversion = ConversionCost(arguments[i], function.parameters[i]);
@@ -629,9 +689,19 @@ DataType TypeChecker::CheckCall(AstNode* node) {
 }
 
 std::optional<TypeChecker::VariableSymbol> TypeChecker::Lookup(std::string_view name) const {
-    for (auto scope = scopes_.rbegin(); scope != scopes_.rend(); ++scope) {
-        const auto found = scope->find(std::string(name));
-        if (found != scope->end()) return found->second;
+    for (const auto& candidate : NameCandidates(currentNamespace_, name)) {
+        for (auto scope = scopes_.rbegin(); scope != scopes_.rend(); ++scope) {
+            const auto found = scope->find(candidate);
+            if (found != scope->end()) return found->second;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<Value> TypeChecker::FindEnumConstant(std::string_view name) const {
+    for (const auto& candidate : NameCandidates(currentNamespace_, name)) {
+        const auto found = enumConstants_.find(candidate);
+        if (found != enumConstants_.end()) return found->second;
     }
     return std::nullopt;
 }
@@ -667,7 +737,8 @@ bool TypeChecker::IsReadOnlyLValue(const AstNode* node) const {
 }
 
 const ClassSignature* TypeChecker::FindClass(std::string_view name) const {
-    for (const auto& type : classes_) if (type.name == name) return &type;
+    for (const auto& candidate : NameCandidates(currentNamespace_, name))
+        for (const auto& type : classes_) if (type.name == candidate) return &type;
     return nullptr;
 }
 

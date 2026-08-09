@@ -23,6 +23,11 @@ std::optional<DataType> TypedefPrimitive(TokenKind kind) {
     }
 }
 
+std::string JoinName(std::string_view nameSpace, std::string_view name) {
+    if (nameSpace.empty()) return std::string(name);
+    return std::string(nameSpace) + "::" + std::string(name);
+}
+
 } // namespace
 
 void AstNode::AppendChild(AstNode* child) {
@@ -50,15 +55,50 @@ AstNode* AstArena::Make(NodeKind kind, const Token& token) {
 
 Parser::Parser(std::vector<Token> tokens, DiagnosticSink& diagnostics)
     : tokens_(std::move(tokens)), diagnostics_(diagnostics) {
-    for (std::size_t index = 0; index + 1 < tokens_.size(); ++index) {
-        if (tokens_[index].kind == TokenKind::KwEnum &&
+    struct NamespaceFrame { std::string name; int depth = 0; };
+    std::vector<NamespaceFrame> namespaces;
+    int braceDepth = 0;
+    for (std::size_t index = 0; index < tokens_.size(); ++index) {
+        if (tokens_[index].kind == TokenKind::RightBrace) {
+            if (!namespaces.empty() && namespaces.back().depth == braceDepth) namespaces.pop_back();
+            --braceDepth;
+            continue;
+        }
+        if (tokens_[index].kind == TokenKind::LeftBrace) { ++braceDepth; continue; }
+        const std::string active = namespaces.empty() ? std::string{} : namespaces.back().name;
+        if (tokens_[index].kind == TokenKind::KwNamespace && index + 2 < tokens_.size()) {
+            std::size_t cursor = index + 1;
+            std::string name;
+            if (tokens_[cursor].kind == TokenKind::Identifier) {
+                name = tokens_[cursor++].lexeme;
+                while (cursor + 1 < tokens_.size() && tokens_[cursor].kind == TokenKind::Scope &&
+                       tokens_[cursor + 1].kind == TokenKind::Identifier) {
+                    name += "::" + tokens_[cursor + 1].lexeme;
+                    cursor += 2;
+                }
+            }
+            if (!name.empty() && cursor < tokens_.size() && tokens_[cursor].kind == TokenKind::LeftBrace) {
+                ++braceDepth;
+                namespaces.push_back({JoinName(active, name), braceDepth});
+                index = cursor;
+            }
+            continue;
+        }
+        const bool declarationLevel = braceDepth == (namespaces.empty() ? 0 : namespaces.back().depth);
+        if (!declarationLevel) continue;
+        if ((tokens_[index].kind == TokenKind::KwClass ||
+             tokens_[index].kind == TokenKind::KwInterface) && index + 1 < tokens_.size() &&
             tokens_[index + 1].kind == TokenKind::Identifier) {
-            enumTypes_.insert(tokens_[index + 1].lexeme);
+            objectTypes_.insert(JoinName(active, tokens_[index + 1].lexeme));
+        }
+        if (tokens_[index].kind == TokenKind::KwEnum && index + 1 < tokens_.size() &&
+            tokens_[index + 1].kind == TokenKind::Identifier) {
+            enumTypes_.insert(JoinName(active, tokens_[index + 1].lexeme));
         }
         if (tokens_[index].kind == TokenKind::KwTypedef && index + 2 < tokens_.size()) {
             const auto primitive = TypedefPrimitive(tokens_[index + 1].kind);
             if (primitive && tokens_[index + 2].kind == TokenKind::Identifier)
-                typedefTypes_[tokens_[index + 2].lexeme] = *primitive;
+                typedefTypes_[JoinName(active, tokens_[index + 2].lexeme)] = *primitive;
         }
     }
 }
@@ -77,6 +117,7 @@ SyntaxTree Parser::Parse() {
 }
 
 AstNode* Parser::ParseTopLevel() {
+    if (Match(TokenKind::KwNamespace)) return ParseNamespace();
     if (Match(TokenKind::KwClass)) return ParseClass(false);
     if (Match(TokenKind::KwInterface)) return ParseClass(true);
     if (Match(TokenKind::KwEnum)) return ParseEnum();
@@ -86,21 +127,46 @@ AstNode* Parser::ParseTopLevel() {
         DataType type = ParseType(true);
         if (Check(TokenKind::Identifier)) {
             Token name = Advance();
+            name.lexeme = QualifyDeclaration(name.lexeme);
             if (Check(TokenKind::LeftParen)) return ParseFunction(type, std::move(name));
         }
         current_ = saved;
     }
     AstNode* statement = ParseStatement();
-    if (statement && statement->kind == NodeKind::VarDecl) statement->isGlobal = true;
+    if (statement && statement->kind == NodeKind::VarDecl) {
+        statement->isGlobal = true;
+        statement->token.lexeme = QualifyDeclaration(statement->token.lexeme);
+    }
     if (statement && statement->kind == NodeKind::DeclList) {
         for (AstNode* declaration = statement->firstChild; declaration;
-             declaration = declaration->nextSibling) declaration->isGlobal = true;
+             declaration = declaration->nextSibling) {
+            declaration->isGlobal = true;
+            declaration->token.lexeme = QualifyDeclaration(declaration->token.lexeme);
+        }
     }
     return statement;
 }
 
+AstNode* Parser::ParseNamespace() {
+    Token name = ParseQualifiedIdentifier("expected namespace name");
+    const std::string previous = currentNamespace_;
+    currentNamespace_ = JoinName(currentNamespace_, name.lexeme);
+    name.lexeme = currentNamespace_;
+    AstNode* declaration = arena_->Make(NodeKind::NamespaceDecl, name);
+    Consume(TokenKind::LeftBrace, "expected '{' before namespace body");
+    while (!Check(TokenKind::RightBrace) && !Check(TokenKind::End)) {
+        const auto before = current_;
+        declaration->AppendChild(ParseTopLevel());
+        if (current_ == before) { Error(Current(), "parser made no progress"); Advance(); }
+    }
+    Consume(TokenKind::RightBrace, "expected '}' after namespace body");
+    currentNamespace_ = previous;
+    return declaration;
+}
+
 AstNode* Parser::ParseEnum() {
     Token name = Consume(TokenKind::Identifier, "expected enum name");
+    name.lexeme = QualifyDeclaration(name.lexeme);
     AstNode* declaration = arena_->Make(NodeKind::EnumDecl, name);
     Consume(TokenKind::LeftBrace, "expected '{' before enum body");
     if (!Check(TokenKind::RightBrace)) {
@@ -121,6 +187,7 @@ AstNode* Parser::ParseTypedef() {
     const bool primitive = TypedefPrimitive(Current().kind).has_value();
     DataType source = ParseType(false);
     Token name = Consume(TokenKind::Identifier, "expected typedef name");
+    name.lexeme = QualifyDeclaration(name.lexeme);
     AstNode* declaration = arena_->Make(NodeKind::TypedefDecl, name);
     declaration->declaredType = std::move(source);
     if (!primitive) Error(name, "typedef source must be a built-in primitive type");
@@ -130,14 +197,17 @@ AstNode* Parser::ParseTypedef() {
 
 AstNode* Parser::ParseClass(bool isInterface) {
     Token name = Consume(TokenKind::Identifier, "expected type name");
+    const std::string simpleName = name.lexeme;
+    name.lexeme = QualifyDeclaration(name.lexeme);
     AstNode* node = arena_->Make(isInterface ? NodeKind::InterfaceDecl : NodeKind::ClassDecl, name);
     if (Match(TokenKind::Colon)) {
-        node->AppendChild(arena_->Make(NodeKind::Identifier,
-                         Consume(TokenKind::Identifier, "expected interface name")));
+        Token interfaceName = ParseQualifiedIdentifier("expected interface name");
+        interfaceName.lexeme = ResolveTypeName(interfaceName.lexeme);
+        node->AppendChild(arena_->Make(NodeKind::Identifier, interfaceName));
     }
     Consume(TokenKind::LeftBrace, "expected '{' before type body");
     while (!Check(TokenKind::RightBrace) && !Check(TokenKind::End)) {
-        if (!isInterface && Check(TokenKind::Identifier) && Current().lexeme == name.lexeme &&
+        if (!isInterface && Check(TokenKind::Identifier) && Current().lexeme == simpleName &&
             current_ + 1 < tokens_.size() && tokens_[current_ + 1].kind == TokenKind::LeftParen) {
             Token constructorName = Advance();
             AstNode* constructor = ParseFunction(DataType::Void(), std::move(constructorName));
@@ -419,7 +489,8 @@ AstNode* Parser::ParsePrimary() {
                   TokenKind::KwTrue, TokenKind::KwFalse, TokenKind::KwNull})) {
         return arena_->Make(NodeKind::Literal, Previous());
     }
-    if (Match(TokenKind::Identifier)) return arena_->Make(NodeKind::Identifier, Previous());
+    if (Check(TokenKind::Identifier))
+        return arena_->Make(NodeKind::Identifier, ParseQualifiedIdentifier("expected identifier"));
     if (Match(TokenKind::LeftParen)) {
         AstNode* expression = ParseExpression();
         Consume(TokenKind::RightParen, "expected ')' after expression");
@@ -445,8 +516,9 @@ DataType Parser::ParseType(bool allowVoid) {
     else if (Match(TokenKind::KwFloat)) type = DataType::Float();
     else if (Match(TokenKind::KwDouble)) type = DataType::Double();
     else if (Match(TokenKind::KwString)) type = DataType::String();
-    else if (Match(TokenKind::Identifier)) {
-        const std::string& name = Previous().lexeme;
+    else if (Check(TokenKind::Identifier)) {
+        Token identifier = ParseQualifiedIdentifier("expected type");
+        const std::string name = ResolveTypeName(identifier.lexeme);
         const auto alias = typedefTypes_.find(name);
         if (alias != typedefTypes_.end()) type = alias->second;
         else type = enumTypes_.find(name) != enumTypes_.end() ? DataType::Enum(name)
@@ -468,6 +540,35 @@ bool Parser::IsTypeStart(bool allowIdentifier) const {
     }
 }
 
+Token Parser::ParseQualifiedIdentifier(const char* message) {
+    Token result = Consume(TokenKind::Identifier, message);
+    while (Match(TokenKind::Scope)) {
+        Token part = Consume(TokenKind::Identifier, "expected identifier after '::'");
+        result.lexeme += "::" + part.lexeme;
+    }
+    return result;
+}
+
+std::string Parser::QualifyDeclaration(std::string_view name) const {
+    return name.find("::") == std::string_view::npos ? JoinName(currentNamespace_, name)
+                                                     : std::string(name);
+}
+
+std::string Parser::ResolveTypeName(std::string_view name) const {
+    if (name.find("::") != std::string_view::npos) return std::string(name);
+    std::string scope = currentNamespace_;
+    for (;;) {
+        const std::string candidate = JoinName(scope, name);
+        if (enumTypes_.find(candidate) != enumTypes_.end() ||
+            objectTypes_.find(candidate) != objectTypes_.end() ||
+            typedefTypes_.find(candidate) != typedefTypes_.end()) return candidate;
+        if (scope.empty()) break;
+        const auto separator = scope.rfind("::");
+        scope = separator == std::string::npos ? std::string{} : scope.substr(0, separator);
+    }
+    return std::string(name);
+}
+
 AstNode* Parser::ParseConditional() {
     AstNode* condition = ParseOr();
     if (!Match(TokenKind::Question)) return condition;
@@ -482,10 +583,12 @@ AstNode* Parser::ParseConditional() {
 bool Parser::IsVariableDeclarationStart() const {
     if (Check(TokenKind::KwConst) || Check(TokenKind::KwAuto)) return true;
     if (!IsTypeStart()) return false;
-    return Current().kind != TokenKind::Identifier ||
-        (current_ + 1 < tokens_.size() &&
-         (tokens_[current_ + 1].kind == TokenKind::Identifier ||
-          tokens_[current_ + 1].kind == TokenKind::At));
+    if (Current().kind != TokenKind::Identifier) return true;
+    std::size_t cursor = current_ + 1;
+    while (cursor + 1 < tokens_.size() && tokens_[cursor].kind == TokenKind::Scope &&
+           tokens_[cursor + 1].kind == TokenKind::Identifier) cursor += 2;
+    if (cursor < tokens_.size() && tokens_[cursor].kind == TokenKind::At) ++cursor;
+    return cursor < tokens_.size() && tokens_[cursor].kind == TokenKind::Identifier;
 }
 
 bool Parser::Match(TokenKind kind) { if (!Check(kind)) return false; Advance(); return true; }
@@ -517,7 +620,7 @@ void Parser::Synchronize() {
         case TokenKind::KwDefault: case TokenKind::KwReturn: case TokenKind::KwBreak:
         case TokenKind::KwContinue:
         case TokenKind::KwClass: case TokenKind::KwInterface: case TokenKind::KwEnum:
-        case TokenKind::KwTypedef: return;
+        case TokenKind::KwTypedef: case TokenKind::KwNamespace: return;
         default: Advance();
         }
     }

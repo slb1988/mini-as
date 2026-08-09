@@ -197,3 +197,28 @@ TEST_CASE(bytecode_embeds_enum_constants_and_converts_them_to_int) {
     CHECK(listing.find("TO_INTEGER") != std::string::npos);
 }
 
+TEST_CASE(bytecode_uses_qualified_function_and_global_symbol_ids) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("namespace-bytecode",
+        "namespace Math { int base = 40; int add(int x) { return base + x; } } "
+        "int main() { return Math::add(2); }",
+        diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    mini_as::TypeChecker checker(diagnostics);
+    CHECK(checker.Check(tree.root));
+    auto globals = checker.Globals();
+    globals[0].id = mini_as::GlobalId{17};
+    mini_as::BytecodeCompiler compiler(diagnostics);
+    auto module = compiler.Compile(tree.root, checker.Functions(), checker.Classes(), globals,
+                                   checker.Enums());
+    CHECK(!diagnostics.HasErrors());
+    CHECK(module.functions[0].signature.name == "Math::add");
+    bool qualifiedGlobal = false;
+    for (const auto& instruction : module.functions[0].code)
+        qualifiedGlobal = qualifiedGlobal ||
+            (instruction.opcode == mini_as::OpCode::LoadGlobal && instruction.operand == 17);
+    CHECK(qualifiedGlobal);
+    CHECK(mini_as::Disassemble(module.functions[1]).find("CALL") != std::string::npos);
+}
+

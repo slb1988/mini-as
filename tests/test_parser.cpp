@@ -135,3 +135,23 @@ TEST_CASE(parser_rejects_nonprimitive_typedef_sources) {
     CHECK(diagnostics.All().back().message.find("built-in primitive") != std::string::npos);
 }
 
+TEST_CASE(parser_preserves_namespace_hierarchy_and_qualified_declarations) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer lexer("parse",
+        "namespace Outer { int value = 1; namespace Inner { enum Code { Ok } "
+        "int read() { return Outer::value + Ok; } } }",
+        diagnostics);
+    mini_as::Parser parser(lexer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    CHECK(!diagnostics.HasErrors());
+    auto* outer = tree.root->firstChild;
+    CHECK(outer->kind == mini_as::NodeKind::NamespaceDecl);
+    CHECK(outer->token.lexeme == "Outer");
+    CHECK(outer->firstChild->token.lexeme == "Outer::value");
+    auto* inner = outer->firstChild->nextSibling;
+    CHECK(inner->kind == mini_as::NodeKind::NamespaceDecl);
+    CHECK(inner->token.lexeme == "Outer::Inner");
+    CHECK(inner->firstChild->token.lexeme == "Outer::Inner::Code");
+    CHECK(inner->firstChild->nextSibling->token.lexeme == "Outer::Inner::read");
+}
+

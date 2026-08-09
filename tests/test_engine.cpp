@@ -825,3 +825,37 @@ TEST_CASE(typedefs_reject_duplicate_alias_names) {
     CHECK(duplicate);
 }
 
+TEST_CASE(namespaces_isolate_symbols_and_resolve_parent_and_explicit_names) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("namespaces");
+    module->AddScriptSection("namespaces",
+        "namespace Root { int base = 2; namespace Left { int value = 40; "
+        "int read() { return value + base; } } namespace Right { int value = 1; } "
+        "class Box { int value = 40; int read() { return value; } } "
+        "enum Delta { Bonus = 2 } } "
+        "int main() { Root::Box@ box = Root::Box(); return Root::Left::read() + "
+        "Root::Right::value - 1 + box.read() + Root::Bonus - 42; }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int main()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+}
+
+TEST_CASE(namespaces_reject_unknown_qualified_symbols) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    auto* module = engine->GetModule("bad-namespaces");
+    module->AddScriptSection("bad-namespaces", "int main() { return Missing::answer; }");
+    CHECK(!module->Build());
+    CHECK(!diagnostics.empty());
+    bool unknown = false;
+    for (const auto& diagnostic : diagnostics)
+        unknown = unknown ||
+            diagnostic.message.find("unknown variable 'Missing::answer'") != std::string::npos;
+    CHECK(unknown);
+}
+

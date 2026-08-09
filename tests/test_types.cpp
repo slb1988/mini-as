@@ -67,3 +67,20 @@ TEST_CASE(type_checker_exposes_typedef_metadata_with_canonical_storage_type) {
     CHECK(checker.Functions().back().returnType == mini_as::DataType::UInt64());
 }
 
+TEST_CASE(type_checker_resolves_current_parent_and_explicit_namespaces) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("types",
+        "namespace Root { int base = 2; namespace Left { int value = 40; "
+        "int read() { return value + base; } } namespace Right { int value = 1; } } "
+        "int main() { return Root::Left::read() + Root::Right::value - 1; }",
+        diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    mini_as::TypeChecker checker(diagnostics);
+    CHECK(checker.Check(tree.root));
+    CHECK(checker.Globals().size() == 3);
+    CHECK(checker.Globals()[0].name == "Root::base");
+    CHECK(checker.Globals()[1].name == "Root::Left::value");
+    CHECK(checker.Functions().back().name == "main");
+}
+

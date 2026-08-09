@@ -158,6 +158,7 @@ private:
     std::unordered_map<std::string, Value> enumConstants_;
     std::vector<ControlFlowContext> controlFlow_;
     std::string currentObjectType_;
+    std::string currentNamespace_;
     std::uint32_t implicitThisSlot_ = 0;
     std::unordered_map<std::string, AstNode*> classNodes_;
 };

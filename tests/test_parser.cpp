@@ -178,3 +178,21 @@ TEST_CASE(parser_rejects_required_parameters_after_defaults) {
     CHECK(diagnostics.All().back().message.find("must also have defaults") != std::string::npos);
 }
 
+TEST_CASE(parser_wraps_named_arguments_and_rejects_late_positionals) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer lexer("parse", "int main() { return add(second: 2, first: 40); }", diagnostics);
+    mini_as::Parser parser(lexer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    CHECK(!diagnostics.HasErrors());
+    auto* call = tree.root->firstChild->Children().back()->firstChild->firstChild;
+    CHECK(call->kind == mini_as::NodeKind::Call);
+    CHECK(call->Children()[1]->kind == mini_as::NodeKind::NamedArgument);
+    CHECK(call->Children()[1]->token.lexeme == "second");
+
+    mini_as::DiagnosticSink badDiagnostics;
+    mini_as::Tokenizer badLexer("parse", "int main() { return add(second: 2, 40); }", badDiagnostics);
+    mini_as::Parser badParser(badLexer.ScanAll(), badDiagnostics);
+    badParser.Parse();
+    CHECK(badDiagnostics.HasErrors());
+}
+

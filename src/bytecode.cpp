@@ -54,6 +54,36 @@ std::optional<int> NameMatchCost(std::string_view candidate, std::string_view re
     return std::nullopt;
 }
 
+AstNode* ArgumentExpression(AstNode* argument) {
+    return argument && argument->kind == NodeKind::NamedArgument ? argument->firstChild : argument;
+}
+
+std::optional<std::vector<AstNode*>> OrderArguments(
+    const FunctionSignature& signature, const std::vector<AstNode*>& arguments) {
+    if (arguments.size() > signature.parameters.size()) return std::nullopt;
+    std::vector<AstNode*> ordered(signature.parameters.size(), nullptr);
+    std::size_t positional = 0;
+    for (AstNode* argument : arguments) {
+        std::size_t parameter = positional;
+        if (argument->kind == NodeKind::NamedArgument) {
+            parameter = signature.parameterNames.size();
+            for (std::size_t index = 0; index < signature.parameterNames.size(); ++index) {
+                if (signature.parameterNames[index] == argument->token.lexeme) { parameter = index; break; }
+            }
+            if (parameter >= signature.parameters.size()) return std::nullopt;
+        } else {
+            while (parameter < ordered.size() && ordered[parameter]) ++parameter;
+            positional = parameter + 1;
+        }
+        if (parameter >= ordered.size() || ordered[parameter]) return std::nullopt;
+        ordered[parameter] = ArgumentExpression(argument);
+    }
+    const std::size_t firstDefault = signature.parameters.size() - signature.defaultArgumentCount;
+    for (std::size_t index = 0; index < ordered.size(); ++index)
+        if (!ordered[index] && index < firstDefault) return std::nullopt;
+    return ordered;
+}
+
 } // namespace
 std::string_view OpCodeName(OpCode opcode) {
     static const char* names[] = {
@@ -179,10 +209,11 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
         if (node->kind == NodeKind::ClassDecl) classNodes_[node->token.lexeme] = node;
     for (AstNode* node : TopLevelDeclarations(root)) {
         if (node->kind == NodeKind::FunctionDecl) {
-            FunctionSignature signature{node->token.lexeme, node->declaredType, {}, false, {}, {}, false, false};
+            FunctionSignature signature{node->token.lexeme, node->declaredType, {}, false, {}, {}, false, false, 0, {}};
             for (AstNode* parameter = node->firstChild;
                  parameter && parameter->kind == NodeKind::Parameter; parameter = parameter->nextSibling) {
                 signature.parameters.push_back(parameter->declaredType);
+                signature.parameterNames.push_back(parameter->token.lexeme);
                 if (parameter->firstChild) ++signature.defaultArgumentCount;
             }
             functionNodes_[FunctionKey(signature)] = node;
@@ -191,10 +222,11 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
             for (AstNode* methodNode = node->firstChild; methodNode; methodNode = methodNode->nextSibling) {
                 if (methodNode->kind != NodeKind::FunctionDecl) continue;
                 FunctionSignature method{methodNode->token.lexeme, methodNode->declaredType, {}, false, {},
-                                         node->token.lexeme, true, methodNode->isConstructor};
+                                         node->token.lexeme, true, methodNode->isConstructor, 0, {}};
                 for (AstNode* parameter = methodNode->firstChild;
                      parameter && parameter->kind == NodeKind::Parameter; parameter = parameter->nextSibling) {
                     method.parameters.push_back(parameter->declaredType);
+                    method.parameterNames.push_back(parameter->token.lexeme);
                     if (parameter->firstChild) ++method.defaultArgumentCount;
                 }
                 functionNodes_[FunctionKey(method)] = methodNode;
@@ -242,7 +274,7 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
     }
     for (AstNode* node : TopLevelDeclarations(root)) {
         if (node->kind != NodeKind::FunctionDecl) continue;
-        FunctionSignature astSignature{node->token.lexeme, node->declaredType, {}, false, {}, {}, false, false};
+        FunctionSignature astSignature{node->token.lexeme, node->declaredType, {}, false, {}, {}, false, false, 0, {}};
         for (AstNode* child = node->firstChild; child && child->kind == NodeKind::Parameter; child = child->nextSibling)
             astSignature.parameters.push_back(child->declaredType);
         const auto found = functionIndices_.find(FunctionKey(astSignature));
@@ -253,7 +285,7 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
         for (AstNode* methodNode = typeNode->firstChild; methodNode; methodNode = methodNode->nextSibling) {
             if (methodNode->kind != NodeKind::FunctionDecl || !methodNode->firstChild) continue;
             FunctionSignature method{methodNode->token.lexeme, methodNode->declaredType, {}, false, {},
-                                     typeNode->token.lexeme, true, methodNode->isConstructor};
+                                     typeNode->token.lexeme, true, methodNode->isConstructor, 0, {}};
             for (AstNode* parameter = methodNode->firstChild;
                  parameter && parameter->kind == NodeKind::Parameter; parameter = parameter->nextSibling)
                 method.parameters.push_back(parameter->declaredType);
@@ -897,13 +929,14 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
         const FunctionSignature* constructor = nullptr;
         int bestCost = 1000000;
         for (const auto& signature : signatures_) {
-            const std::size_t minimum = signature.parameters.size() - signature.defaultArgumentCount;
-            if (!signature.constructor || signature.objectType != resolvedClassName ||
-                arguments.size() < minimum || arguments.size() > signature.parameters.size()) continue;
+            if (!signature.constructor || signature.objectType != resolvedClassName) continue;
+            const auto ordered = OrderArguments(signature, arguments);
+            if (!ordered) continue;
             int cost = 0;
             bool viable = true;
-            for (std::size_t i = 0; i < arguments.size(); ++i) {
-                const auto conversion = ConversionCost(arguments[i]->inferredType, signature.parameters[i]);
+            for (std::size_t i = 0; i < ordered->size(); ++i) {
+                if (!(*ordered)[i]) continue;
+                const auto conversion = ConversionCost((*ordered)[i]->inferredType, signature.parameters[i]);
                 if (!conversion) { viable = false; break; }
                 cost += *conversion;
             }
@@ -911,15 +944,17 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
         }
         if (constructor) {
             Emit(OpCode::Dup, 0, node);
+            const auto ordered = OrderArguments(*constructor, arguments);
+            if (!ordered) { Error(node, "constructor arguments cannot be ordered"); return; }
             const auto definition = functionNodes_.find(FunctionKey(*constructor));
             AstNode* parameter = definition == functionNodes_.end() ? nullptr : definition->second->firstChild;
             for (std::size_t i = 0; i < constructor->parameters.size(); ++i) {
                 while (parameter && parameter->kind != NodeKind::Parameter) parameter = parameter->nextSibling;
-                AstNode* expression = i < arguments.size() ? arguments[i]
+                AstNode* expression = (*ordered)[i] ? (*ordered)[i]
                     : (parameter ? parameter->firstChild : nullptr);
                 if (!expression) { Error(node, "default constructor argument is missing"); return; }
                 const std::string previousNamespace = currentNamespace_;
-                if (i >= arguments.size()) currentNamespace_ = NamespaceOf(constructor->objectType);
+                if (!(*ordered)[i]) currentNamespace_ = NamespaceOf(constructor->objectType);
                 CompileExpression(expression);
                 currentNamespace_ = previousNamespace;
                 EmitConversion(expression->inferredType, constructor->parameters[i], expression);
@@ -941,9 +976,9 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
     const std::string receiverType = explicitMethod
         ? callee->firstChild->inferredType.objectName : currentObjectType_;
     for (const auto& signature : signatures_) {
-        const std::size_t minimum = signature.parameters.size() - signature.defaultArgumentCount;
-        if (signature.constructor || arguments.size() < minimum ||
-            arguments.size() > signature.parameters.size()) continue;
+        if (signature.constructor) continue;
+        const auto ordered = OrderArguments(signature, arguments);
+        if (!ordered) continue;
         std::optional<int> nameCost;
         if (signature.method) {
             if (signature.name == callName) nameCost = 0;
@@ -955,14 +990,17 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
         int cost = *nameCost +
             ((!explicitMethod && !currentObjectType_.empty() && !signature.method) ? 1000 : 0);
         bool viable = true;
-        for (std::size_t i = 0; i < arguments.size(); ++i) {
-            const auto conversion = ConversionCost(arguments[i]->inferredType, signature.parameters[i]);
+        for (std::size_t i = 0; i < ordered->size(); ++i) {
+            if (!(*ordered)[i]) continue;
+            const auto conversion = ConversionCost((*ordered)[i]->inferredType, signature.parameters[i]);
             if (!conversion) { viable = false; break; }
             cost += *conversion;
         }
         if (viable && cost < bestCost) { target = &signature; bestCost = cost; }
     }
     if (!target) { Error(node, "cannot resolve script call"); return; }
+    const auto ordered = OrderArguments(*target, arguments);
+    if (!ordered) { Error(node, "call arguments cannot be ordered"); return; }
     if (target->method) {
         if (explicitMethod) CompileExpression(callee->firstChild);
         else Emit(OpCode::LoadLocal, static_cast<std::int32_t>(implicitThisSlot_), callee);
@@ -971,11 +1009,11 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
     AstNode* parameter = definition == functionNodes_.end() ? nullptr : definition->second->firstChild;
     for (std::size_t i = 0; i < target->parameters.size(); ++i) {
         while (parameter && parameter->kind != NodeKind::Parameter) parameter = parameter->nextSibling;
-        AstNode* expression = i < arguments.size() ? arguments[i]
+        AstNode* expression = (*ordered)[i] ? (*ordered)[i]
             : (parameter ? parameter->firstChild : nullptr);
         if (!expression) { Error(node, "default argument is missing"); return; }
         const std::string previousNamespace = currentNamespace_;
-        if (i >= arguments.size()) currentNamespace_ = NamespaceOf(
+        if (!(*ordered)[i]) currentNamespace_ = NamespaceOf(
             target->method ? target->objectType : target->name);
         CompileExpression(expression);
         currentNamespace_ = previousNamespace;

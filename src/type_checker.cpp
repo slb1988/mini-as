@@ -183,10 +183,11 @@ void TypeChecker::Predeclare(AstNode* root) {
             if (child->kind == NodeKind::FieldDecl) type.fields.push_back({child->token.lexeme, child->declaredType});
             else if (child->kind == NodeKind::FunctionDecl) {
                 FunctionSignature method{child->token.lexeme, child->declaredType, {}, false, {},
-                                         type.name, true, child->isConstructor};
+                                         type.name, true, child->isConstructor, 0, {}};
                 for (AstNode* parameter = child->firstChild;
                      parameter && parameter->kind == NodeKind::Parameter; parameter = parameter->nextSibling) {
                     method.parameters.push_back(parameter->declaredType);
+                    method.parameterNames.push_back(parameter->token.lexeme);
                     if (parameter->firstChild) ++method.defaultArgumentCount;
                 }
                 bool duplicate = false;
@@ -218,10 +219,11 @@ void TypeChecker::Predeclare(AstNode* root) {
     }
     for (AstNode* node : TopLevelDeclarations(root)) {
         if (node->kind != NodeKind::FunctionDecl) continue;
-        FunctionSignature signature{node->token.lexeme, node->declaredType, {}, false, {}, {}, false, false};
+        FunctionSignature signature{node->token.lexeme, node->declaredType, {}, false, {}, {}, false, false, 0, {}};
         for (AstNode* child = node->firstChild; child && child->kind == NodeKind::Parameter;
              child = child->nextSibling) {
             signature.parameters.push_back(child->declaredType);
+            signature.parameterNames.push_back(child->token.lexeme);
             if (child->firstChild) ++signature.defaultArgumentCount;
         }
         for (const auto& existing : functions_) {
@@ -633,8 +635,14 @@ DataType TypeChecker::CheckCall(AstNode* node) {
     AstNode* callee = node->firstChild;
     if (!callee) return DataType::Invalid();
     std::vector<DataType> arguments;
+    std::vector<std::string> argumentNames;
     for (AstNode* argument = callee->nextSibling; argument; argument = argument->nextSibling) {
-        arguments.push_back(CheckExpression(argument));
+        AstNode* expression = argument->kind == NodeKind::NamedArgument ? argument->firstChild : argument;
+        const DataType type = CheckExpression(expression);
+        argument->inferredType = type;
+        arguments.push_back(type);
+        argumentNames.push_back(argument->kind == NodeKind::NamedArgument ? argument->token.lexeme
+                                                                          : std::string{});
     }
     if (callee->kind == NodeKind::Identifier) {
         if (const ClassSignature* type = FindClass(callee->token.lexeme)) {
@@ -648,16 +656,8 @@ DataType TypeChecker::CheckCall(AstNode* node) {
             for (const auto& candidate : type->methods) {
                 if (!candidate.constructor) continue;
                 hasConstructors = true;
-                const std::size_t minimum = candidate.parameters.size() - candidate.defaultArgumentCount;
-                if (arguments.size() < minimum || arguments.size() > candidate.parameters.size()) continue;
-                int cost = 0;
-                bool viable = true;
-                for (std::size_t i = 0; i < arguments.size(); ++i) {
-                    const auto conversion = ConversionCost(arguments[i], candidate.parameters[i]);
-                    if (!conversion) { viable = false; break; }
-                    cost += *conversion;
-                }
-                if (viable && cost < bestCost) { constructor = &candidate; bestCost = cost; }
+                const auto cost = MatchArguments(candidate, arguments, argumentNames);
+                if (cost && *cost < bestCost) { constructor = &candidate; bestCost = *cost; }
             }
             if ((hasConstructors && !constructor) || (!hasConstructors && !arguments.empty())) {
                 Error(node, "no matching constructor for '" + type->name + "'");
@@ -668,7 +668,7 @@ DataType TypeChecker::CheckCall(AstNode* node) {
     }
     if (callee->kind == NodeKind::Member) {
         const DataType object = CheckExpression(callee->firstChild);
-        const FunctionSignature* method = FindMethod(object, callee->token.lexeme, arguments);
+        const FunctionSignature* method = FindMethod(object, callee->token.lexeme, arguments, argumentNames);
         if (!method) Error(node, "no matching method for '" + callee->token.lexeme + "'");
         return method ? method->returnType : DataType::Invalid();
     }
@@ -677,23 +677,17 @@ DataType TypeChecker::CheckCall(AstNode* node) {
     }
     if (currentClass_) {
         const FunctionSignature* method = FindMethod(
-            DataType::Object(currentClass_->name, true), callee->token.lexeme, arguments);
+            DataType::Object(currentClass_->name, true), callee->token.lexeme, arguments, argumentNames);
         if (method) return method->returnType;
     }
     const FunctionSignature* best = nullptr;
     int bestCost = 1000000;
     for (const auto& function : functions_) {
         const auto nameCost = NameMatchCost(function.name, callee->token.lexeme, currentNamespace_);
-        const std::size_t minimum = function.parameters.size() - function.defaultArgumentCount;
-        if (!nameCost || arguments.size() < minimum || arguments.size() > function.parameters.size()) continue;
-        int cost = *nameCost;
-        bool viable = true;
-        for (std::size_t i = 0; i < arguments.size(); ++i) {
-            const auto conversion = ConversionCost(arguments[i], function.parameters[i]);
-            if (!conversion) { viable = false; break; }
-            cost += *conversion;
-        }
-        if (viable && cost < bestCost) { best = &function; bestCost = cost; }
+        const auto argumentCost = MatchArguments(function, arguments, argumentNames);
+        if (!nameCost || !argumentCost) continue;
+        const int cost = *nameCost + *argumentCost;
+        if (cost < bestCost) { best = &function; bestCost = cost; }
     }
     if (!best) {
         Error(node, "no matching function for '" + callee->token.lexeme + "'");
@@ -721,25 +715,50 @@ std::optional<Value> TypeChecker::FindEnumConstant(std::string_view name) const 
 }
 
 const FunctionSignature* TypeChecker::FindMethod(
-    const DataType& object, std::string_view name, const std::vector<DataType>& arguments) const {
+    const DataType& object, std::string_view name, const std::vector<DataType>& arguments,
+    const std::vector<std::string>& argumentNames) const {
     const ClassSignature* type = FindClass(object.objectName);
     if (!type) return nullptr;
     const FunctionSignature* best = nullptr;
     int bestCost = 1000000;
     for (const auto& method : type->methods) {
-        const std::size_t minimum = method.parameters.size() - method.defaultArgumentCount;
-        if (method.constructor || method.name != name || arguments.size() < minimum ||
-            arguments.size() > method.parameters.size()) continue;
-        int cost = 0;
-        bool viable = true;
-        for (std::size_t i = 0; i < arguments.size(); ++i) {
-            const auto conversion = ConversionCost(arguments[i], method.parameters[i]);
-            if (!conversion) { viable = false; break; }
-            cost += *conversion;
-        }
-        if (viable && cost < bestCost) { best = &method; bestCost = cost; }
+        if (method.constructor || method.name != name) continue;
+        const auto cost = MatchArguments(method, arguments, argumentNames);
+        if (cost && *cost < bestCost) { best = &method; bestCost = *cost; }
     }
     return best;
+}
+
+std::optional<int> TypeChecker::MatchArguments(
+    const FunctionSignature& signature, const std::vector<DataType>& arguments,
+    const std::vector<std::string>& argumentNames) const {
+    if (arguments.size() != argumentNames.size() || arguments.size() > signature.parameters.size())
+        return std::nullopt;
+    std::vector<bool> assigned(signature.parameters.size(), false);
+    int cost = 0;
+    std::size_t positional = 0;
+    for (std::size_t argument = 0; argument < arguments.size(); ++argument) {
+        std::size_t parameter = positional;
+        if (!argumentNames[argument].empty()) {
+            parameter = signature.parameterNames.size();
+            for (std::size_t index = 0; index < signature.parameterNames.size(); ++index) {
+                if (signature.parameterNames[index] == argumentNames[argument]) { parameter = index; break; }
+            }
+            if (parameter >= signature.parameters.size()) return std::nullopt;
+        } else {
+            while (parameter < assigned.size() && assigned[parameter]) ++parameter;
+            positional = parameter + 1;
+        }
+        if (parameter >= assigned.size() || assigned[parameter]) return std::nullopt;
+        const auto conversion = ConversionCost(arguments[argument], signature.parameters[parameter]);
+        if (!conversion) return std::nullopt;
+        assigned[parameter] = true;
+        cost += *conversion;
+    }
+    const std::size_t firstDefault = signature.parameters.size() - signature.defaultArgumentCount;
+    for (std::size_t index = 0; index < assigned.size(); ++index)
+        if (!assigned[index] && index < firstDefault) return std::nullopt;
+    return cost;
 }
 
 bool TypeChecker::IsReadOnlyLValue(const AstNode* node) const {

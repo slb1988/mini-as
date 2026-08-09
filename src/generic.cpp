@@ -83,6 +83,9 @@ std::optional<FunctionSignature> ParseFunctionDeclaration(
             return std::nullopt;
         }
         signature.parameters.push_back(std::move(parameter));
+        if (index < tokens.size() && tokens[index].kind == TokenKind::Identifier)
+            signature.parameterNames.push_back(tokens[index].lexeme);
+        else signature.parameterNames.emplace_back();
         while (index < tokens.size() && tokens[index].kind != TokenKind::Comma &&
                tokens[index].kind != TokenKind::RightParen) ++index;
         if (index < tokens.size() && tokens[index].kind == TokenKind::Comma) ++index;

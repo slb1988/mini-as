@@ -239,3 +239,22 @@ TEST_CASE(bytecode_materializes_missing_default_arguments_at_call_sites) {
     CHECK(module.callables[0].parameterCount == 2);
 }
 
+TEST_CASE(bytecode_orders_named_arguments_into_parameter_slots) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("named-bytecode",
+        "int combine(int first, int second = 0, int third = 0) { return first + second + third; } "
+        "int main() { return combine(third: 2, first: 40); }",
+        diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    mini_as::TypeChecker checker(diagnostics);
+    CHECK(checker.Check(tree.root));
+    mini_as::BytecodeCompiler compiler(diagnostics);
+    auto module = compiler.Compile(tree.root, checker.Functions());
+    CHECK(!diagnostics.HasErrors());
+    CHECK(module.functions[1].constants.size() == 3);
+    CHECK(module.functions[1].constants[0].As<std::int32_t>() == 40);
+    CHECK(module.functions[1].constants[1].As<std::int32_t>() == 0);
+    CHECK(module.functions[1].constants[2].As<std::int32_t>() == 2);
+}
+

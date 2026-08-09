@@ -19,6 +19,7 @@ struct FunctionSignature {
     bool method = false;
     bool constructor = false;
     std::size_t defaultArgumentCount = 0;
+    std::vector<std::string> parameterNames;
 
     std::string Declaration() const;
 };
@@ -88,7 +89,11 @@ private:
     std::optional<Value> FindEnumConstant(std::string_view name) const;
     bool IsReadOnlyLValue(const AstNode* node) const;
     const FunctionSignature* FindMethod(const DataType& object, std::string_view name,
-                                        const std::vector<DataType>& arguments) const;
+                                        const std::vector<DataType>& arguments,
+                                        const std::vector<std::string>& argumentNames) const;
+    std::optional<int> MatchArguments(const FunctionSignature& signature,
+                                      const std::vector<DataType>& arguments,
+                                      const std::vector<std::string>& argumentNames) const;
     const ClassSignature* FindClass(std::string_view name) const;
     void Declare(const Token& name, const DataType& type, bool isConst = false);
     bool CanConvert(const DataType& from, const DataType& to) const;

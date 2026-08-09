@@ -470,8 +470,22 @@ AstNode* Parser::ParseCall() {
         if (Match(TokenKind::LeftParen)) {
             AstNode* call = arena_->Make(NodeKind::Call, Previous());
             call->AppendChild(expression);
+            bool sawNamedArgument = false;
             if (!Check(TokenKind::RightParen)) {
-                do { call->AppendChild(ParseExpression()); } while (Match(TokenKind::Comma));
+                do {
+                    if (Check(TokenKind::Identifier) && current_ + 1 < tokens_.size() &&
+                        tokens_[current_ + 1].kind == TokenKind::Colon) {
+                        sawNamedArgument = true;
+                        AstNode* named = arena_->Make(NodeKind::NamedArgument, Advance());
+                        Advance();
+                        named->AppendChild(ParseAssignment());
+                        call->AppendChild(named);
+                    } else {
+                        if (sawNamedArgument)
+                            Error(Current(), "positional arguments cannot follow named arguments");
+                        call->AppendChild(ParseExpression());
+                    }
+                } while (Match(TokenKind::Comma));
             }
             Consume(TokenKind::RightParen, "expected ')' after arguments");
             expression = call;

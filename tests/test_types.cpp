@@ -97,3 +97,16 @@ TEST_CASE(type_checker_counts_and_validates_default_arguments) {
     CHECK(checker.Functions()[0].defaultArgumentCount == 2);
 }
 
+TEST_CASE(type_checker_matches_named_arguments_by_parameter_name) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("types",
+        "int combine(int first, int second = 0, int third = 0) { return first + second + third; } "
+        "int main() { return combine(third: 2, first: 40); }",
+        diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    mini_as::TypeChecker checker(diagnostics);
+    CHECK(checker.Check(tree.root));
+    CHECK(checker.Functions()[0].parameterNames[2] == "third");
+}
+

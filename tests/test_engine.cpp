@@ -899,3 +899,35 @@ TEST_CASE(default_arguments_check_types_and_report_runtime_locations) {
     CHECK(context->GetExceptionLocation().row == 2);
 }
 
+TEST_CASE(named_arguments_reorder_calls_and_fill_omitted_defaults) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("named-arguments");
+    module->AddScriptSection("named-arguments",
+        "int combine(int first, int second = 0, int third = 0) { return first + second + third; } "
+        "class Box { int combine(int first, int second = 0) { return first + second; } } "
+        "int main() { Box@ box = Box(); return combine(third: 2, first: 38) + "
+        "box.combine(second: 2, first: 38) - 38; }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int main()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+}
+
+TEST_CASE(named_arguments_reject_unknown_and_duplicate_parameter_names) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    auto* module = engine->GetModule("bad-named-arguments");
+    module->AddScriptSection("bad-named-arguments",
+        "int add(int first, int second = 0) { return first + second; } "
+        "int main() { return add(first: 20, first: 22) + add(missing: 1); }");
+    CHECK(!module->Build());
+    bool noMatch = false;
+    for (const auto& diagnostic : diagnostics)
+        noMatch = noMatch || diagnostic.message.find("no matching function for 'add'") != std::string::npos;
+    CHECK(noMatch);
+}
+

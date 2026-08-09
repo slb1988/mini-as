@@ -14,7 +14,7 @@ enum class NodeKind {
     EnumDecl, EnumValue, TypedefDecl, FieldDecl,
     Block, DeclList, VarDecl, IfStmt, WhileStmt, DoWhileStmt, ForStmt,
     SwitchStmt, CaseClause, DefaultClause, ReturnStmt, BreakStmt, ContinueStmt, ExprStmt, EmptyStmt,
-    Assign, Conditional, Binary, Unary, Increment, Call, Member, Literal, Identifier
+    Assign, Conditional, Binary, Unary, Increment, Call, NamedArgument, Member, Literal, Identifier
 };
 
 struct AstNode {

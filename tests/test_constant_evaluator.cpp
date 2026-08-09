@@ -5,7 +5,8 @@
 namespace {
 std::optional<mini_as::Value> EvaluateReturn(std::string_view expression,
                                              mini_as::DiagnosticSink& diagnostics) {
-    mini_as::Tokenizer tokenizer("constant", "int value() { return " + std::string(expression) + "; }", diagnostics);
+    const std::string source = "int value() { return " + std::string(expression) + "; }";
+    mini_as::Tokenizer tokenizer("constant", source, diagnostics);
     mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
     auto tree = parser.Parse();
     mini_as::TypeChecker checker(diagnostics);

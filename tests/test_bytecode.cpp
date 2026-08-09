@@ -228,6 +228,33 @@ TEST_CASE(bytecode_lowers_registered_object_methods_to_host_method_descriptors) 
     CHECK(hostMethod);
 }
 
+TEST_CASE(bytecode_registered_object_properties_reuse_field_lvalue_opcodes) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("host-property-bytecode",
+        "void update(HostRef@ value) { value.score += 2; }", diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    mini_as::ClassSignature hostType;
+    hostType.name = "HostRef";
+    hostType.id = mini_as::TypeId{17};
+    hostType.host = true;
+    hostType.fields.push_back({"score", mini_as::DataType::Int(), "HostRef",
+                               mini_as::MemberAccess::Public, false, true});
+    mini_as::TypeChecker checker(diagnostics);
+    checker.RegisterObjectType(hostType);
+    CHECK(checker.Check(tree.root));
+    mini_as::BytecodeCompiler compiler(diagnostics);
+    auto module = compiler.Compile(tree.root, checker.Functions(), checker.Classes());
+    CHECK(!diagnostics.HasErrors());
+    bool loaded = false, stored = false;
+    for (const auto& instruction : module.functions[0].code) {
+        loaded = loaded || instruction.opcode == mini_as::OpCode::LoadField;
+        stored = stored || instruction.opcode == mini_as::OpCode::StoreField;
+    }
+    CHECK(loaded);
+    CHECK(stored);
+}
+
 TEST_CASE(bytecode_emits_explicit_integer_width_conversions) {
     mini_as::DiagnosticSink diagnostics;
     mini_as::Tokenizer tokenizer("integer-conversion",

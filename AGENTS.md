@@ -150,11 +150,11 @@ Do not stage generated build directories or unrelated user changes. Inspect
 The completed stage notes are authoritative. At the time this guide was added,
 the latest language stage is:
 
-- Stage 61 registered object methods through `GenericCall` receivers and stable
-  `HostMethod` descriptors.
+- Stage 62 registered object properties through portable getter/setter callbacks
+  and the common field lvalue bytecode path.
 
-The next planned feature is registered object properties. Confirm the latest
-git history and `docs/stages/` before choosing the next stage number.
+The next planned feature is registered value types. Confirm the latest git
+history and `docs/stages/` before choosing the next stage number.
 
 ## Common pitfalls
 
@@ -176,6 +176,8 @@ git history and `docs/stages/` before choosing the next stage number.
   add-reference/release behaviours.
 - Registered object method callbacks receive `this` through
   `GenericCall::GetObject()`; keep it separate from explicit script arguments.
+- Registered object properties reuse field opcodes and carry stable callback
+  pointers in `TypeInfo`; preserve getter/setter type validation and constness.
 - Preserve the last successful module image on parser, type-check, bytecode, or
   global-initializer failure.
 - Do not edit compatibility expectations merely to make mini and official

@@ -1121,6 +1121,8 @@ DataType TypeChecker::CheckMember(AstNode* node, bool writing, bool compound) {
     for (const auto& field : type->fields) {
         if (field.name != node->token.lexeme) continue;
         CheckAccess(node, field.access, field.objectType, "field", field.name);
+        if (writing && field.isConst)
+            Error(node, "field '" + field.name + "' is read-only");
         return field.type;
     }
 
@@ -1899,7 +1901,15 @@ bool TypeChecker::IsReadOnlyLValue(const AstNode* node) const {
         const auto symbol = Lookup(node->token.lexeme);
         return symbol && symbol->isConst;
     }
-    if (node->kind == NodeKind::Member) return IsReadOnlyLValue(node->firstChild);
+    if (node->kind == NodeKind::Member) {
+        const DataType receiver = node->firstChild ? node->firstChild->inferredType
+                                                   : DataType::Invalid();
+        if (const ClassSignature* type = FindClass(receiver.objectName)) {
+            for (const auto& field : type->fields)
+                if (field.name == node->token.lexeme && field.isConst) return true;
+        }
+        return IsReadOnlyLValue(node->firstChild);
+    }
     if (node->kind == NodeKind::Call && node->returnsReference)
         return node->returnReferenceConst;
     return false;

@@ -51,6 +51,8 @@ int main(int argc, char** argv) {
         return 4;
     }
     if (engine->RegisterObjectType("HostRef", 0, asOBJ_REF) < 0 ||
+        engine->RegisterObjectProperty("HostRef", "int value",
+            asOFFSET(CompatReference, value)) < 0 ||
         engine->RegisterObjectBehaviour("HostRef", asBEHAVE_FACTORY,
             "HostRef@ f(int value)", asFUNCTION(CompatReferenceFactory), asCALL_GENERIC) < 0 ||
         engine->RegisterObjectBehaviour("HostRef", asBEHAVE_ADDREF,

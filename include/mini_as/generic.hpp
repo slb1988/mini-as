@@ -45,6 +45,8 @@ private:
 };
 
 using GenericFunction = std::function<void(GenericCall&)>;
+using GenericPropertyGetter = std::function<Value(const ObjectHandle&)>;
+using GenericPropertySetter = std::function<void(const ObjectHandle&, Value)>;
 
 struct RegisteredHostFunction {
     FunctionSignature signature;
@@ -54,6 +56,12 @@ struct RegisteredHostFunction {
 struct RegisteredHostProperty {
     GlobalSignature signature;
     Value* storage = nullptr;
+};
+
+struct RegisteredHostObjectProperty {
+    FieldSignature signature;
+    GenericPropertyGetter getter;
+    GenericPropertySetter setter;
 };
 
 std::optional<FunctionSignature> ParseFunctionDeclaration(

@@ -37,6 +37,8 @@ struct FieldSignature {
     DataType type;
     std::string objectType;
     MemberAccess access = MemberAccess::Public;
+    bool isConst = false;
+    bool host = false;
 };
 
 struct ClassSignature {

@@ -93,6 +93,9 @@ public:
                                GenericFunction callback);
     bool RegisterObjectMethod(std::string typeName, std::string declaration,
                               GenericFunction callback);
+    bool RegisterObjectProperty(std::string typeName, std::string declaration,
+                                GenericPropertyGetter getter,
+                                GenericPropertySetter setter = {});
     const TypeInfo* GetTypeInfo(std::string_view name) const;
     std::size_t CollectGarbage();
     std::size_t GetTrackedObjectCount() const;
@@ -122,6 +125,7 @@ private:
     std::unordered_map<std::string, std::unique_ptr<ScriptModule>> modules_;
     std::deque<RegisteredHostFunction> hostFunctions_;
     std::deque<RegisteredHostProperty> hostProperties_;
+    std::deque<RegisteredHostObjectProperty> hostObjectProperties_;
     GarbageCollector garbageCollector_;
     std::unordered_map<std::string, std::unique_ptr<TypeInfo>> objectTypes_;
     std::unordered_map<std::string, FunctionId> functionIds_;

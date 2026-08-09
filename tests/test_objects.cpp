@@ -392,3 +392,138 @@ TEST_CASE(registered_object_method_exceptions_report_the_call_location) {
     CHECK(context->GetExceptionLocation().row == 3);
 }
 
+TEST_CASE(registered_object_properties_support_lvalues_and_reference_writeback) {
+    auto engine = mini_as::CreateScriptEngine();
+    const auto* type = engine->RegisterObjectType("Thing");
+    CHECK(type != nullptr);
+    int destroyed = 0;
+    CHECK(engine->RegisterObjectFactory("Thing", "Thing@ f(int value)",
+        [type, &destroyed](mini_as::GenericCall& call) {
+            call.SetReturnObject(mini_as::ObjectHandle(new HostThing(
+                type, call.GetArgInt(0), destroyed)));
+        }));
+    CHECK(engine->RegisterObjectProperty("Thing", "int value",
+        [](const mini_as::ObjectHandle& object) {
+            const auto* thing = dynamic_cast<const HostThing*>(object.Get());
+            return mini_as::Value(thing ? thing->value : -1);
+        },
+        [](const mini_as::ObjectHandle& object, mini_as::Value value) {
+            auto* thing = dynamic_cast<HostThing*>(object.Get());
+            if (!thing) throw std::runtime_error("invalid Thing receiver");
+            thing->value = value.As<std::int32_t>();
+        }));
+    CHECK(engine->RegisterGlobalFunction("void SetAnswer(int &out value)",
+        [](mini_as::GenericCall& call) { call.SetArgInt(0, 42); }));
+    auto* module = engine->GetModule("registered-object-properties");
+    module->AddScriptSection("registered-object-properties",
+        "int run() { Thing@ item = Thing(39); item.value += 1; item.value++; "
+        "SetAnswer(item.value); return item.value; }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+}
+
+TEST_CASE(const_registered_object_properties_reject_assignment_and_output_references) {
+    auto engine = mini_as::CreateScriptEngine();
+    CHECK(engine->RegisterObjectType("Thing") != nullptr);
+    CHECK(engine->RegisterObjectProperty("Thing", "const int identity",
+        [](const mini_as::ObjectHandle&) { return mini_as::Value(std::int32_t{42}); }));
+    CHECK(engine->RegisterGlobalFunction("void Reset(int &out value)",
+        [](mini_as::GenericCall& call) { call.SetArgInt(0, 0); }));
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    auto* module = engine->GetModule("const-object-property");
+    module->AddScriptSection("const-object-property",
+        "int run(Thing@ item) { item.identity = 1; Reset(item.identity); return 0; }");
+    CHECK(!module->Build());
+    bool readOnly = false, output = false;
+    for (const auto& diagnostic : diagnostics) {
+        readOnly = readOnly || diagnostic.message.find("field 'identity' is read-only") !=
+            std::string::npos;
+        output = output || diagnostic.message.find("const value cannot be passed") !=
+            std::string::npos;
+    }
+    CHECK(readOnly);
+    CHECK(output);
+}
+
+TEST_CASE(object_property_registration_rejects_invalid_accessors_and_duplicates) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    CHECK(engine->RegisterObjectType("Thing") != nullptr);
+    auto getter = [](const mini_as::ObjectHandle&) { return mini_as::Value(std::int32_t{0}); };
+    auto setter = [](const mini_as::ObjectHandle&, mini_as::Value) {};
+    CHECK(!engine->RegisterObjectProperty("Missing", "int value", getter, setter));
+    CHECK(!engine->RegisterObjectProperty("Thing", "not a declaration", getter, setter));
+    CHECK(!engine->RegisterObjectProperty("Thing", "int value", {}, setter));
+    CHECK(!engine->RegisterObjectProperty("Thing", "int value", getter));
+    CHECK(!engine->RegisterObjectProperty("Thing", "const int id", getter, setter));
+    CHECK(engine->RegisterObjectProperty("Thing", "int value", getter, setter));
+    CHECK(!engine->RegisterObjectProperty("Thing", "int value", getter, setter));
+    CHECK(diagnostics.size() >= 6);
+}
+
+TEST_CASE(registered_object_property_getter_failures_report_the_access_location) {
+    auto engine = mini_as::CreateScriptEngine();
+    const auto* type = engine->RegisterObjectType("Thing");
+    CHECK(type != nullptr);
+    int destroyed = 0;
+    CHECK(engine->RegisterObjectFactory("Thing", "Thing@ f()",
+        [type, &destroyed](mini_as::GenericCall& call) {
+            call.SetReturnObject(mini_as::ObjectHandle(new HostThing(type, 0, destroyed)));
+        }));
+    CHECK(engine->RegisterObjectProperty("Thing", "int value",
+        [](const mini_as::ObjectHandle&) { return mini_as::Value("wrong type"); },
+        [](const mini_as::ObjectHandle&, mini_as::Value) {}));
+    auto* module = engine->GetModule("host-property-getter-error");
+    module->AddScriptSection("host-property-getter-error",
+        "int run() {\n"
+        "  Thing@ item = Thing();\n"
+        "  return item.value;\n"
+        "}\n");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Exception);
+    CHECK(context->GetExceptionString().find("getter returned string but declared int") !=
+        std::string::npos);
+    CHECK(context->GetExceptionLocation().row == 3);
+}
+
+TEST_CASE(registered_object_property_setter_exceptions_report_the_assignment_location) {
+    auto engine = mini_as::CreateScriptEngine();
+    const auto* type = engine->RegisterObjectType("Thing");
+    CHECK(type != nullptr);
+    int destroyed = 0;
+    CHECK(engine->RegisterObjectFactory("Thing", "Thing@ f()",
+        [type, &destroyed](mini_as::GenericCall& call) {
+            call.SetReturnObject(mini_as::ObjectHandle(new HostThing(type, 0, destroyed)));
+        }));
+    CHECK(engine->RegisterObjectProperty("Thing", "int value",
+        [](const mini_as::ObjectHandle&) { return mini_as::Value(std::int32_t{0}); },
+        [](const mini_as::ObjectHandle&, mini_as::Value) {
+            throw std::runtime_error("setter refused value");
+        }));
+    auto* module = engine->GetModule("host-property-setter-error");
+    module->AddScriptSection("host-property-setter-error",
+        "int run() {\n"
+        "  Thing@ item = Thing();\n"
+        "  item.value = 42;\n"
+        "  return 0;\n"
+        "}\n");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Exception);
+    CHECK(context->GetExceptionString().find("host property exception: setter refused value") !=
+        std::string::npos);
+    CHECK(context->GetExceptionLocation().row == 3);
+}
+

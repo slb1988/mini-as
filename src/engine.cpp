@@ -382,6 +382,64 @@ bool ScriptEngine::RegisterObjectMethod(std::string typeName, std::string declar
     return true;
 }
 
+bool ScriptEngine::RegisterObjectProperty(std::string typeName, std::string declaration,
+                                          GenericPropertyGetter getter,
+                                          GenericPropertySetter setter) {
+    DiagnosticSink diagnostics([this](const Diagnostic& diagnostic) { ForwardDiagnostic(diagnostic); });
+    const auto type = objectTypes_.find(typeName);
+    if (type == objectTypes_.end() || !type->second->host) {
+        diagnostics.Report({"registration"}, Severity::Error,
+                           "property type '" + typeName + "' is not a registered reference type");
+        return false;
+    }
+    auto parsed = ParseGlobalPropertyDeclaration(declaration, diagnostics);
+    if (!parsed || !getter) {
+        if (parsed && !getter)
+            diagnostics.Report({"registration"}, Severity::Error,
+                               "object property getter cannot be empty");
+        return false;
+    }
+    if (parsed->type.kind == TypeKind::Object &&
+        (!parsed->type.isHandle || !GetTypeInfo(parsed->type.objectName))) {
+        diagnostics.Report({"registration"}, Severity::Error,
+                           "registered object properties require known object handle types");
+        return false;
+    }
+    if (parsed->type.kind == TypeKind::Function ||
+        parsed->type.kind == TypeKind::WeakRef || parsed->type.kind == TypeKind::ConstWeakRef ||
+        (!parsed->type.IsNumeric() && parsed->type != DataType::Bool() &&
+         parsed->type != DataType::String() && parsed->type.kind != TypeKind::Object)) {
+        diagnostics.Report({"registration"}, Severity::Error,
+                           "registered object property type is not supported yet");
+        return false;
+    }
+    if (parsed->isConst && setter) {
+        diagnostics.Report({"registration"}, Severity::Error,
+                           "const object property cannot register a setter");
+        return false;
+    }
+    if (!parsed->isConst && !setter) {
+        diagnostics.Report({"registration"}, Severity::Error,
+                           "mutable object property requires a setter");
+        return false;
+    }
+    for (const auto& existing : hostObjectProperties_) {
+        if (existing.signature.objectType != typeName ||
+            existing.signature.name != parsed->name) continue;
+        diagnostics.Report({"registration"}, Severity::Error,
+                           "duplicate object property '" + typeName + "::" + parsed->name + "'");
+        return false;
+    }
+    FieldSignature signature{parsed->name, parsed->type, typeName, MemberAccess::Public,
+                             parsed->isConst, true};
+    hostObjectProperties_.push_back(
+        {std::move(signature), std::move(getter), std::move(setter)});
+    const auto* property = &hostObjectProperties_.back();
+    type->second->fields.emplace_back(property->signature.name, property->signature.type);
+    type->second->hostProperties.push_back(property);
+    return true;
+}
+
 const TypeInfo* ScriptEngine::GetTypeInfo(std::string_view name) const {
     const auto found = objectTypes_.find(std::string(name));
     return found == objectTypes_.end() ? nullptr : found->second.get();
@@ -441,6 +499,7 @@ const TypeInfo* ScriptEngine::RegisterScriptType(const ClassSignature& signature
     type->baseType = nullptr;
     type->collector = signature.interfaceType ? nullptr : &garbageCollector_;
     type->fields.clear();
+    type->hostProperties.clear();
     type->fields.reserve(signature.fields.size());
     for (const auto& field : signature.fields)
         type->fields.emplace_back(field.name, field.type);
@@ -515,6 +574,8 @@ std::vector<ClassSignature> ScriptEngine::HostTypeSignatures() const {
         signature.name = entry.second->name;
         signature.id = entry.second->id;
         signature.host = true;
+        for (const auto* property : entry.second->hostProperties)
+            if (property) signature.fields.push_back(property->signature);
         for (const auto& function : hostFunctions_)
             if (function.signature.method && function.signature.objectType == signature.name)
                 signature.methods.push_back(function.signature);

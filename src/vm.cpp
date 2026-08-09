@@ -71,6 +71,52 @@ bool MatchesDeclaredType(const Value& value, const DataType& expected) {
     return object && (object->Implements(expected.objectName) || object->IsA(expected.objectName));
 }
 
+Value LoadObjectField(const ObjectHandle& handle, std::size_t index) {
+    if (!handle) throw std::runtime_error("null object field access");
+    if (auto* object = dynamic_cast<ScriptObject*>(handle.Get())) {
+        if (index >= object->FieldCount()) throw std::runtime_error("field index out of range");
+        return object->GetField(index);
+    }
+    const TypeInfo* type = handle.Get()->GetTypeInfo();
+    if (!type || index >= type->hostProperties.size() || !type->hostProperties[index] ||
+        !type->hostProperties[index]->getter)
+        throw std::runtime_error("registered object property is unavailable");
+    const auto* property = type->hostProperties[index];
+    Value value;
+    try { value = property->getter(handle); }
+    catch (const std::exception& error) {
+        throw std::runtime_error(std::string("host property exception: ") + error.what());
+    }
+    if (!MatchesDeclaredType(value, property->signature.type))
+        throw std::runtime_error("registered object property getter returned " +
+                                 value.Type().Name() + " but declared " +
+                                 property->signature.type.Name());
+    return value;
+}
+
+void StoreObjectField(const ObjectHandle& handle, std::size_t index, Value value) {
+    if (!handle) throw std::runtime_error("null object field assignment");
+    if (auto* object = dynamic_cast<ScriptObject*>(handle.Get())) {
+        if (index >= object->FieldCount()) throw std::runtime_error("field index out of range");
+        object->SetField(index, std::move(value));
+        return;
+    }
+    const TypeInfo* type = handle.Get()->GetTypeInfo();
+    if (!type || index >= type->hostProperties.size() || !type->hostProperties[index])
+        throw std::runtime_error("registered object property is unavailable");
+    const auto* property = type->hostProperties[index];
+    if (property->signature.isConst || !property->setter)
+        throw std::runtime_error("registered object property is read-only");
+    if (!MatchesDeclaredType(value, property->signature.type))
+        throw std::runtime_error("registered object property setter received " +
+                                 value.Type().Name() + " but declared " +
+                                 property->signature.type.Name());
+    try { property->setter(handle, std::move(value)); }
+    catch (const std::exception& error) {
+        throw std::runtime_error(std::string("host property exception: ") + error.what());
+    }
+}
+
 bool CheckedMultiply(std::int64_t left, std::int64_t right, std::int64_t& result) {
     if (left == 0 || right == 0) { result = 0; return true; }
     if ((left == -1 && right == std::numeric_limits<std::int64_t>::min()) ||
@@ -659,22 +705,16 @@ bool VirtualMachine::Step() {
     case OpCode::LoadField: {
         Value objectValue = Pop();
         const auto& handle = objectValue.As<ObjectHandle>();
-        auto* object = handle ? dynamic_cast<ScriptObject*>(handle.Get()) : nullptr;
-        if (!object) throw std::runtime_error("null or non-script object field access");
-        if (instruction.operand < 0 || static_cast<std::size_t>(instruction.operand) >= object->FieldCount())
-            throw std::runtime_error("field index out of range");
-        Push(object->GetField(static_cast<std::size_t>(instruction.operand)));
+        if (instruction.operand < 0) throw std::runtime_error("field index out of range");
+        Push(LoadObjectField(handle, static_cast<std::size_t>(instruction.operand)));
         break;
     }
     case OpCode::StoreField: {
         Value fieldValue = Pop();
         Value objectValue = Pop();
         const auto& handle = objectValue.As<ObjectHandle>();
-        auto* object = handle ? dynamic_cast<ScriptObject*>(handle.Get()) : nullptr;
-        if (!object) throw std::runtime_error("null or non-script object field assignment");
-        if (instruction.operand < 0 || static_cast<std::size_t>(instruction.operand) >= object->FieldCount())
-            throw std::runtime_error("field index out of range");
-        object->SetField(static_cast<std::size_t>(instruction.operand), fieldValue);
+        if (instruction.operand < 0) throw std::runtime_error("field index out of range");
+        StoreObjectField(handle, static_cast<std::size_t>(instruction.operand), fieldValue);
         Push(std::move(fieldValue));
         break;
     }
@@ -691,14 +731,16 @@ bool VirtualMachine::Step() {
     case OpCode::MakeFieldReference: {
         Value objectValue = Pop();
         const auto& handle = objectValue.As<ObjectHandle>();
-        auto* object = handle ? dynamic_cast<ScriptObject*>(handle.Get()) : nullptr;
-        if (!object) throw std::runtime_error("null or non-script object reference target");
-        if (instruction.operand < 0 ||
-            static_cast<std::size_t>(instruction.operand) >= object->FieldCount())
+        if (!handle)
+            throw std::runtime_error("null or non-script object reference target");
+        if (!handle.Get()->GetTypeInfo())
+            throw std::runtime_error("object reference target type is unavailable");
+        if (instruction.operand < 0 || static_cast<std::size_t>(instruction.operand) >=
+            handle.Get()->GetTypeInfo()->fields.size())
             throw std::runtime_error("field reference index out of range");
         const auto field = static_cast<std::uint32_t>(instruction.operand);
         Push(Value(ReferenceStorage{ReferenceKind::Field,
-            object->GetTypeInfo()->fields[field].second, field, handle}));
+            handle.Get()->GetTypeInfo()->fields[field].second, field, handle}));
         break;
     }
     case OpCode::LoadReference: {
@@ -707,9 +749,7 @@ bool VirtualMachine::Step() {
             if (!module_ || !moduleState_) throw std::runtime_error("global reference is unavailable");
             Push(LoadGlobalValue(*module_, *moduleState_, GlobalId{reference.slot}));
         } else {
-            auto* object = reference.object ? dynamic_cast<ScriptObject*>(reference.object.Get()) : nullptr;
-            if (!object) throw std::runtime_error("field reference is unavailable");
-            Push(object->GetField(reference.slot));
+            Push(LoadObjectField(reference.object, reference.slot));
         }
         break;
     }
@@ -720,9 +760,7 @@ bool VirtualMachine::Step() {
             if (!module_ || !moduleState_) throw std::runtime_error("global reference is unavailable");
             StoreGlobalValue(*module_, *moduleState_, GlobalId{reference.slot}, stored);
         } else {
-            auto* object = reference.object ? dynamic_cast<ScriptObject*>(reference.object.Get()) : nullptr;
-            if (!object) throw std::runtime_error("field reference is unavailable");
-            object->SetField(reference.slot, stored);
+            StoreObjectField(reference.object, reference.slot, stored);
         }
         Push(std::move(stored));
         break;

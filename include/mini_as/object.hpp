@@ -19,6 +19,7 @@ class GarbageCollector;
 struct BytecodeModule;
 struct ModuleState;
 class ScriptObject;
+struct RegisteredHostObjectProperty;
 
 struct ScriptFinalizerBinding {
     std::vector<FunctionId> functions;
@@ -40,6 +41,7 @@ struct TypeInfo {
     std::string baseClass;
     const TypeInfo* baseType = nullptr;
     std::vector<std::pair<std::string, DataType>> fields;
+    std::vector<const RegisteredHostObjectProperty*> hostProperties;
     std::vector<std::string> interfaces;
     std::unordered_map<std::string, std::string> interfaceMethodTable;
     GarbageCollector* collector = nullptr;

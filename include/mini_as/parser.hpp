@@ -17,7 +17,7 @@ enum class NodeKind {
     EnumDecl, EnumValue, TypedefDecl, FieldDecl,
     Block, DeclList, VarDecl, IfStmt, WhileStmt, DoWhileStmt, ForStmt,
     SwitchStmt, CaseClause, DefaultClause, ReturnStmt, BreakStmt, ContinueStmt, ExprStmt, EmptyStmt,
-    Assign, Conditional, Binary, Unary, Increment, Cast, Call, NamedArgument, Member, Literal, Identifier
+    Assign, Conditional, Binary, Unary, Increment, Cast, ValueCast, Call, NamedArgument, Member, Literal, Identifier
 };
 
 struct AstNode {
@@ -36,6 +36,8 @@ struct AstNode {
     bool nonVirtualCall = false;
     bool returnsReference = false;
     bool returnReferenceConst = false;
+    std::string operatorMethod;
+    bool operatorReversed = false;
     MemberAccess memberAccess = MemberAccess::Public;
     ParameterMode parameterMode = ParameterMode::Value;
     AstNode* firstChild = nullptr;

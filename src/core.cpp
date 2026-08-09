@@ -212,10 +212,22 @@ std::string Value::ToString() const {
 bool operator==(const Value& left, const Value& right) { return left.Raw() == right.Raw(); }
 
 Value ConvertInteger(const Value& value, const DataType& target) {
-    if (!value.Type().IsInteger() || !target.IsInteger())
-        throw std::runtime_error("integer conversion requires integer types");
-    const std::uint64_t bits = value.Type().IsSignedInteger()
-        ? static_cast<std::uint64_t>(value.SignedInteger()) : value.UnsignedInteger();
+    if (!target.IsInteger()) throw std::runtime_error("integer conversion requires integer target");
+    std::uint64_t bits = 0;
+    if (value.Type().IsInteger()) {
+        bits = value.Type().IsSignedInteger()
+            ? static_cast<std::uint64_t>(value.SignedInteger()) : value.UnsignedInteger();
+    } else if (value.Type() == DataType::Float()) {
+        bits = target.IsSignedInteger()
+            ? static_cast<std::uint64_t>(static_cast<std::int64_t>(value.As<float>()))
+            : static_cast<std::uint64_t>(value.As<float>());
+    } else if (value.Type() == DataType::Double()) {
+        bits = target.IsSignedInteger()
+            ? static_cast<std::uint64_t>(static_cast<std::int64_t>(value.As<double>()))
+            : static_cast<std::uint64_t>(value.As<double>());
+    } else {
+        throw std::runtime_error("integer conversion requires numeric source");
+    }
     return Value::Integer(target, bits);
 }
 

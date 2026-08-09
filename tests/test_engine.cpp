@@ -1361,3 +1361,156 @@ TEST_CASE(dereferencing_a_failed_reference_cast_reports_the_call_location) {
     CHECK(context->GetExceptionLocation().row == 4);
 }
 
+TEST_CASE(class_operator_overloads_lower_to_virtual_method_calls) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("operator-overloads");
+    module->AddScriptSection("operator-overloads",
+        "class Label { int value; Label(int input) { value = input; } int read() { return value; } } "
+        "class CompareOnly { int value; CompareOnly(int input) { value = input; } "
+        "int opCmp(CompareOnly@ other) { return value - other.value; } } "
+        "class Number { int value; Number(int input) { value = input; } "
+        "Number@ opAdd(Number@ other) { return Number(value + other.value); } "
+        "int opAdd_r(int left) { return left + value; } "
+        "int opNeg() { return -value; } int opCom() { return ~value; } "
+        "bool opEquals(Number@ other) { return value == other.value; } "
+        "int opCmp(Number@ other) { return value - other.value; } "
+        "int opCmp(int other) { return value - other; } "
+        "int opAddAssign(int delta) { value += delta; return value; } "
+        "int opPreInc() { value++; return value; } "
+        "int opPostInc() { int before = value; value++; return before; } "
+        "int opCall(int scale) { return value * scale; } "
+        "Label@ opCast() { return Label(value); } } "
+        "int run() { Number@ first = Number(20); Number@ second = Number(22); "
+        "Number@ sum = first + second; int reverse = 20 + second; "
+        "int assigned = (first += 2); int prefix = ++first; int postfix = first++; "
+        "Label@ label = cast<Label>(first); "
+        "Number@ twin = Number(24); bool equalByValue = first == twin; bool sameHandle = first is twin; "
+        "CompareOnly@ equalLeft = CompareOnly(7); CompareOnly@ equalRight = CompareOnly(7); "
+        "return sum.value + reverse + (-second) + (~Number(0)) + "
+        "(first == second ? 1 : 0) + (first >= second ? 1 : 0) + (20 < second ? 1 : 0) + "
+        "assigned + prefix + postfix + first(1) + label.read() + "
+        "(equalByValue && !sameHandle ? 10 : 0) + "
+        "(equalLeft == equalRight && !(equalLeft != equalRight) ? 10 : 0); }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 199);
+}
+
+TEST_CASE(operator_overloads_cover_binary_reverse_assignment_and_decrement_tables) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("operator-table");
+    module->AddScriptSection("operator-table",
+        "class Ops { "
+        "int opAdd(int v) { return 1; } int opSub(int v) { return 2; } "
+        "int opMul(int v) { return 3; } int opDiv(int v) { return 4; } "
+        "int opMod(int v) { return 5; } int opPow(int v) { return 6; } "
+        "int opAnd(int v) { return 7; } int opOr(int v) { return 8; } "
+        "int opXor(int v) { return 9; } int opShl(int v) { return 10; } "
+        "int opShr(int v) { return 11; } int opUShr(int v) { return 12; } "
+        "int opAdd_r(int v) { return 13; } int opSub_r(int v) { return 14; } "
+        "int opMul_r(int v) { return 15; } int opDiv_r(int v) { return 16; } "
+        "int opMod_r(int v) { return 17; } int opPow_r(int v) { return 18; } "
+        "int opAnd_r(int v) { return 19; } int opOr_r(int v) { return 20; } "
+        "int opXor_r(int v) { return 21; } int opShl_r(int v) { return 22; } "
+        "int opShr_r(int v) { return 23; } int opUShr_r(int v) { return 24; } "
+        "int opAssign(Ops@ v) { return 25; } int opAddAssign(int v) { return 26; } "
+        "int opSubAssign(int v) { return 27; } int opMulAssign(int v) { return 28; } "
+        "int opDivAssign(int v) { return 29; } int opModAssign(int v) { return 30; } "
+        "int opPowAssign(int v) { return 31; } int opAndAssign(int v) { return 32; } "
+        "int opOrAssign(int v) { return 33; } int opXorAssign(int v) { return 34; } "
+        "int opShlAssign(int v) { return 35; } int opShrAssign(int v) { return 36; } "
+        "int opUShrAssign(int v) { return 37; } "
+        "int opPreDec() { return 38; } int opPostDec() { return 39; } } "
+        "int run() { Ops@ value = Ops(); Ops@ other = Ops(); return "
+        "(value + 0) + (value - 0) + (value * 0) + (value / 1) + (value % 1) + "
+        "(value ** 1) + (value & 0) + (value | 0) + (value ^ 0) + "
+        "(value << 0) + (value >> 0) + (value >>> 0) + "
+        "(0 + value) + (0 - value) + (0 * value) + (1 / value) + (1 % value) + "
+        "(1 ** value) + (0 & value) + (0 | value) + (0 ^ value) + "
+        "(0 << value) + (0 >> value) + (0 >>> value) + "
+        "(value = other) + (value += 0) + (value -= 0) + (value *= 0) + "
+        "(value /= 1) + (value %= 1) + (value **= 1) + (value &= 0) + "
+        "(value |= 0) + (value ^= 0) + (value <<= 0) + (value >>= 0) + "
+        "(value >>>= 0) + (--value) + (value--); }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 780);
+}
+
+TEST_CASE(operator_conversion_overloads_select_the_requested_return_type) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("operator-conversions");
+    module->AddScriptSection("operator-conversions",
+        "class Label { int value; Label(int input) { value = input; } int read() { return value; } } "
+        "class Wrapped { int value; Wrapped(int input) { value = input; } "
+        "int opConv() { return value; } string opConv() { return \"wrapped\"; } "
+        "Label@ opConv() { return Label(value + 1); } } "
+        "class Implicit { int value; Implicit(int input) { value = input; } "
+        "int opImplConv() { return value; } } "
+        "class CastSource { int value; CastSource(int input) { value = input; } "
+        "Label@ opImplCast() { return Label(value); } } "
+        "int run() { Wrapped@ value = Wrapped(41); int number = int(value); "
+        "string text = string(value); Label@ label = Label(value); "
+        "int implicitNumber = Implicit(3); "
+        "Label@ implicitLabel = CastSource(2); int truncated = int(4.75); "
+        "string digits = string(12); "
+        "return number + (text == \"wrapped\" ? 1 : 0) + label.read() + implicitNumber + "
+        "implicitLabel.read() + truncated + (digits == \"12\" ? 1 : 0); }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 94);
+}
+
+TEST_CASE(operator_overloads_reject_missing_invalid_and_inaccessible_methods) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    auto* module = engine->GetModule("bad-operator-overloads");
+    module->AddScriptSection("bad-operator-overloads",
+        "class Missing {} "
+        "class BadCompare { int opEquals(BadCompare@ other) { return 1; } "
+        "bool opCmp(BadCompare@ other) { return true; } } "
+        "class Hidden { private int opAdd(int value) { return value; } } "
+        "class NoConversion {} "
+        "int run() { Missing() + 1; BadCompare@ a = BadCompare(); "
+        "BadCompare@ b = BadCompare(); bool same = a == b; "
+        "int converted = int(NoConversion()); Hidden() + 1; return converted; }");
+    CHECK(!module->Build());
+    bool missing = false, invalidComparison = false, inaccessible = false, missingConversion = false;
+    for (const auto& diagnostic : diagnostics) {
+        missing = missing || diagnostic.message.find("no matching operator overload for '+'") != std::string::npos;
+        invalidComparison = invalidComparison ||
+            diagnostic.message.find("no matching operator overload for '=='") != std::string::npos;
+        inaccessible = inaccessible ||
+            diagnostic.message.find("private method 'Hidden::opAdd'") != std::string::npos;
+        missingConversion = missingConversion ||
+            diagnostic.message.find("no matching conversion operator to 'int'") != std::string::npos;
+    }
+    CHECK(missing);
+    CHECK(invalidComparison);
+    CHECK(inaccessible);
+    CHECK(missingConversion);
+}
+
+TEST_CASE(operator_overload_null_receivers_report_the_operator_location) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("null-operator-receiver");
+    module->AddScriptSection("null-operator-receiver",
+        "class Number { int opAdd(int value) { return value; } }\n"
+        "int run() {\n Number@ value = null;\n return value + 42;\n}");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Exception);
+    CHECK(context->GetExceptionString() == "null virtual method receiver");
+    CHECK(context->GetExceptionLocation().row == 4);
+}
+

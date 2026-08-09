@@ -113,6 +113,9 @@ private:
     const FunctionSignature* FindExactMethod(const ClassSignature* type, std::string_view name,
                                              const std::vector<DataType>& parameters,
                                              const std::vector<ParameterMode>& modes) const;
+    const FunctionSignature* FindOperatorMethod(const DataType& object, std::string_view name,
+                                                const std::vector<DataType>& arguments,
+                                                std::optional<DataType> requiredReturn = std::nullopt) const;
     std::optional<int> MatchArguments(const FunctionSignature& signature,
                                       const std::vector<DataType>& arguments,
                                       const std::vector<std::string>& argumentNames) const;

@@ -399,3 +399,30 @@ TEST_CASE(bytecode_emits_stable_type_ids_for_reference_casts) {
     CHECK(cast);
 }
 
+TEST_CASE(bytecode_lowers_operator_overloads_to_virtual_method_calls) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("operator-bytecode",
+        "class Number { int opAdd(int value) { return value; } } "
+        "int run(Number@ number) { return number + 42; }", diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    mini_as::TypeChecker checker(diagnostics);
+    CHECK(checker.Check(tree.root));
+    auto classes = checker.Classes();
+    auto functions = checker.Functions();
+    classes[0].id = mini_as::TypeId{10};
+    classes[0].methods[0].id = mini_as::FunctionId{20};
+    functions[0].id = mini_as::FunctionId{21};
+    mini_as::BytecodeCompiler compiler(diagnostics);
+    auto module = compiler.Compile(tree.root, functions, classes);
+    CHECK(!diagnostics.HasErrors());
+    CHECK(tree.root->Children()[1]->Children().back()->firstChild->firstChild->operatorMethod == "opAdd");
+    bool virtualCall = false;
+    for (const auto& function : module.functions) {
+        if (function.signature.name != "run") continue;
+        for (const auto& instruction : function.code)
+            virtualCall = virtualCall || instruction.opcode == mini_as::OpCode::CallVirtual;
+    }
+    CHECK(virtualCall);
+}
+

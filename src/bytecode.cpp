@@ -1,12 +1,18 @@
 #include "mini_as/bytecode.hpp"
 #include "mini_as/constant_evaluator.hpp"
 
+#include <algorithm>
 #include <iomanip>
 #include <sstream>
 #include <utility>
 
 namespace mini_as {
 namespace {
+
+bool IsReturnTypeOverload(std::string_view name) {
+    return name == "opConv" || name == "opImplConv" ||
+           name == "opCast" || name == "opImplCast";
+}
 
 std::string FunctionKey(const FunctionSignature& signature) {
     return (signature.method ? signature.objectType + "::" : std::string{}) +
@@ -617,6 +623,10 @@ void BytecodeCompiler::CompileExpression(AstNode* node) {
     }
     case NodeKind::Assign: {
         const auto children = node->Children();
+        if (!node->operatorMethod.empty()) {
+            CompileOperatorCall(node, children[0], children[1]);
+            break;
+        }
         const auto target = ResolveLValue(children[0]);
         if (!target) Error(node, "unknown assignment target");
         else if (node->token.kind == TokenKind::Equal) CompileLValueStore(*target, children[1], node);
@@ -647,6 +657,10 @@ void BytecodeCompiler::CompileExpression(AstNode* node) {
         else CompileBinary(node);
         break;
     case NodeKind::Unary:
+        if (!node->operatorMethod.empty()) {
+            CompileOperatorCall(node, node->firstChild);
+            break;
+        }
         CompileExpression(node->firstChild);
         if (node->token.kind == TokenKind::Bang) Emit(OpCode::LogicalNot, 0, node);
         else if (node->token.kind == TokenKind::Tilde) Emit(OpCode::BitNot, 0, node);
@@ -658,12 +672,23 @@ void BytecodeCompiler::CompileExpression(AstNode* node) {
         break;
     case NodeKind::Increment: CompileIncrement(node); break;
     case NodeKind::Cast: {
+        if (!node->operatorMethod.empty()) {
+            CompileOperatorCall(node, node->firstChild);
+            break;
+        }
         CompileExpression(node->firstChild);
         const auto target = classIds_.find(node->inferredType.objectName);
         if (target == classIds_.end()) Error(node, "reference cast target is unavailable");
         else Emit(OpCode::CastObject, static_cast<std::int32_t>(target->second.value), node);
         break;
     }
+    case NodeKind::ValueCast:
+        if (!node->operatorMethod.empty()) CompileOperatorCall(node, node->firstChild);
+        else {
+            CompileExpression(node->firstChild);
+            EmitConversion(node->firstChild->inferredType, node->inferredType, node);
+        }
+        break;
     case NodeKind::Call: CompileCall(node); break;
     default: Error(node, "expression cannot be compiled"); break;
     }
@@ -851,6 +876,10 @@ void BytecodeCompiler::CompileCompoundAssignment(const LValueRef& target, AstNod
 }
 
 void BytecodeCompiler::CompileIncrement(AstNode* node) {
+    if (node && !node->operatorMethod.empty()) {
+        CompileOperatorCall(node, node->firstChild);
+        return;
+    }
     const auto target = ResolveLValue(node ? node->firstChild : nullptr);
     if (!target) { Error(node, "increment target cannot be compiled"); return; }
     if (target->kind == LValueRef::Kind::Dynamic) {
@@ -923,8 +952,60 @@ void BytecodeCompiler::CompileIncrement(AstNode* node) {
     if (node->isPostfix) Emit(OpCode::Pop, 0, node);
 }
 
+void BytecodeCompiler::CompileOperatorCall(AstNode* node, AstNode* receiver, AstNode* argument) {
+    if (!node || !receiver || node->operatorMethod.empty()) {
+        Error(node, "operator call cannot be compiled");
+        return;
+    }
+    AstNode receiverCopy = *receiver;
+    receiverCopy.nextSibling = nullptr;
+    AstNode argumentCopy;
+    AstNode* compiledArgument = nullptr;
+    if (argument) {
+        argumentCopy = *argument;
+        argumentCopy.nextSibling = nullptr;
+        compiledArgument = &argumentCopy;
+    }
+    AstNode member;
+    member.kind = NodeKind::Member;
+    member.token = {TokenKind::Identifier, node->operatorMethod, node->token.location};
+    member.firstChild = &receiverCopy;
+    member.nextSibling = compiledArgument;
+    AstNode call = *node;
+    call.kind = NodeKind::Call;
+    call.firstChild = &member;
+    call.nextSibling = nullptr;
+    call.operatorMethod.clear();
+    CompileCall(&call);
+}
+
 void BytecodeCompiler::CompileBinary(AstNode* node) {
     const auto children = node->Children();
+    if (!node->operatorMethod.empty()) {
+        AstNode* receiver = node->operatorReversed ? children[1] : children[0];
+        AstNode* argument = node->operatorReversed ? children[0] : children[1];
+        CompileOperatorCall(node, receiver, argument);
+        if (node->operatorMethod == "opEquals") {
+            if (node->token.kind == TokenKind::BangEqual) Emit(OpCode::LogicalNot, 0, node);
+            return;
+        }
+        if (node->operatorMethod == "opCmp") {
+            Emit(OpCode::PushConst, AddConstant(Value(0)), node);
+            if (node->operatorReversed && node->token.kind != TokenKind::EqualEqual &&
+                node->token.kind != TokenKind::BangEqual) Emit(OpCode::Swap, 0, node);
+            OpCode comparison = OpCode::Equal;
+            switch (node->token.kind) {
+            case TokenKind::BangEqual: comparison = OpCode::NotEqual; break;
+            case TokenKind::Less: comparison = OpCode::Less; break;
+            case TokenKind::LessEqual: comparison = OpCode::LessEqual; break;
+            case TokenKind::Greater: comparison = OpCode::Greater; break;
+            case TokenKind::GreaterEqual: comparison = OpCode::GreaterEqual; break;
+            default: break;
+            }
+            Emit(comparison, 0, node);
+        }
+        return;
+    }
     const DataType result = node->inferredType;
     const bool stringOperation = node->token.kind == TokenKind::Plus && result == DataType::String();
     const bool bitwise = node->token.kind == TokenKind::Amp || node->token.kind == TokenKind::Pipe ||
@@ -1068,6 +1149,28 @@ void BytecodeCompiler::CompileImplicitBaseConstructor(std::string_view typeName,
 
 void BytecodeCompiler::CompileCall(AstNode* node, bool dereferenceResult) {
     AstNode* callee = node->firstChild;
+    if (callee && (node->operatorMethod == "opConv" ||
+                   node->operatorMethod == "opImplConv") &&
+        callee->kind == NodeKind::Identifier && callee->nextSibling) {
+        AstNode* argument = callee->nextSibling->kind == NodeKind::NamedArgument
+            ? callee->nextSibling->firstChild : callee->nextSibling;
+        CompileOperatorCall(node, argument);
+        return;
+    }
+    if (callee && node->operatorMethod == "opCall") {
+        AstNode receiverCopy = *callee;
+        receiverCopy.nextSibling = nullptr;
+        AstNode member;
+        member.kind = NodeKind::Member;
+        member.token = {TokenKind::Identifier, node->operatorMethod, node->token.location};
+        member.firstChild = &receiverCopy;
+        member.nextSibling = callee->nextSibling;
+        AstNode call = *node;
+        call.firstChild = &member;
+        call.operatorMethod.clear();
+        CompileCall(&call, dereferenceResult);
+        return;
+    }
     if (!callee || (callee->kind != NodeKind::Identifier && callee->kind != NodeKind::Member)) {
         Error(node, "callee cannot be compiled"); return;
     }
@@ -1224,6 +1327,8 @@ void BytecodeCompiler::CompileCall(AstNode* node, bool dereferenceResult) {
             nameCost = NameMatchCost(signature.name, callName, currentNamespace_);
         }
         if (!nameCost) continue;
+        if (IsReturnTypeOverload(requestedName) && node->inferredType.IsValid() &&
+            signature.returnType != node->inferredType) continue;
         if (explicitMethod && !signature.method) continue;
         if (!explicitMethod && signature.method && currentObjectType_.empty()) continue;
         if (!explicitMethod && currentObjectType_.empty() && signature.method) continue;
@@ -1298,7 +1403,9 @@ void BytecodeCompiler::CompileCall(AstNode* node, bool dereferenceResult) {
             for (std::size_t index = 0; index < layout.size(); ++index) {
                 const auto* method = layout[index];
                 if (method->name == target->name && method->parameters == target->parameters &&
-                    method->parameterModes == target->parameterModes) {
+                    method->parameterModes == target->parameterModes &&
+                    (!IsReturnTypeOverload(target->name) ||
+                     method->returnType == target->returnType)) {
                     slot = static_cast<std::uint32_t>(index);
                     foundSlot = true;
                     break;
@@ -1449,7 +1556,8 @@ void BytecodeCompiler::EmitDefaultValue(const DataType& type, const AstNode* sou
 void BytecodeCompiler::EmitConversion(const DataType& from, const DataType& to,
                                       const AstNode* source) {
     if (from == to) return;
-    if (from.IsInteger() && to.IsInteger()) {
+    if ((from.IsInteger() || from == DataType::Float() || from == DataType::Double()) &&
+        to.IsInteger()) {
         Emit(OpCode::ToInteger, static_cast<std::int32_t>(to.kind), source);
     } else if (from.IsInteger() && to == DataType::Float()) {
         Emit(OpCode::ToFloat, 0, source);
@@ -1457,7 +1565,42 @@ void BytecodeCompiler::EmitConversion(const DataType& from, const DataType& to,
         Emit(OpCode::ToDouble, 0, source);
     } else if (from == DataType::Double() && to == DataType::Float()) {
         Emit(OpCode::ToFloat, 0, source);
+    } else if (to == DataType::String()) {
+        Emit(OpCode::ToString, 0, source);
+    } else if (const FunctionSignature* conversion = FindImplicitConversion(from, to)) {
+        const ClassSignature* staticType = FindClass(from.objectName);
+        if (!staticType) { Error(source, "implicit conversion receiver type is missing"); return; }
+        const auto layout = VirtualLayout(*staticType);
+        std::uint32_t slot = 0;
+        bool foundSlot = false;
+        for (std::size_t index = 0; index < layout.size(); ++index) {
+            const auto* method = layout[index];
+            if (method->name == conversion->name && method->returnType == conversion->returnType &&
+                method->parameters.empty()) {
+                slot = static_cast<std::uint32_t>(index);
+                foundSlot = true;
+                break;
+            }
+        }
+        if (!foundSlot) { Error(source, "implicit conversion virtual slot is missing"); return; }
+        Emit(OpCode::CallVirtual,
+             AddCallable({CallableKind::VirtualMethod, {}, staticType->id, slot, 0}), source);
     }
+}
+
+const FunctionSignature* BytecodeCompiler::FindImplicitConversion(
+    const DataType& from, const DataType& to) const {
+    if (from.kind != TypeKind::Object || !from.isHandle) return nullptr;
+    const ClassSignature* type = FindClass(from.objectName);
+    while (type) {
+        for (const auto& method : type->methods) {
+            if (!method.constructor && !method.destructor && method.parameters.empty() &&
+                method.returnType == to &&
+                (method.name == "opImplConv" || method.name == "opImplCast")) return &method;
+        }
+        type = type->baseClass.empty() ? nullptr : FindClass(type->baseClass);
+    }
+    return nullptr;
 }
 
 std::optional<int> BytecodeCompiler::ConversionCost(const DataType& from,
@@ -1481,6 +1624,7 @@ std::optional<int> BytecodeCompiler::ConversionCost(const DataType& from,
         if (type && std::find(type->interfaces.begin(), type->interfaces.end(), to.objectName) !=
                     type->interfaces.end()) return 1;
     }
+    if (FindImplicitConversion(from, to)) return 1;
     return std::nullopt;
 }
 
@@ -1546,7 +1690,9 @@ std::vector<const FunctionSignature*> BytecodeCompiler::VirtualLayout(
         if (method.constructor || method.destructor) continue;
         auto overridden = std::find_if(layout.begin(), layout.end(), [&](const auto* baseMethod) {
             return baseMethod->name == method.name && baseMethod->parameters == method.parameters &&
-                   baseMethod->parameterModes == method.parameterModes;
+                   baseMethod->parameterModes == method.parameterModes &&
+                   (!IsReturnTypeOverload(method.name) ||
+                    baseMethod->returnType == method.returnType);
         });
         if (overridden == layout.end()) layout.push_back(&method);
         else *overridden = &method;

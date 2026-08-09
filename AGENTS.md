@@ -143,10 +143,10 @@ Do not stage generated build directories or unrelated user changes. Inspect
 The completed stage notes are authoritative. At the time this guide was added,
 the latest language stage is:
 
-- Stage 47: explicit reference casts across script class and interface handles.
+- Stage 48: AngelScript operator overloads, including conversions and functors.
 
-The next planned language feature is operator overloads, followed by property
-accessors and script exceptions. Confirm the latest git
+The next planned language feature is property accessors, followed by script
+exceptions. Confirm the latest git
 history and `docs/stages/` before choosing the next stage number.
 
 ## Common pitfalls

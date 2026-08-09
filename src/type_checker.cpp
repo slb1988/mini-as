@@ -1,6 +1,7 @@
 #include "mini_as/type_checker.hpp"
 #include "mini_as/constant_evaluator.hpp"
 
+#include <algorithm>
 #include <limits>
 #include <functional>
 #include <sstream>
@@ -9,6 +10,11 @@
 
 namespace mini_as {
 namespace {
+
+bool IsReturnTypeOverload(std::string_view name) {
+    return name == "opConv" || name == "opImplConv" ||
+           name == "opCast" || name == "opImplCast";
+}
 
 void CollectDeclarations(AstNode* owner, std::vector<AstNode*>& result) {
     if (!owner) return;
@@ -49,6 +55,43 @@ std::optional<int> NameMatchCost(std::string_view candidate, std::string_view re
     for (std::size_t index = 0; index < names.size(); ++index)
         if (candidate == names[index]) return static_cast<int>(index) * 10;
     return std::nullopt;
+}
+
+std::pair<std::string_view, std::string_view> BinaryOperatorMethods(TokenKind operation) {
+    switch (operation) {
+    case TokenKind::Plus: return {"opAdd", "opAdd_r"};
+    case TokenKind::Minus: return {"opSub", "opSub_r"};
+    case TokenKind::Star: return {"opMul", "opMul_r"};
+    case TokenKind::Slash: return {"opDiv", "opDiv_r"};
+    case TokenKind::Percent: return {"opMod", "opMod_r"};
+    case TokenKind::StarStar: return {"opPow", "opPow_r"};
+    case TokenKind::Amp: return {"opAnd", "opAnd_r"};
+    case TokenKind::Pipe: return {"opOr", "opOr_r"};
+    case TokenKind::Caret: return {"opXor", "opXor_r"};
+    case TokenKind::ShiftLeft: return {"opShl", "opShl_r"};
+    case TokenKind::ShiftRight: return {"opShr", "opShr_r"};
+    case TokenKind::ShiftRightArithmetic: return {"opUShr", "opUShr_r"};
+    default: return {};
+    }
+}
+
+std::string_view AssignmentOperatorMethod(TokenKind operation) {
+    switch (operation) {
+    case TokenKind::Equal: return "opAssign";
+    case TokenKind::PlusEqual: return "opAddAssign";
+    case TokenKind::MinusEqual: return "opSubAssign";
+    case TokenKind::StarEqual: return "opMulAssign";
+    case TokenKind::SlashEqual: return "opDivAssign";
+    case TokenKind::PercentEqual: return "opModAssign";
+    case TokenKind::StarStarEqual: return "opPowAssign";
+    case TokenKind::AmpEqual: return "opAndAssign";
+    case TokenKind::PipeEqual: return "opOrAssign";
+    case TokenKind::CaretEqual: return "opXorAssign";
+    case TokenKind::ShiftLeftEqual: return "opShlAssign";
+    case TokenKind::ShiftRightEqual: return "opShrAssign";
+    case TokenKind::ShiftRightArithmeticEqual: return "opUShrAssign";
+    default: return {};
+    }
 }
 
 } // namespace
@@ -212,7 +255,9 @@ void TypeChecker::Predeclare(AstNode* root) {
                 for (const auto& existing : type.methods) {
                     if (existing.name == method.name && existing.parameters == method.parameters &&
                         existing.constructor == method.constructor &&
-                        existing.destructor == method.destructor) duplicate = true;
+                        existing.destructor == method.destructor &&
+                        (!IsReturnTypeOverload(method.name) ||
+                         existing.returnType == method.returnType)) duplicate = true;
                 }
                 if (duplicate) Error(child, "duplicate method or constructor '" + method.Declaration() + "'");
                 if (method.destructor && !method.parameters.empty())
@@ -285,7 +330,8 @@ void TypeChecker::Predeclare(AstNode* root) {
                 if (method.constructor || method.destructor) continue;
                 const FunctionSignature* baseMethod = FindExactMethod(
                     inherited, method.name, method.parameters, method.parameterModes);
-                if (baseMethod && (baseMethod->returnType != method.returnType ||
+                if (baseMethod && !IsReturnTypeOverload(method.name) &&
+                    (baseMethod->returnType != method.returnType ||
                     baseMethod->parameterModes != method.parameterModes ||
                     baseMethod->returnsReference != method.returnsReference ||
                     baseMethod->returnReferenceConst != method.returnReferenceConst)) {
@@ -695,6 +741,21 @@ DataType TypeChecker::CheckExpression(AstNode* node) {
     case NodeKind::Increment: {
         AstNode* operand = node->firstChild;
         result = CheckExpression(operand);
+        if (result.kind == TypeKind::Object) {
+            const std::string_view name = node->token.kind == TokenKind::PlusPlus
+                ? (node->isPostfix ? "opPostInc" : "opPreInc")
+                : (node->isPostfix ? "opPostDec" : "opPreDec");
+            const FunctionSignature* method = FindOperatorMethod(result, name, {});
+            if (!method) {
+                Error(node, "no matching operator overload for '" + node->token.lexeme + "'");
+                result = DataType::Invalid();
+            } else {
+                node->operatorMethod = method->name;
+                CheckAccess(node, method->access, method->objectType, "method", method->name);
+                result = method->returnType;
+            }
+            break;
+        }
         if (!operand || (operand->kind != NodeKind::Identifier && operand->kind != NodeKind::Member &&
                          !(operand->kind == NodeKind::Call && operand->returnsReference)))
             Error(operand, "increment operand is not assignable");
@@ -714,6 +775,34 @@ DataType TypeChecker::CheckExpression(AstNode* node) {
             Error(node, "reference cast source must be an object handle");
         else if (source.objectName != "<null>" && !FindClass(source.objectName))
             Error(node, "reference cast source must be a script object handle");
+        else if (source.objectName != "<null>" && result.kind == TypeKind::Object) {
+            const FunctionSignature* method = FindOperatorMethod(source, "opCast", {}, result);
+            if (!method) method = FindOperatorMethod(source, "opImplCast", {}, result);
+            if (method) {
+                node->operatorMethod = method->name;
+                CheckAccess(node, method->access, method->objectType, "method", method->name);
+            }
+        }
+        break;
+    }
+    case NodeKind::ValueCast: {
+        const DataType source = CheckExpression(node->firstChild);
+        result = node->declaredType;
+        if (source.kind == TypeKind::Object) {
+            const FunctionSignature* method = FindOperatorMethod(source, "opConv", {}, result);
+            if (!method) method = FindOperatorMethod(source, "opImplConv", {}, result);
+            if (!method) {
+                Error(node, "no matching conversion operator to '" + result.Name() + "'");
+                result = DataType::Invalid();
+            } else {
+                node->operatorMethod = method->name;
+                CheckAccess(node, method->access, method->objectType, "method", method->name);
+            }
+        } else if (!(source.IsNumeric() && result.IsNumeric()) &&
+                   !(result == DataType::String()) && source != result) {
+            Error(node, "cannot explicitly convert " + source.Name() + " to " + result.Name());
+            result = DataType::Invalid();
+        }
         break;
     }
     case NodeKind::Call: result = CheckCall(node); break;
@@ -730,6 +819,21 @@ DataType TypeChecker::CheckExpression(AstNode* node) {
             Error(children[0], "cannot assign to const variable '" + children[0]->token.lexeme + "'");
         }
         DataType value = CheckExpression(children[1]);
+        const std::string_view operatorName = AssignmentOperatorMethod(node->token.kind);
+        if (target.kind == TypeKind::Object && !operatorName.empty()) {
+            const FunctionSignature* method = FindOperatorMethod(target, operatorName, {value});
+            if (method) {
+                node->operatorMethod = method->name;
+                CheckAccess(node, method->access, method->objectType, "method", method->name);
+                result = method->returnType;
+                break;
+            }
+            if (node->token.kind != TokenKind::Equal) {
+                Error(node, "no matching operator overload for '" + node->token.lexeme + "'");
+                result = DataType::Invalid();
+                break;
+            }
+        }
         if (node->token.kind == TokenKind::Equal) {
             if (!CanConvert(value, target))
                 Error(node, "cannot assign " + value.Name() + " to " + target.Name());
@@ -779,6 +883,48 @@ DataType TypeChecker::CheckBinary(AstNode* node) {
         if (left != DataType::Bool() || right != DataType::Bool()) Error(node, "logical operator requires bool operands");
         return DataType::Bool();
     }
+    const auto selectOperator = [&](std::string_view directName, std::string_view reverseName,
+                                    std::optional<DataType> requiredReturn)
+        -> const FunctionSignature* {
+        const FunctionSignature* direct = directName.empty() ? nullptr
+            : FindOperatorMethod(left, directName, {right}, requiredReturn);
+        const FunctionSignature* reverse = reverseName.empty() ? nullptr
+            : FindOperatorMethod(right, reverseName, {left}, requiredReturn);
+        const auto directCost = direct ? MatchArguments(*direct, {right}, {std::string{}}) : std::nullopt;
+        const auto reverseCost = reverse ? MatchArguments(*reverse, {left}, {std::string{}}) : std::nullopt;
+        const bool useReverse = reverse && (!direct || (reverseCost && directCost && *reverseCost < *directCost));
+        const FunctionSignature* selected = useReverse ? reverse : direct;
+        if (!selected) return nullptr;
+        node->operatorMethod = selected->name;
+        node->operatorReversed = useReverse;
+        CheckAccess(node, selected->access, selected->objectType, "method", selected->name);
+        return selected;
+    };
+    const bool equality = op == TokenKind::EqualEqual || op == TokenKind::BangEqual ||
+                          op == TokenKind::KwIs;
+    if (op != TokenKind::KwIs && equality &&
+        (left.kind == TypeKind::Object || right.kind == TypeKind::Object)) {
+        if (selectOperator("opEquals", "opEquals", DataType::Bool()))
+            return DataType::Bool();
+        if (selectOperator("opCmp", "opCmp", DataType::Int()))
+            return DataType::Bool();
+        Error(node, "no matching operator overload for '" + node->token.lexeme + "'");
+        return DataType::Invalid();
+    }
+    const bool ordering = op == TokenKind::Less || op == TokenKind::LessEqual ||
+                          op == TokenKind::Greater || op == TokenKind::GreaterEqual;
+    if (ordering && (left.kind == TypeKind::Object || right.kind == TypeKind::Object)) {
+        if (selectOperator("opCmp", "opCmp", DataType::Int()))
+            return DataType::Bool();
+    }
+    const auto operatorNames = BinaryOperatorMethods(op);
+    if ((!operatorNames.first.empty()) &&
+        (left.kind == TypeKind::Object || right.kind == TypeKind::Object)) {
+        if (const FunctionSignature* method = selectOperator(
+                operatorNames.first, operatorNames.second, std::nullopt)) return method->returnType;
+        Error(node, "no matching operator overload for '" + node->token.lexeme + "'");
+        return DataType::Invalid();
+    }
     if (op == TokenKind::Amp || op == TokenKind::Pipe || op == TokenKind::Caret ||
         op == TokenKind::ShiftLeft || op == TokenKind::ShiftRight ||
         op == TokenKind::ShiftRightArithmetic) {
@@ -786,7 +932,7 @@ DataType TypeChecker::CheckBinary(AstNode* node) {
             Error(node, "bitwise operator requires integer operands");
         return left.IsInteger() ? left : DataType::Invalid();
     }
-    if (op == TokenKind::EqualEqual || op == TokenKind::BangEqual || op == TokenKind::KwIs) {
+    if (equality) {
         const bool relatedObjects = left.kind == TypeKind::Object && right.kind == TypeKind::Object &&
             (CanConvert(left, right) || CanConvert(right, left));
         if (left != right && !(left.IsNumeric() && right.IsNumeric()) && !relatedObjects)
@@ -796,13 +942,24 @@ DataType TypeChecker::CheckBinary(AstNode* node) {
     if (!left.IsNumeric() || !right.IsNumeric()) {
         Error(node, "operator requires numeric operands"); return DataType::Invalid();
     }
-    if (op == TokenKind::Less || op == TokenKind::LessEqual ||
-        op == TokenKind::Greater || op == TokenKind::GreaterEqual) return DataType::Bool();
+    if (ordering) return DataType::Bool();
     return CommonNumericType(left, right);
 }
 
 DataType TypeChecker::CheckUnary(AstNode* node) {
     DataType operand = CheckExpression(node->firstChild);
+    if (operand.kind == TypeKind::Object &&
+        (node->token.kind == TokenKind::Minus || node->token.kind == TokenKind::Tilde)) {
+        const std::string_view name = node->token.kind == TokenKind::Minus ? "opNeg" : "opCom";
+        const FunctionSignature* method = FindOperatorMethod(operand, name, {});
+        if (!method) {
+            Error(node, "no matching operator overload for '" + node->token.lexeme + "'");
+            return DataType::Invalid();
+        }
+        node->operatorMethod = method->name;
+        CheckAccess(node, method->access, method->objectType, "method", method->name);
+        return method->returnType;
+    }
     if (node->token.kind == TokenKind::Bang) {
         if (operand != DataType::Bool()) Error(node, "'!' requires bool operand");
         return DataType::Bool();
@@ -876,8 +1033,19 @@ DataType TypeChecker::CheckCall(AstNode* node) {
                 if (cost && *cost < bestCost) { constructor = &candidate; bestCost = *cost; }
             }
             if ((hasConstructors && !constructor) || (!hasConstructors && !arguments.empty())) {
-                Error(node, "no matching constructor for '" + type->name + "'");
-                return DataType::Invalid();
+                const DataType target = DataType::Object(type->name, true);
+                const FunctionSignature* conversion = arguments.size() == 1 && argumentNames[0].empty()
+                    ? FindOperatorMethod(arguments[0], "opConv", {}, target) : nullptr;
+                if (!conversion && arguments.size() == 1 && argumentNames[0].empty())
+                    conversion = FindOperatorMethod(arguments[0], "opImplConv", {}, target);
+                if (!conversion) {
+                    Error(node, "no matching constructor for '" + type->name + "'");
+                    return DataType::Invalid();
+                }
+                node->operatorMethod = conversion->name;
+                CheckAccess(node, conversion->access, conversion->objectType,
+                            "method", conversion->name);
+                return target;
             }
             if (constructor) {
                 ValidateReferenceArguments(*constructor, argumentNodes, argumentNames);
@@ -885,6 +1053,22 @@ DataType TypeChecker::CheckCall(AstNode* node) {
                             "constructor", constructor->name);
             }
             return DataType::Object(type->name, true);
+        }
+        const auto callableObject = Lookup(callee->token.lexeme);
+        if (callableObject && callableObject->type.kind == TypeKind::Object) {
+            callee->inferredType = callableObject->type;
+            const FunctionSignature* method = FindMethod(
+                callableObject->type, "opCall", arguments, argumentNames);
+            if (!method) {
+                Error(node, "callee is not callable");
+                return DataType::Invalid();
+            }
+            ValidateReferenceArguments(*method, argumentNodes, argumentNames);
+            CheckAccess(node, method->access, method->objectType, "method", method->name);
+            node->operatorMethod = method->name;
+            node->returnsReference = method->returnsReference;
+            node->returnReferenceConst = method->returnReferenceConst;
+            return method->returnType;
         }
     }
     if (callee->kind == NodeKind::Member) {
@@ -900,7 +1084,19 @@ DataType TypeChecker::CheckCall(AstNode* node) {
         return method ? method->returnType : DataType::Invalid();
     }
     if (callee->kind != NodeKind::Identifier) {
-        Error(node, "callee is not callable"); return DataType::Invalid();
+        const DataType object = CheckExpression(callee);
+        const FunctionSignature* method = object.kind == TypeKind::Object
+            ? FindMethod(object, "opCall", arguments, argumentNames) : nullptr;
+        if (!method) {
+            Error(node, "callee is not callable");
+            return DataType::Invalid();
+        }
+        ValidateReferenceArguments(*method, argumentNodes, argumentNames);
+        CheckAccess(node, method->access, method->objectType, "method", method->name);
+        node->operatorMethod = method->name;
+        node->returnsReference = method->returnsReference;
+        node->returnReferenceConst = method->returnReferenceConst;
+        return method->returnType;
     }
     const auto scope = callee->token.lexeme.rfind("::");
     if (currentClass_ && scope != std::string::npos) {
@@ -1000,6 +1196,30 @@ const FunctionSignature* TypeChecker::FindExactMethod(
     }
     return type->baseClass.empty() ? nullptr
         : FindExactMethod(FindClass(type->baseClass), name, parameters, modes);
+}
+
+const FunctionSignature* TypeChecker::FindOperatorMethod(
+    const DataType& object, std::string_view name, const std::vector<DataType>& arguments,
+    std::optional<DataType> requiredReturn) const {
+    if (object.kind != TypeKind::Object || !object.isHandle) return nullptr;
+    const std::vector<std::string> unnamed(arguments.size());
+    const ClassSignature* type = FindClass(object.objectName);
+    while (type) {
+        const FunctionSignature* best = nullptr;
+        int bestCost = 1000000;
+        for (const auto& method : type->methods) {
+            if (method.constructor || method.destructor || method.name != name ||
+                (requiredReturn && method.returnType != *requiredReturn)) continue;
+            const auto cost = MatchArguments(method, arguments, unnamed);
+            if (cost && *cost < bestCost) {
+                best = &method;
+                bestCost = *cost;
+            }
+        }
+        if (best) return best;
+        type = type->baseClass.empty() ? nullptr : FindClass(type->baseClass);
+    }
+    return nullptr;
 }
 
 std::optional<int> TypeChecker::MatchArguments(
@@ -1155,6 +1375,11 @@ bool TypeChecker::CanConvert(const DataType& from, const DataType& to) const {
             for (const auto& interfaceName : type->interfaces) if (interfaceName == to.objectName) return true;
             if (IsDerivedFrom(type->name, to.objectName)) return true;
         }
+    }
+    if (from.kind == TypeKind::Object && from.isHandle) {
+        const FunctionSignature* method = FindOperatorMethod(from, "opImplConv", {}, to);
+        if (!method) method = FindOperatorMethod(from, "opImplCast", {}, to);
+        if (method && CanAccess(method->access, method->objectType)) return true;
     }
     return false;
 }

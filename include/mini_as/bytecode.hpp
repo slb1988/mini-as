@@ -146,7 +146,10 @@ private:
     void CompileCompoundAssignment(const LValueRef& target, AstNode* value,
                                    TokenKind operation, const AstNode* source);
     void CompileIncrement(AstNode* node);
+    void CompileOperatorCall(AstNode* node, AstNode* receiver, AstNode* argument = nullptr);
     void EmitConversion(const DataType& from, const DataType& to, const AstNode* source);
+    const FunctionSignature* FindImplicitConversion(const DataType& from,
+                                                    const DataType& to) const;
     std::optional<int> ConversionCost(const DataType& from, const DataType& to) const;
     std::int32_t AddCallable(CallableRef callable);
     std::optional<std::pair<std::size_t, DataType>> FindField(const AstNode* member) const;

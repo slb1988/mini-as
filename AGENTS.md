@@ -145,9 +145,9 @@ the latest language stage is:
 
 - Stage 50: script try/catch with table-driven VM stack unwinding.
 
-The next planned item is the v0.3 compatibility matrix, followed by v0.4
-funcdefs and function handles. Confirm the latest git history and `docs/stages/`
-before choosing the next stage number.
+The v0.3 compatibility matrix is published. The next planned language feature
+is the v0.4 funcdef declaration, followed by function handles. Confirm the
+latest git history and `docs/stages/` before choosing the next stage number.
 
 ## Common pitfalls
 

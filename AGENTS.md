@@ -150,10 +150,10 @@ Do not stage generated build directories or unrelated user changes. Inspect
 The completed stage notes are authoritative. At the time this guide was added,
 the latest language stage is:
 
-- Stage 58: deleted default construction, copy construction, and copy assignment.
+- v0.4 compatibility matrix published after Stage 58 deleted default/copy operations.
 
-The v0.3 compatibility matrix is published. The v0.4 feature implementation is
-complete; its compatibility matrix is the next planned stage. Confirm the
+The next planned feature is the first v0.5 host-embedding item: registered
+global properties. Confirm the
 latest git history and `docs/stages/` before choosing the next stage number.
 
 ## Common pitfalls

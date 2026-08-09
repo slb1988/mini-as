@@ -203,6 +203,7 @@ std::optional<Value> ConstantExpressionEvaluator::Evaluate(const AstNode* expres
         case TokenKind::String: return Value(DecodeString(expression->token.lexeme));
         case TokenKind::KwTrue: return Value(true);
         case TokenKind::KwFalse: return Value(false);
+        case TokenKind::KwNull: return Value(ObjectHandle{});
         default: return std::nullopt;
         }
     }

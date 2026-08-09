@@ -34,6 +34,16 @@ TEST_CASE(constant_evaluator_rejects_runtime_values_and_invalid_arithmetic) {
     CHECK(!divisionByZero.has_value());
 }
 
+TEST_CASE(constant_evaluator_materializes_null_object_handles) {
+    mini_as::AstNode literal;
+    literal.kind = mini_as::NodeKind::Literal;
+    literal.token.kind = mini_as::TokenKind::KwNull;
+    auto value = mini_as::ConstantExpressionEvaluator{}.Evaluate(&literal);
+    CHECK(value.has_value());
+    CHECK(value->Type() == mini_as::DataType::Object("<null>", true));
+    CHECK(!value->As<mini_as::ObjectHandle>());
+}
+
 TEST_CASE(numeric_literal_decoder_preserves_official_types_and_values) {
     mini_as::Token bits{mini_as::TokenKind::Bits, "0xFFFFFFFF", {}};
     auto unsignedValue = mini_as::DecodeNumericLiteral(bits);

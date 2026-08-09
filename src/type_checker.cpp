@@ -16,6 +16,15 @@ bool IsReturnTypeOverload(std::string_view name) {
            name == "opCast" || name == "opImplCast";
 }
 
+bool SameCallableSignature(const FunctionSignature& function,
+                           const FunctionSignature& funcdef) {
+    return function.returnType == funcdef.returnType &&
+           function.parameters == funcdef.parameters &&
+           function.parameterModes == funcdef.parameterModes &&
+           function.returnsReference == funcdef.returnsReference &&
+           function.returnReferenceConst == funcdef.returnReferenceConst;
+}
+
 void CollectDeclarations(AstNode* owner, std::vector<AstNode*>& result) {
     if (!owner) return;
     for (AstNode* node = owner->firstChild; node; node = node->nextSibling) {
@@ -269,6 +278,8 @@ void TypeChecker::Predeclare(AstNode* root) {
         }
         for (; child; child = child->nextSibling) {
             if (child->kind == NodeKind::FieldDecl) {
+                if (child->declaredType.kind == TypeKind::Function && !child->declaredType.isHandle)
+                    Error(child, "funcdef fields must be declared as handles");
                 type.fields.push_back({child->token.lexeme, child->declaredType,
                                        type.name, child->memberAccess});
             }
@@ -510,8 +521,13 @@ void TypeChecker::CheckNode(AstNode* node) {
         if (node->isAuto && !node->firstChild) {
             Error(node, "auto declaration requires an initializer");
         }
+        if (!node->isAuto && node->declaredType.kind == TypeKind::Function &&
+            !node->declaredType.isHandle)
+            Error(node, "funcdef variables must be declared as handles");
         if (node->firstChild) {
-            DataType value = CheckExpression(node->firstChild);
+            DataType value = CheckExpression(node->firstChild,
+                                             node->isAuto ? std::nullopt
+                                                          : std::optional<DataType>{node->declaredType});
             if (node->isAuto && !node->declaredType.IsValid()) node->declaredType = value;
             if (!CanConvert(value, node->declaredType)) {
                 Error(node, "cannot initialize " + node->declaredType.Name() + " with " + value.Name());
@@ -600,7 +616,8 @@ void TypeChecker::CheckNode(AstNode* node) {
         break;
     }
     case NodeKind::ReturnStmt: {
-        DataType value = node->firstChild ? CheckExpression(node->firstChild) : DataType::Void();
+        DataType value = node->firstChild
+            ? CheckExpression(node->firstChild, currentReturn_) : DataType::Void();
         if (currentReturnsReference_) {
             if (!node->firstChild || value != currentReturn_ || !CanReturnReference(node->firstChild))
                 Error(node, "return reference must name a global variable or a field with sufficient lifetime");
@@ -684,6 +701,8 @@ void TypeChecker::CheckFunction(AstNode* node) {
     scopes_.emplace_back();
     AstNode* child = node->firstChild;
     while (child && child->kind == NodeKind::Parameter) {
+        if (child->declaredType.kind == TypeKind::Function && !child->declaredType.isHandle)
+            Error(child, "funcdef parameters must be declared as handles");
         if (child->firstChild) {
             if (child->parameterMode == ParameterMode::Out ||
                 child->parameterMode == ParameterMode::InOut) {
@@ -734,7 +753,7 @@ void TypeChecker::CheckBlock(AstNode* node, bool createScope) {
     if (createScope) scopes_.pop_back();
 }
 
-DataType TypeChecker::CheckExpression(AstNode* node) {
+DataType TypeChecker::CheckExpression(AstNode* node, std::optional<DataType> expected) {
     if (!node) return DataType::Invalid();
     DataType result = DataType::Invalid();
     switch (node->kind) {
@@ -791,7 +810,7 @@ DataType TypeChecker::CheckExpression(AstNode* node) {
         break;
     }
     case NodeKind::Binary: result = CheckBinary(node); break;
-    case NodeKind::Unary: result = CheckUnary(node); break;
+    case NodeKind::Unary: result = CheckUnary(node, expected); break;
     case NodeKind::Increment: {
         AstNode* operand = node->firstChild;
         result = CheckExpression(operand);
@@ -879,7 +898,12 @@ DataType TypeChecker::CheckExpression(AstNode* node) {
             target = CheckExpression(children[0]);
         }
         children[0]->inferredType = target;
+        const bool explicitHandleTarget = children[0]->kind == NodeKind::Unary &&
+            children[0]->token.kind == TokenKind::At && children[0]->firstChild;
+        if (target.kind == TypeKind::Function && !explicitHandleTarget)
+            Error(children[0], "function handle assignment requires explicit '@' on the target");
         if (children[0]->kind != NodeKind::Identifier && children[0]->kind != NodeKind::Member &&
+            !explicitHandleTarget &&
             !(children[0]->kind == NodeKind::Call && children[0]->returnsReference)) {
             Error(children[0], "left side of assignment is not assignable");
         }
@@ -888,7 +912,7 @@ DataType TypeChecker::CheckExpression(AstNode* node) {
         } else if (IsReadOnlyLValue(children[0])) {
             Error(children[0], "cannot assign to const variable '" + children[0]->token.lexeme + "'");
         }
-        DataType value = CheckExpression(children[1]);
+        DataType value = CheckExpression(children[1], target);
         if (!children[0]->propertySetter.empty() && node->token.kind != TokenKind::Equal &&
             !target.IsNumeric() && target != DataType::String()) {
             Error(node, "compound property assignment currently requires a numeric or string property");
@@ -1106,7 +1130,14 @@ DataType TypeChecker::CheckBinary(AstNode* node) {
     if (equality) {
         const bool relatedObjects = left.kind == TypeKind::Object && right.kind == TypeKind::Object &&
             (CanConvert(left, right) || CanConvert(right, left));
-        if (left != right && !(left.IsNumeric() && right.IsNumeric()) && !relatedObjects)
+        const bool relatedFunctions =
+            (left.kind == TypeKind::Function && right.kind == TypeKind::Function && left == right) ||
+            (left.kind == TypeKind::Function && right.kind == TypeKind::Object &&
+             right.objectName == "<null>") ||
+            (right.kind == TypeKind::Function && left.kind == TypeKind::Object &&
+             left.objectName == "<null>");
+        if (left != right && !(left.IsNumeric() && right.IsNumeric()) &&
+            !relatedObjects && !relatedFunctions)
             Error(node, "incomparable operand types");
         return DataType::Bool();
     }
@@ -1117,7 +1148,13 @@ DataType TypeChecker::CheckBinary(AstNode* node) {
     return CommonNumericType(left, right);
 }
 
-DataType TypeChecker::CheckUnary(AstNode* node) {
+DataType TypeChecker::CheckUnary(AstNode* node, std::optional<DataType> expected) {
+    if (node->token.kind == TokenKind::At && node->firstChild &&
+        node->firstChild->kind == NodeKind::Identifier &&
+        !Lookup(node->firstChild->token.lexeme)) {
+        if (ResolveFunctionAddress(node, expected)) return node->declaredType;
+        return DataType::Invalid();
+    }
     DataType operand = CheckExpression(node->firstChild);
     if (operand.kind == TypeKind::Object &&
         (node->token.kind == TokenKind::Minus || node->token.kind == TokenKind::Tilde)) {
@@ -1147,17 +1184,65 @@ DataType TypeChecker::CheckUnary(AstNode* node) {
 DataType TypeChecker::CheckCall(AstNode* node) {
     AstNode* callee = node->firstChild;
     if (!callee) return DataType::Invalid();
+    const FuncdefSignature* handleType = nullptr;
+    if (callee->kind == NodeKind::Identifier) {
+        const auto symbol = Lookup(callee->token.lexeme);
+        if (symbol && symbol->type.kind == TypeKind::Function) {
+            handleType = FindFuncdef(symbol->type.objectName);
+            callee->inferredType = symbol->type;
+        } else if (!symbol && currentClass_) {
+            for (const auto& field : currentClass_->fields) {
+                if (field.name == callee->token.lexeme && field.type.kind == TypeKind::Function) {
+                    handleType = FindFuncdef(field.type.objectName);
+                    callee->inferredType = field.type;
+                    callee->implicitThis = true;
+                    CheckAccess(callee, field.access, field.objectType, "field", field.name);
+                    break;
+                }
+            }
+        }
+    } else if (callee->kind == NodeKind::Member && callee->firstChild) {
+        const DataType receiver = CheckExpression(callee->firstChild);
+        if (const ClassSignature* owner = FindClass(receiver.objectName)) {
+            for (const auto& field : owner->fields) {
+                if (field.name == callee->token.lexeme && field.type.kind == TypeKind::Function) {
+                    handleType = FindFuncdef(field.type.objectName);
+                    callee->inferredType = field.type;
+                    CheckAccess(callee, field.access, field.objectType, "field", field.name);
+                    break;
+                }
+            }
+        }
+    } else {
+        const DataType callable = CheckExpression(callee);
+        if (callable.kind == TypeKind::Function) handleType = FindFuncdef(callable.objectName);
+    }
     std::vector<DataType> arguments;
     std::vector<AstNode*> argumentNodes;
     std::vector<std::string> argumentNames;
     for (AstNode* argument = callee->nextSibling; argument; argument = argument->nextSibling) {
         AstNode* expression = argument->kind == NodeKind::NamedArgument ? argument->firstChild : argument;
-        const DataType type = CheckExpression(expression);
+        const std::size_t index = arguments.size();
+        const DataType type = CheckExpression(
+            expression, handleType && index < handleType->signature.parameters.size()
+                ? std::optional<DataType>{handleType->signature.parameters[index]}
+                : std::nullopt);
         argument->inferredType = type;
         arguments.push_back(type);
         argumentNodes.push_back(expression);
         argumentNames.push_back(argument->kind == NodeKind::NamedArgument ? argument->token.lexeme
                                                                           : std::string{});
+    }
+    if (handleType) {
+        const auto cost = MatchArguments(handleType->signature, arguments, argumentNames);
+        if (!cost) {
+            Error(node, "arguments do not match funcdef '" + handleType->name + "'");
+            return DataType::Invalid();
+        }
+        ValidateReferenceArguments(handleType->signature, argumentNodes, argumentNames);
+        node->returnsReference = handleType->signature.returnsReference;
+        node->returnReferenceConst = handleType->signature.returnReferenceConst;
+        return handleType->signature.returnType;
     }
     if (callee->kind == NodeKind::Identifier && callee->token.lexeme == "super") {
         if (!currentClass_ || !currentConstructor_ || currentClass_->baseClass.empty()) {
@@ -1475,6 +1560,8 @@ bool TypeChecker::ValidateReferenceArguments(
 
 bool TypeChecker::IsReadOnlyLValue(const AstNode* node) const {
     if (!node) return false;
+    if (node->kind == NodeKind::Unary && node->token.kind == TokenKind::At)
+        return IsReadOnlyLValue(node->firstChild);
     if (node->kind == NodeKind::Identifier) {
         const auto symbol = Lookup(node->token.lexeme);
         return symbol && symbol->isConst;
@@ -1501,6 +1588,60 @@ const ClassSignature* TypeChecker::FindClass(std::string_view name) const {
     for (const auto& candidate : NameCandidates(currentNamespace_, name))
         for (const auto& type : classes_) if (type.name == candidate) return &type;
     return nullptr;
+}
+
+const FuncdefSignature* TypeChecker::FindFuncdef(std::string_view name) const {
+    for (const auto& candidate : NameCandidates(currentNamespace_, name))
+        for (const auto& type : funcdefs_) if (type.name == candidate) return &type;
+    return nullptr;
+}
+
+const FunctionSignature* TypeChecker::ResolveFunctionAddress(
+    AstNode* node, std::optional<DataType> expected, bool reportErrors) {
+    if (!node || !node->firstChild || node->firstChild->kind != NodeKind::Identifier)
+        return nullptr;
+    const FuncdefSignature* required = expected && expected->kind == TypeKind::Function
+        ? FindFuncdef(expected->objectName) : nullptr;
+    if (expected && expected->kind == TypeKind::Function && !required) {
+        if (reportErrors) Error(node, "unknown funcdef type '" + expected->objectName + "'");
+        return nullptr;
+    }
+
+    const FunctionSignature* selected = nullptr;
+    const FuncdefSignature* selectedType = nullptr;
+    int bestCost = 1000000;
+    bool ambiguous = false;
+    for (const auto& function : functions_) {
+        if (function.method || function.constructor || function.destructor) continue;
+        const auto nameCost = NameMatchCost(function.name, node->firstChild->token.lexeme,
+                                            currentNamespace_);
+        if (!nameCost) continue;
+        for (const auto& funcdef : funcdefs_) {
+            if (required && funcdef.name != required->name) continue;
+            if (!SameCallableSignature(function, funcdef.signature)) continue;
+            if (*nameCost < bestCost) {
+                selected = &function;
+                selectedType = &funcdef;
+                bestCost = *nameCost;
+                ambiguous = false;
+            } else if (*nameCost == bestCost &&
+                       (selected != &function || selectedType != &funcdef)) {
+                ambiguous = true;
+            }
+        }
+    }
+    if (!selected || !selectedType || ambiguous) {
+        if (reportErrors) {
+            Error(node, ambiguous
+                ? "function address is ambiguous for '" + node->firstChild->token.lexeme + "'"
+                : "no function matching a funcdef for '" + node->firstChild->token.lexeme + "'");
+        }
+        return nullptr;
+    }
+    node->operatorMethod = selected->Declaration();
+    node->declaredType = DataType::Function(selectedType->name, true);
+    node->firstChild->inferredType = node->declaredType;
+    return selected;
 }
 
 bool TypeChecker::IsDerivedFrom(std::string_view derived, std::string_view base) const {

@@ -127,6 +127,7 @@ private:
     AstArena* arena_ = nullptr;
     std::unordered_set<std::string> enumTypes_;
     std::unordered_set<std::string> objectTypes_;
+    std::unordered_set<std::string> funcdefTypes_;
     std::unordered_map<std::string, DataType> typedefTypes_;
     std::string currentNamespace_;
 };

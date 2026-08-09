@@ -65,6 +65,8 @@ ScriptObject::ScriptObject(const TypeInfo* type, ObjectFinalizerQueue* finalizer
         case TypeKind::Double: fields_.emplace_back(0.0); break;
         case TypeKind::String: fields_.emplace_back(std::string{}); break;
         case TypeKind::Object: fields_.emplace_back(ObjectHandle{}); break;
+        case TypeKind::Function:
+            fields_.emplace_back(FunctionHandle{{}, {}, field.second.objectName, false}); break;
         default: fields_.emplace_back(); break;
         }
     }

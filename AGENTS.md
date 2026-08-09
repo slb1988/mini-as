@@ -143,10 +143,10 @@ Do not stage generated build directories or unrelated user changes. Inspect
 The completed stage notes are authoritative. At the time this guide was added,
 the latest language stage is:
 
-- Stage 51: global and namespace funcdef declarations with stable metadata.
+- Stage 52: typed function handles for global script and registered host functions.
 
 The v0.3 compatibility matrix is published. The next planned language feature
-is v0.4 function handles, followed by delegates. Confirm the
+is v0.4 delegates, followed by anonymous functions and captured locals. Confirm the
 latest git history and `docs/stages/` before choosing the next stage number.
 
 ## Common pitfalls

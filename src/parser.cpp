@@ -100,6 +100,16 @@ Parser::Parser(std::vector<Token> tokens, DiagnosticSink& diagnostics)
             if (primitive && tokens_[index + 2].kind == TokenKind::Identifier)
                 typedefTypes_[JoinName(active, tokens_[index + 2].lexeme)] = *primitive;
         }
+        if (tokens_[index].kind == TokenKind::KwFuncdef) {
+            for (std::size_t cursor = index + 1; cursor < tokens_.size() &&
+                 tokens_[cursor].kind != TokenKind::Semicolon; ++cursor) {
+                if (tokens_[cursor].kind == TokenKind::LeftParen && cursor > index + 1 &&
+                    tokens_[cursor - 1].kind == TokenKind::Identifier) {
+                    funcdefTypes_.insert(JoinName(active, tokens_[cursor - 1].lexeme));
+                    break;
+                }
+            }
+        }
     }
 }
 
@@ -688,8 +698,9 @@ DataType Parser::ParseType(bool allowVoid) {
         const std::string name = ResolveTypeName(identifier.lexeme);
         const auto alias = typedefTypes_.find(name);
         if (alias != typedefTypes_.end()) type = alias->second;
-        else type = enumTypes_.find(name) != enumTypes_.end() ? DataType::Enum(name)
-                                                              : DataType::Object(name);
+        else if (enumTypes_.find(name) != enumTypes_.end()) type = DataType::Enum(name);
+        else if (funcdefTypes_.find(name) != funcdefTypes_.end()) type = DataType::Function(name, false);
+        else type = DataType::Object(name);
     }
     else { Error(Current(), "expected type"); return DataType::Invalid(); }
     if (Match(TokenKind::At)) type.isHandle = true;
@@ -728,6 +739,7 @@ std::string Parser::ResolveTypeName(std::string_view name) const {
         const std::string candidate = JoinName(scope, name);
         if (enumTypes_.find(candidate) != enumTypes_.end() ||
             objectTypes_.find(candidate) != objectTypes_.end() ||
+            funcdefTypes_.find(candidate) != funcdefTypes_.end() ||
             typedefTypes_.find(candidate) != typedefTypes_.end()) return candidate;
         if (scope.empty()) break;
         const auto separator = scope.rfind("::");

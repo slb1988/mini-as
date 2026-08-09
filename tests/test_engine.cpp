@@ -1677,3 +1677,94 @@ TEST_CASE(funcdef_declarations_reject_duplicates_conflicts_and_defaults) {
     CHECK(defaultArgument);
 }
 
+TEST_CASE(function_handles_store_reassign_pass_and_invoke_global_functions) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("function-handles");
+    module->AddScriptSection("function-handles",
+        "funcdef int Binary(int, int); "
+        "int add(int a, int b) { return a + b; } "
+        "int multiply(int a, int b) { return a * b; } "
+        "int apply(Binary@ callback, int a, int b) { return callback(a, b); } "
+        "int run() { Binary@ callback = @add; int first = callback(2, 3); "
+        "@callback = @multiply; return first + apply(callback, 4, 5); }");
+    CHECK(module->Build());
+    bool emittedHandleCall = false;
+    for (const auto& function : module->Bytecode().functions)
+        for (const auto& instruction : function.code)
+            emittedHandleCall = emittedHandleCall || instruction.opcode == mini_as::OpCode::CallHandle;
+    CHECK(emittedHandleCall);
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 25);
+}
+
+TEST_CASE(function_handles_invoke_registered_host_functions) {
+    auto engine = mini_as::CreateScriptEngine();
+    CHECK(engine->RegisterGlobalFunction("int hostAdd(int, int)", [](mini_as::GenericCall& call) {
+        call.SetReturnInt(call.GetArgInt(0) + call.GetArgInt(1));
+    }));
+    auto* module = engine->GetModule("host-function-handle");
+    module->AddScriptSection("host-function-handle",
+        "funcdef int Binary(int, int); "
+        "int run() { Binary@ callback = @hostAdd; return callback(20, 22); }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+}
+
+TEST_CASE(function_handles_work_in_module_globals_and_object_fields) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("stored-function-handles");
+    module->AddScriptSection("stored-function-handles",
+        "funcdef int Binary(int, int); "
+        "int add(int a, int b) { return a + b; } "
+        "int multiply(int a, int b) { return a * b; } "
+        "Binary@ globalCallback = @add; "
+        "class Holder { Binary@ callback = @multiply; "
+        "int invoke() { return callback(6, 7); } } "
+        "int run() { Holder@ holder = Holder(); return globalCallback(20, 22) + holder.invoke(); }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 84);
+}
+
+TEST_CASE(function_handles_reject_signature_mismatches) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    auto* module = engine->GetModule("bad-function-handle");
+    module->AddScriptSection("bad-function-handle",
+        "funcdef int Unary(int); int add(int a, int b) { return a + b; } "
+        "int run() { Unary@ callback = @add; return 0; }");
+    CHECK(!module->Build());
+    bool mismatch = false;
+    for (const auto& diagnostic : diagnostics)
+        mismatch = mismatch || diagnostic.message.find("no function matching a funcdef") != std::string::npos;
+    CHECK(mismatch);
+}
+
+TEST_CASE(null_function_handle_calls_report_the_call_location) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("null-function-handle");
+    module->AddScriptSection("null-function-handle",
+        "funcdef int Unary(int);\n"
+        "int run() {\n"
+        "  Unary@ callback;\n"
+        "  if (!(callback is null)) return -1;\n"
+        "  return callback(42);\n"
+        "}\n");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Exception);
+    CHECK(context->GetExceptionString().find("null function handle") != std::string::npos);
+    CHECK(context->GetExceptionLocation().row == 5);
+}
+

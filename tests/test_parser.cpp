@@ -345,3 +345,19 @@ TEST_CASE(parser_builds_funcdef_signatures_with_optional_parameter_names) {
     CHECK(parameters[1]->parameterMode == mini_as::ParameterMode::Out);
 }
 
+TEST_CASE(parser_recognizes_funcdef_handle_types_and_function_addresses) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("function-handles",
+        "funcdef int Unary(int); int identity(int value) { return value; } "
+        "int run() { Unary@ callback = @identity; return callback(42); }", diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    CHECK(!diagnostics.HasErrors());
+    const auto declarations = tree.root->Children();
+    const auto body = declarations[2]->firstChild;
+    const auto variable = body->firstChild;
+    CHECK(variable->declaredType == mini_as::DataType::Function("Unary", true));
+    CHECK(variable->firstChild->kind == mini_as::NodeKind::Unary);
+    CHECK(variable->firstChild->token.kind == mini_as::TokenKind::At);
+}
+

@@ -13,6 +13,7 @@ Value DefaultGlobalValue(const DataType& type) {
     if (type == DataType::Double()) return Value(0.0);
     if (type == DataType::String()) return Value(std::string{});
     if (type.kind == TypeKind::Object) return Value(ObjectHandle{});
+    if (type.kind == TypeKind::Function) return Value(FunctionHandle{{}, {}, type.objectName, false});
     return Value{};
 }
 

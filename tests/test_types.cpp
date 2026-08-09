@@ -83,6 +83,20 @@ TEST_CASE(type_checker_exposes_funcdef_signature_metadata) {
     CHECK(funcdef.signature.parameterModes[1] == mini_as::ParameterMode::InOut);
 }
 
+TEST_CASE(type_checker_resolves_function_addresses_against_funcdef_signatures) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("function-handle-types",
+        "funcdef int Unary(int); int identity(int value) { return value; } "
+        "int run() { Unary@ callback = @identity; return callback(42); }", diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    mini_as::TypeChecker checker(diagnostics);
+    CHECK(checker.Check(tree.root));
+    const auto variable = tree.root->Children()[2]->firstChild->firstChild;
+    CHECK(variable->declaredType == mini_as::DataType::Function("Unary", true));
+    CHECK(variable->firstChild->inferredType == mini_as::DataType::Function("Unary", true));
+}
+
 TEST_CASE(type_checker_resolves_current_parent_and_explicit_namespaces) {
     mini_as::DiagnosticSink diagnostics;
     mini_as::Tokenizer tokenizer("types",

@@ -107,7 +107,7 @@ std::string_view OpCodeName(OpCode opcode) {
         "ADD_D", "SUB_D", "MUL_D", "DIV_D", "POW_D",
         "CONCAT", "NEG_I", "NEG_F", "NEG_D", "BIT_NOT", "NOT",
         "EQ", "NE", "LT", "LE", "GT", "GE", "JMP", "JZ", "CALL", "CALL_HOST",
-        "CALL_VIRTUAL", "CAST_OBJECT", "NEW_OBJECT", "LOAD_FIELD", "STORE_FIELD",
+        "CALL_VIRTUAL", "CALL_HANDLE", "CAST_OBJECT", "NEW_OBJECT", "LOAD_FIELD", "STORE_FIELD",
         "MAKE_GLOBAL_REF", "MAKE_FIELD_REF", "LOAD_REF", "STORE_REF", "RET"
     };
     return names[static_cast<std::size_t>(opcode)];
@@ -126,6 +126,7 @@ std::string Disassemble(const BytecodeFunction& function) {
             instruction.opcode == OpCode::ToInteger ||
             instruction.opcode == OpCode::JumpIfFalse || instruction.opcode == OpCode::Call ||
             instruction.opcode == OpCode::CallHost || instruction.opcode == OpCode::CallVirtual ||
+            instruction.opcode == OpCode::CallHandle ||
             instruction.opcode == OpCode::CastObject ||
             instruction.opcode == OpCode::NewObject ||
             instruction.opcode == OpCode::LoadField || instruction.opcode == OpCode::StoreField ||
@@ -448,7 +449,7 @@ void BytecodeCompiler::CompileStatement(AstNode* node) {
     case NodeKind::VarDecl: {
         const auto slot = DeclareLocal(node->token);
         if (node->firstChild) CompileExpression(node->firstChild);
-        else Emit(OpCode::PushVoid, 0, node);
+        else EmitDefaultValue(node->declaredType, node);
         if (node->firstChild) EmitConversion(node->firstChild->inferredType, node->declaredType, node);
         Emit(OpCode::StoreLocal, static_cast<std::int32_t>(slot.value), node);
         break;
@@ -695,6 +696,24 @@ void BytecodeCompiler::CompileExpression(AstNode* node) {
         break;
     case NodeKind::Unary:
         if (!node->operatorMethod.empty()) {
+            if (node->token.kind == TokenKind::At &&
+                node->inferredType.kind == TypeKind::Function) {
+                const FuncdefSignature* funcdef = nullptr;
+                for (const auto& candidate : module_.funcdefs)
+                    if (candidate.name == node->inferredType.objectName) funcdef = &candidate;
+                const auto script = functionIds_.find(node->operatorMethod);
+                const auto host = hostIds_.find(node->operatorMethod);
+                if (!funcdef || (script == functionIds_.end() && host == hostIds_.end())) {
+                    Error(node, "function address target is unavailable");
+                    break;
+                }
+                const bool isHost = host != hostIds_.end();
+                const FunctionId target = isHost ? host->second : script->second;
+                Emit(OpCode::PushConst,
+                     AddConstant(Value(FunctionHandle{target, funcdef->id,
+                                                      funcdef->name, isHost})), node);
+                break;
+            }
             CompileOperatorCall(node, node->firstChild);
             break;
         }
@@ -733,6 +752,8 @@ void BytecodeCompiler::CompileExpression(AstNode* node) {
 
 std::optional<BytecodeCompiler::LValueRef> BytecodeCompiler::ResolveLValue(AstNode* expression) const {
     if (!expression) return std::nullopt;
+    if (expression->kind == NodeKind::Unary && expression->token.kind == TokenKind::At)
+        return ResolveLValue(expression->firstChild);
     if (expression->kind == NodeKind::Identifier) {
         const auto local = LookupLocal(expression->token.lexeme);
         if (local) {
@@ -1280,6 +1301,30 @@ void BytecodeCompiler::CompileCall(AstNode* node, bool dereferenceResult) {
         CompileCall(&call, dereferenceResult);
         return;
     }
+    if (callee && callee->inferredType.kind == TypeKind::Function) {
+        const FuncdefSignature* funcdef = nullptr;
+        for (const auto& candidate : module_.funcdefs)
+            if (candidate.name == callee->inferredType.objectName) funcdef = &candidate;
+        if (!funcdef) { Error(node, "funcdef call signature is unavailable"); return; }
+        std::vector<AstNode*> arguments;
+        for (AstNode* argument = callee->nextSibling; argument; argument = argument->nextSibling)
+            arguments.push_back(argument);
+        const auto ordered = OrderArguments(funcdef->signature, arguments);
+        if (!ordered) { Error(node, "function handle arguments cannot be ordered"); return; }
+        CompileExpression(callee);
+        ReferenceReceiverMap referenceReceivers;
+        for (std::size_t index = 0; index < ordered->size(); ++index) {
+            if (!(*ordered)[index]) { Error(node, "function handle argument is missing"); return; }
+            CompileCallArgument(funcdef->signature, index, (*ordered)[index], referenceReceivers);
+        }
+        Emit(OpCode::CallHandle,
+             AddCallable({CallableKind::FunctionHandle, {}, funcdef->id, 0,
+                          static_cast<std::uint32_t>(funcdef->signature.parameters.size())}), node);
+        CompileReferenceWritebacks(funcdef->signature, *ordered, referenceReceivers, node);
+        if (funcdef->signature.returnsReference && dereferenceResult)
+            Emit(OpCode::LoadReference, 0, node);
+        return;
+    }
     if (!callee || (callee->kind != NodeKind::Identifier && callee->kind != NodeKind::Member)) {
         Error(node, "callee cannot be compiled"); return;
     }
@@ -1659,13 +1704,24 @@ void BytecodeCompiler::EmitDefaultValue(const DataType& type, const AstNode* sou
     else if (type == DataType::String()) Emit(OpCode::PushConst, AddConstant(Value("")), source);
     else if (type.kind == TypeKind::Object)
         Emit(OpCode::PushConst, AddConstant(Value(ObjectHandle{})), source);
+    else if (type.kind == TypeKind::Function) {
+        TypeId signature;
+        for (const auto& funcdef : module_.funcdefs)
+            if (funcdef.name == type.objectName) signature = funcdef.id;
+        Emit(OpCode::PushConst,
+             AddConstant(Value(FunctionHandle{{}, signature, type.objectName, false})), source);
+    }
     else Emit(OpCode::PushVoid, 0, source);
 }
 
 void BytecodeCompiler::EmitConversion(const DataType& from, const DataType& to,
                                       const AstNode* source) {
     if (from == to) return;
-    if ((from.IsInteger() || from == DataType::Float() || from == DataType::Double()) &&
+    if (from.kind == TypeKind::Object && from.objectName == "<null>" &&
+        to.kind == TypeKind::Function) {
+        Emit(OpCode::Pop, 0, source);
+        EmitDefaultValue(to, source);
+    } else if ((from.IsInteger() || from == DataType::Float() || from == DataType::Double()) &&
         to.IsInteger()) {
         Emit(OpCode::ToInteger, static_cast<std::int32_t>(to.kind), source);
     } else if (from.IsInteger() && to == DataType::Float()) {

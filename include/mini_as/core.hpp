@@ -1,5 +1,7 @@
 #pragma once
 
+#include "mini_as/symbols.hpp"
+
 #include <cstdint>
 #include <functional>
 #include <stdexcept>
@@ -63,7 +65,7 @@ enum class TypeKind {
     Void, Bool,
     Int8, Int16, Int, Int64,
     UInt8, UInt16, UInt, UInt64,
-    Float, Double, String, Enum, Object, Invalid
+    Float, Double, String, Enum, Object, Function, Invalid
 };
 
 struct DataType {
@@ -88,6 +90,7 @@ struct DataType {
     static DataType String();
     static DataType Enum(std::string name);
     static DataType Object(std::string name, bool handle = false);
+    static DataType Function(std::string name, bool handle = true);
     static DataType Invalid();
 
     std::string Name() const;
@@ -123,10 +126,22 @@ struct IntegerStorage {
 
 bool operator==(const IntegerStorage& left, const IntegerStorage& right);
 
+struct FunctionHandle {
+    FunctionId function;
+    TypeId signature;
+    std::string typeName;
+    bool host = false;
+
+    explicit operator bool() const { return function.IsValid(); }
+};
+
+bool operator==(const FunctionHandle& left, const FunctionHandle& right);
+
 class Value {
 public:
     using Storage = std::variant<std::monostate, bool, std::int32_t, IntegerStorage,
-                                 float, double, std::string, ObjectHandle, ReferenceStorage>;
+                                 float, double, std::string, ObjectHandle, FunctionHandle,
+                                 ReferenceStorage>;
 
     Value() = default;
     explicit Value(bool value);
@@ -136,6 +151,7 @@ public:
     explicit Value(std::string value);
     explicit Value(const char* value);
     explicit Value(ObjectHandle value);
+    explicit Value(FunctionHandle value);
     explicit Value(ReferenceStorage value);
 
     static Value Integer(const DataType& type, std::uint64_t bits);

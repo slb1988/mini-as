@@ -26,6 +26,10 @@ double AsDouble(const Value& value) {
 }
 
 bool ValuesEqual(const Value& left, const Value& right) {
+    if (left.Type().kind == TypeKind::Function && right.Type().kind == TypeKind::Object &&
+        right.Type().objectName == "<null>") return !left.As<FunctionHandle>();
+    if (right.Type().kind == TypeKind::Function && left.Type().kind == TypeKind::Object &&
+        left.Type().objectName == "<null>") return !right.As<FunctionHandle>();
     if (left.Type().IsInteger() && right.Type().IsInteger()) {
         if (left.Type().IsSignedInteger() && right.Type().IsSignedInteger())
             return left.SignedInteger() == right.SignedInteger();
@@ -379,6 +383,55 @@ bool VirtualMachine::Step() {
         const BytecodeFunction* target = module_->ResolveVirtual(
             receiver.Get()->GetTypeInfo()->id, callable->objectType, callable->virtualSlot);
         if (!target) throw std::runtime_error("virtual method implementation is unavailable");
+        callStack_.push_back({function_, pc_, std::move(locals_), stackBase_});
+        function_ = target;
+        pc_ = 0;
+        stackBase_ = stack_.size();
+        locals_.assign(target->localCount, Value{});
+        for (std::size_t i = 0; i < arguments.size(); ++i) locals_[i] = std::move(arguments[i]);
+        break;
+    }
+    case OpCode::CallHandle: {
+        if (!module_ || instruction.operand < 0)
+            throw std::runtime_error("function handle call target is unavailable");
+        const CallableRef* callable = module_->FindCallable(static_cast<std::size_t>(instruction.operand));
+        if (!callable || callable->kind != CallableKind::FunctionHandle)
+            throw std::runtime_error("call descriptor kind does not match opcode");
+        std::vector<Value> arguments(static_cast<std::size_t>(callable->parameterCount));
+        for (std::size_t i = arguments.size(); i > 0; --i) arguments[i - 1] = Pop();
+        const FunctionHandle handle = Pop().As<FunctionHandle>();
+        if (!handle) throw std::runtime_error("null function handle invocation");
+        if (handle.signature != callable->objectType)
+            throw std::runtime_error("function handle signature mismatch");
+        if (handle.host) {
+            const auto* target = module_->FindHostFunction(handle.function);
+            if (!target) throw std::runtime_error("host function handle target is unavailable");
+            GenericCall call(arguments);
+            try { target->callback(call); }
+            catch (const std::exception& error) {
+                throw std::runtime_error(std::string("host exception: ") + error.what());
+            }
+            if (!call.Exception().empty()) throw std::runtime_error(call.Exception());
+            if (call.ReturnValue().Type() != target->signature.returnType) {
+                throw std::runtime_error("host function returned " + call.ReturnValue().Type().Name() +
+                                         " but declared " + target->signature.returnType.Name());
+            }
+            Push(call.ReturnValue());
+            for (std::size_t index = 0; index < target->signature.parameters.size(); ++index) {
+                const ParameterMode mode = ParameterModeAt(target->signature, index);
+                if (mode == ParameterMode::Out || mode == ParameterMode::InOut) {
+                    if (!MatchesDeclaredType(arguments[index], target->signature.parameters[index]))
+                        throw std::runtime_error("host function handle wrote an incompatible output value");
+                    Push(std::move(arguments[index]));
+                }
+            }
+            break;
+        }
+        if (callStack_.size() >= 1024) throw std::runtime_error("script call stack overflow");
+        const BytecodeFunction* target = module_->FindFunction(handle.function);
+        if (!target) throw std::runtime_error("script function handle target is unavailable");
+        if (target->signature.parameters.size() != arguments.size())
+            throw std::runtime_error("function handle argument count mismatch");
         callStack_.push_back({function_, pc_, std::move(locals_), stackBase_});
         function_ = target;
         pc_ = 0;

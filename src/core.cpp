@@ -48,6 +48,9 @@ DataType DataType::Enum(std::string name) { return {TypeKind::Enum, std::move(na
 DataType DataType::Object(std::string name, bool handle) {
     return {TypeKind::Object, std::move(name), handle};
 }
+DataType DataType::Function(std::string name, bool handle) {
+    return {TypeKind::Function, std::move(name), handle};
+}
 DataType DataType::Invalid() { return {}; }
 
 std::string DataType::Name() const {
@@ -67,6 +70,7 @@ std::string DataType::Name() const {
     case TypeKind::String: return "string";
     case TypeKind::Enum: return objectName;
     case TypeKind::Object: return objectName + (isHandle ? "@" : "");
+    case TypeKind::Function: return objectName + (isHandle ? "@" : "");
     case TypeKind::Invalid: return "<invalid>";
     }
     return "<invalid>";
@@ -125,6 +129,11 @@ bool operator==(const ReferenceStorage& left, const ReferenceStorage& right) {
            left.object == right.object;
 }
 
+bool operator==(const FunctionHandle& left, const FunctionHandle& right) {
+    return left.function == right.function && left.signature == right.signature &&
+           left.typeName == right.typeName && left.host == right.host;
+}
+
 Value::Value(bool value) : storage_(value) {}
 Value::Value(std::int32_t value) : storage_(value) {}
 Value::Value(float value) : storage_(value) {}
@@ -132,6 +141,7 @@ Value::Value(double value) : storage_(value) {}
 Value::Value(std::string value) : storage_(std::move(value)) {}
 Value::Value(const char* value) : storage_(std::string(value)) {}
 Value::Value(ObjectHandle value) : storage_(std::move(value)) {}
+Value::Value(FunctionHandle value) : storage_(std::move(value)) {}
 Value::Value(ReferenceStorage value) : storage_(std::move(value)) {}
 
 Value Value::Integer(const DataType& type, std::uint64_t bits) {
@@ -161,7 +171,11 @@ DataType Value::Type() const {
         return handle ? DataType::Object(handle.Get()->GetTypeInfo()->name, true)
                       : DataType::Object("<null>", true);
     }
-    case 8: return std::get<ReferenceStorage>(storage_).type;
+    case 8: {
+        const auto& handle = std::get<FunctionHandle>(storage_);
+        return DataType::Function(handle.typeName, true);
+    }
+    case 9: return std::get<ReferenceStorage>(storage_).type;
     default: return DataType::Invalid();
     }
 }
@@ -205,6 +219,8 @@ std::string Value::ToString() const {
     }
     if (const auto* value = std::get_if<std::string>(&storage_)) return *value;
     if (std::holds_alternative<ReferenceStorage>(storage_)) return "<reference>";
+    if (const auto* handle = std::get_if<FunctionHandle>(&storage_))
+        return *handle ? "<" + handle->typeName + "@>" : "null";
     const auto& handle = std::get<ObjectHandle>(storage_);
     return handle ? "<" + handle.Get()->GetTypeInfo()->name + "@>" : "null";
 }

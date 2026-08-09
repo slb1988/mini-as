@@ -77,3 +77,120 @@ TEST_CASE(generic_call_writes_out_and_inout_arguments_back_to_script) {
     CHECK(context->GetReturnInt() == 42);
 }
 
+TEST_CASE(global_property_declaration_parser_preserves_type_name_and_constness) {
+    mini_as::DiagnosticSink diagnostics;
+    const auto mutableProperty = mini_as::ParseGlobalPropertyDeclaration(
+        "uint64 ticks", diagnostics);
+    const auto constantProperty = mini_as::ParseGlobalPropertyDeclaration(
+        "const string applicationName", diagnostics);
+    CHECK(mutableProperty.has_value());
+    CHECK(mutableProperty->name == "ticks");
+    CHECK(mutableProperty->type == mini_as::DataType::UInt64());
+    CHECK(mutableProperty->host);
+    CHECK(!mutableProperty->isConst);
+    CHECK(constantProperty.has_value());
+    CHECK(constantProperty->name == "applicationName");
+    CHECK(constantProperty->type == mini_as::DataType::String());
+    CHECK(constantProperty->isConst);
+    CHECK(!mini_as::ParseGlobalPropertyDeclaration("void missing", diagnostics).has_value());
+    CHECK(!mini_as::ParseGlobalPropertyDeclaration("int value = 1", diagnostics).has_value());
+}
+
+TEST_CASE(registered_global_properties_are_live_and_support_reference_writeback) {
+    auto engine = mini_as::CreateScriptEngine();
+    mini_as::Value counter(std::int32_t{40});
+    CHECK(engine->RegisterGlobalProperty("int hostCounter", &counter));
+    CHECK(engine->RegisterGlobalFunction("void Set(int &out value)",
+        [](mini_as::GenericCall& call) { call.SetArgInt(0, 42); }));
+    auto* module = engine->GetModule("host-properties");
+    module->AddScriptSection("host-properties",
+        "int read() { return hostCounter; } "
+        "int update() { hostCounter += 1; Set(hostCounter); return hostCounter; }");
+    CHECK(module->Build());
+
+    counter = mini_as::Value(std::int32_t{41});
+    auto readContext = engine->CreateContext();
+    CHECK(readContext->Prepare(module->GetFunctionByDecl("int read()")));
+    CHECK(readContext->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(readContext->GetReturnInt() == 41);
+
+    auto updateContext = engine->CreateContext();
+    CHECK(updateContext->Prepare(module->GetFunctionByDecl("int update()")));
+    CHECK(updateContext->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(updateContext->GetReturnInt() == 42);
+    CHECK(counter.As<std::int32_t>() == 42);
+}
+
+TEST_CASE(registered_global_properties_validate_declarations_storage_and_names) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    mini_as::Value integer(std::int32_t{1});
+    mini_as::Value text("mini-as");
+    CHECK(!engine->RegisterGlobalProperty("not a declaration", &integer));
+    CHECK(!engine->RegisterGlobalProperty("int nullStorage", nullptr));
+    CHECK(!engine->RegisterGlobalProperty("int wrongType", &text));
+    CHECK(engine->RegisterGlobalProperty("int shared", &integer));
+    CHECK(!engine->RegisterGlobalProperty("int shared", &integer));
+    CHECK(diagnostics.size() >= 4);
+}
+
+TEST_CASE(const_registered_global_properties_reject_assignment) {
+    auto engine = mini_as::CreateScriptEngine();
+    mini_as::Value limit(std::int32_t{42});
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    CHECK(engine->RegisterGlobalProperty("const int hostLimit", &limit));
+    auto* module = engine->GetModule("const-host-property");
+    module->AddScriptSection("const-host-property",
+        "int run() { hostLimit = 1; return hostLimit; }");
+    CHECK(!module->Build());
+    bool protectedAssignment = false;
+    for (const auto& diagnostic : diagnostics)
+        protectedAssignment = protectedAssignment ||
+            diagnostic.message.find("cannot assign to const variable") != std::string::npos;
+    CHECK(protectedAssignment);
+}
+
+TEST_CASE(script_globals_cannot_shadow_registered_global_properties) {
+    auto engine = mini_as::CreateScriptEngine();
+    mini_as::Value counter(std::int32_t{40});
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    CHECK(engine->RegisterGlobalProperty("int hostCounter", &counter));
+    auto* module = engine->GetModule("host-property-collision");
+    module->AddScriptSection("host-property-collision", "int hostCounter = 1;");
+    CHECK(!module->Build());
+    bool duplicate = false;
+    for (const auto& diagnostic : diagnostics)
+        duplicate = duplicate ||
+            diagnostic.message.find("duplicate variable 'hostCounter'") != std::string::npos;
+    CHECK(duplicate);
+}
+
+TEST_CASE(registered_global_property_type_drift_reports_script_location) {
+    auto engine = mini_as::CreateScriptEngine();
+    mini_as::Value counter(std::int32_t{40});
+    CHECK(engine->RegisterGlobalProperty("int hostCounter", &counter));
+    auto* module = engine->GetModule("host-property-drift");
+    module->AddScriptSection("host-property-drift",
+        "int run() {\n"
+        "  return hostCounter;\n"
+        "}\n");
+    CHECK(module->Build());
+    counter = mini_as::Value("wrong type");
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Exception);
+    CHECK(context->GetExceptionString().find("registered global property type changed") !=
+        std::string::npos);
+    CHECK(context->GetExceptionLocation().section == "host-property-drift");
+    CHECK(context->GetExceptionLocation().row == 2);
+}
+

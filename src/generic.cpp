@@ -2,6 +2,7 @@
 
 #include "mini_as/tokenizer.hpp"
 
+#include <algorithm>
 #include <utility>
 
 namespace mini_as {
@@ -129,6 +130,34 @@ std::optional<FunctionSignature> ParseFunctionDeclaration(
     ++index;
     if (index < tokens.size() && tokens[index].kind != TokenKind::End) {
         diagnostics.Report(tokens[index].location, Severity::Error, "unexpected text after declaration");
+        return std::nullopt;
+    }
+    return signature;
+}
+
+std::optional<GlobalSignature> ParseGlobalPropertyDeclaration(
+    std::string_view declaration, DiagnosticSink& diagnostics) {
+    Tokenizer tokenizer("registration", declaration, diagnostics);
+    const auto tokens = tokenizer.ScanAll();
+    if (diagnostics.HasErrors()) return std::nullopt;
+    std::size_t index = 0;
+    GlobalSignature signature;
+    signature.host = true;
+    if (index < tokens.size() && tokens[index].kind == TokenKind::KwConst) {
+        signature.isConst = true;
+        ++index;
+    }
+    signature.type = ReadType(tokens, index);
+    if (!signature.type.IsValid() || signature.type == DataType::Void() ||
+        index >= tokens.size() || tokens[index].kind != TokenKind::Identifier) {
+        diagnostics.Report(tokens[std::min(index, tokens.size() - 1)].location, Severity::Error,
+                           "invalid global property declaration");
+        return std::nullopt;
+    }
+    signature.name = tokens[index++].lexeme;
+    if (index >= tokens.size() || tokens[index].kind != TokenKind::End) {
+        diagnostics.Report(tokens[std::min(index, tokens.size() - 1)].location, Severity::Error,
+                           "unexpected text after global property declaration");
         return std::nullopt;
     }
     return signature;

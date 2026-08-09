@@ -10,6 +10,7 @@
 namespace mini_as {
 
 struct RegisteredHostFunction;
+struct RegisteredHostProperty;
 
 enum class OpCode : std::uint8_t {
     Nop, Suspend,
@@ -81,6 +82,7 @@ struct VirtualDispatchEntry {
 
 struct GlobalBinding {
     GlobalSignature signature;
+    const RegisteredHostProperty* host = nullptr;
 };
 
 struct ModuleState {

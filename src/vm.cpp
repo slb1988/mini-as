@@ -123,6 +123,38 @@ std::uint64_t UnsignedPower(std::uint64_t base, std::uint64_t exponent) {
     return result;
 }
 
+Value LoadGlobalValue(const BytecodeModule& module, ModuleState& state, GlobalId id) {
+    const auto index = module.FindGlobalIndex(id);
+    if (!index || *index >= state.globals.size())
+        throw std::runtime_error("global slot is unavailable");
+    const auto& binding = module.globals[*index];
+    if (!binding.host) return state.globals[*index];
+    if (!binding.host->storage)
+        throw std::runtime_error("registered global property storage is unavailable");
+    if (binding.host->storage->Type() != binding.signature.type)
+        throw std::runtime_error("registered global property type changed");
+    return *binding.host->storage;
+}
+
+void StoreGlobalValue(const BytecodeModule& module, ModuleState& state, GlobalId id, Value value) {
+    const auto index = module.FindGlobalIndex(id);
+    if (!index || *index >= state.globals.size())
+        throw std::runtime_error("global slot is unavailable");
+    const auto& binding = module.globals[*index];
+    if (binding.signature.isConst && binding.host)
+        throw std::runtime_error("cannot write const global property");
+    if (!binding.host) {
+        state.globals[*index] = std::move(value);
+        return;
+    }
+    if (!binding.host->storage)
+        throw std::runtime_error("registered global property storage is unavailable");
+    if (binding.host->storage->Type() != binding.signature.type ||
+        value.Type() != binding.signature.type)
+        throw std::runtime_error("registered global property type changed");
+    *binding.host->storage = std::move(value);
+}
+
 } // namespace
 
 bool VirtualMachine::Prepare(const BytecodeFunction& function, const std::vector<Value>& arguments,
@@ -281,19 +313,15 @@ bool VirtualMachine::Step() {
     case OpCode::LoadGlobal: {
         if (!module_ || !moduleState_ || instruction.operand < 0)
             throw std::runtime_error("module global state is unavailable");
-        const auto index = module_->FindGlobalIndex(GlobalId{static_cast<std::uint32_t>(instruction.operand)});
-        if (!index || *index >= moduleState_->globals.size())
-            throw std::runtime_error("global slot is unavailable");
-        Push(moduleState_->globals[*index]);
+        Push(LoadGlobalValue(*module_, *moduleState_,
+                             GlobalId{static_cast<std::uint32_t>(instruction.operand)}));
         break;
     }
     case OpCode::StoreGlobal: {
         if (!module_ || !moduleState_ || instruction.operand < 0)
             throw std::runtime_error("module global state is unavailable");
-        const auto index = module_->FindGlobalIndex(GlobalId{static_cast<std::uint32_t>(instruction.operand)});
-        if (!index || *index >= moduleState_->globals.size())
-            throw std::runtime_error("global slot is unavailable");
-        moduleState_->globals[*index] = Pop();
+        StoreGlobalValue(*module_, *moduleState_,
+                         GlobalId{static_cast<std::uint32_t>(instruction.operand)}, Pop());
         break;
     }
     case OpCode::Dup: { Value value = Pop(); Push(value); Push(std::move(value)); break; }
@@ -659,9 +687,7 @@ bool VirtualMachine::Step() {
         const auto reference = Pop().As<ReferenceStorage>();
         if (reference.kind == ReferenceKind::Global) {
             if (!module_ || !moduleState_) throw std::runtime_error("global reference is unavailable");
-            const auto index = module_->FindGlobalIndex(GlobalId{reference.slot});
-            if (!index) throw std::runtime_error("global reference is unavailable");
-            Push(moduleState_->globals.at(*index));
+            Push(LoadGlobalValue(*module_, *moduleState_, GlobalId{reference.slot}));
         } else {
             auto* object = reference.object ? dynamic_cast<ScriptObject*>(reference.object.Get()) : nullptr;
             if (!object) throw std::runtime_error("field reference is unavailable");
@@ -674,9 +700,7 @@ bool VirtualMachine::Step() {
         const auto reference = Pop().As<ReferenceStorage>();
         if (reference.kind == ReferenceKind::Global) {
             if (!module_ || !moduleState_) throw std::runtime_error("global reference is unavailable");
-            const auto index = module_->FindGlobalIndex(GlobalId{reference.slot});
-            if (!index) throw std::runtime_error("global reference is unavailable");
-            moduleState_->globals.at(*index) = stored;
+            StoreGlobalValue(*module_, *moduleState_, GlobalId{reference.slot}, stored);
         } else {
             auto* object = reference.object ? dynamic_cast<ScriptObject*>(reference.object.Get()) : nullptr;
             if (!object) throw std::runtime_error("field reference is unavailable");

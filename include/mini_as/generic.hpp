@@ -49,7 +49,14 @@ struct RegisteredHostFunction {
     GenericFunction callback;
 };
 
+struct RegisteredHostProperty {
+    GlobalSignature signature;
+    Value* storage = nullptr;
+};
+
 std::optional<FunctionSignature> ParseFunctionDeclaration(
+    std::string_view declaration, DiagnosticSink& diagnostics);
+std::optional<GlobalSignature> ParseGlobalPropertyDeclaration(
     std::string_view declaration, DiagnosticSink& diagnostics);
 
 } // namespace mini_as

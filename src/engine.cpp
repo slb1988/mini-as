@@ -48,6 +48,8 @@ bool ScriptModule::Build() {
     auto tree = parser.Parse();
     TypeChecker checker(diagnostics);
     for (const auto& signature : engine_.HostSignatures()) checker.RegisterFunction(signature);
+    for (const auto& signature : engine_.HostPropertySignatures())
+        checker.RegisterGlobalProperty(signature);
     const bool typed = !diagnostics.HasErrors() && checker.Check(tree.root);
     if (!typed) return false;
     auto functions = checker.Functions();
@@ -67,8 +69,10 @@ bool ScriptModule::Build() {
         }
     }
     auto globals = checker.Globals();
-    for (auto& global : globals)
-        global.id = engine_.GetOrCreateGlobalId(name_ + "\n" + global.name);
+    for (auto& global : globals) {
+        if (!global.id.IsValid())
+            global.id = engine_.GetOrCreateGlobalId(name_ + "\n" + global.name);
+    }
     BytecodeCompiler compiler(diagnostics);
     auto enums = checker.Enums();
     for (auto& type : enums) type.id = engine_.GetOrCreateTypeId(type.name);
@@ -86,11 +90,27 @@ bool ScriptModule::Build() {
     for (const auto& type : classes) engine_.LinkScriptType(type);
     for (const auto& host : engine_.hostFunctions_)
         candidate.hostFunctions.push_back({host.signature.id, &host});
+    for (auto& binding : candidate.globals) {
+        if (!binding.signature.host) continue;
+        for (const auto& host : engine_.hostProperties_) {
+            if (host.signature.id == binding.signature.id) {
+                binding.host = &host;
+                break;
+            }
+        }
+        if (!binding.host) {
+            diagnostics.Report({"registration"}, Severity::Error,
+                               "registered global property binding is unavailable");
+            return false;
+        }
+    }
     for (const auto* type : scriptTypes) candidate.objectTypes.push_back({type->id, type});
     auto state = std::make_shared<ModuleState>();
     state->globals.reserve(candidate.globals.size());
-    for (const auto& global : candidate.globals)
-        state->globals.push_back(DefaultGlobalValue(global.signature.type));
+    for (const auto& global : candidate.globals) {
+        state->globals.push_back(global.host && global.host->storage
+            ? *global.host->storage : DefaultGlobalValue(global.signature.type));
+    }
     VirtualMachine initializer;
     auto finalizerModule = std::make_shared<BytecodeModule>(candidate);
     initializer.SetFinalizerContext(&engine_, finalizerModule, state,
@@ -286,6 +306,37 @@ std::size_t ScriptEngine::CollectGarbage() {
     DrainFinalizers();
     return collected;
 }
+
+bool ScriptEngine::RegisterGlobalProperty(std::string declaration, Value* storage) {
+    DiagnosticSink diagnostics([this](const Diagnostic& diagnostic) { ForwardDiagnostic(diagnostic); });
+    auto signature = ParseGlobalPropertyDeclaration(declaration, diagnostics);
+    if (!signature || !storage) {
+        if (signature && !storage)
+            diagnostics.Report({"registration"}, Severity::Error,
+                               "global property storage cannot be null");
+        return false;
+    }
+    if (!signature->type.IsNumeric() && signature->type != DataType::Bool() &&
+        signature->type != DataType::String()) {
+        diagnostics.Report({"registration"}, Severity::Error,
+                           "registered global properties currently support primitive and string values");
+        return false;
+    }
+    if (storage->Type() != signature->type) {
+        diagnostics.Report({"registration"}, Severity::Error,
+                           "global property storage type does not match '" + signature->type.Name() + "'");
+        return false;
+    }
+    for (const auto& existing : hostProperties_) {
+        if (existing.signature.name != signature->name) continue;
+        diagnostics.Report({"registration"}, Severity::Error,
+                           "duplicate global property '" + signature->name + "'");
+        return false;
+    }
+    signature->id = GetOrCreateGlobalId("$host\n" + signature->name);
+    hostProperties_.push_back({std::move(*signature), storage});
+    return true;
+}
 std::size_t ScriptEngine::GetTrackedObjectCount() const { return garbageCollector_.TrackedCount(); }
 
 const TypeInfo* ScriptEngine::RegisterScriptType(const ClassSignature& signature) {
@@ -358,6 +409,13 @@ std::vector<FunctionSignature> ScriptEngine::HostSignatures() const {
     std::vector<FunctionSignature> signatures;
     signatures.reserve(hostFunctions_.size());
     for (const auto& host : hostFunctions_) signatures.push_back(host.signature);
+    return signatures;
+}
+
+std::vector<GlobalSignature> ScriptEngine::HostPropertySignatures() const {
+    std::vector<GlobalSignature> signatures;
+    signatures.reserve(hostProperties_.size());
+    for (const auto& host : hostProperties_) signatures.push_back(host.signature);
     return signatures;
 }
 

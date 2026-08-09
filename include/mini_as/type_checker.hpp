@@ -58,6 +58,7 @@ struct GlobalSignature {
     DataType type;
     bool isConst = false;
     GlobalId id;
+    bool host = false;
 };
 
 struct EnumValueSignature {
@@ -88,6 +89,7 @@ class TypeChecker {
 public:
     explicit TypeChecker(DiagnosticSink& diagnostics);
     void RegisterFunction(FunctionSignature signature);
+    void RegisterGlobalProperty(GlobalSignature signature);
     bool Check(AstNode* root);
     const std::vector<FunctionSignature>& Functions() const;
     const std::vector<ClassSignature>& Classes() const;
@@ -157,6 +159,7 @@ private:
 
     DiagnosticSink& diagnostics_;
     std::vector<FunctionSignature> functions_;
+    std::vector<GlobalSignature> registeredGlobals_;
     std::vector<ClassSignature> classes_;
     std::vector<GlobalSignature> globals_;
     std::vector<EnumSignature> enums_;

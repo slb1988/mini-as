@@ -150,11 +150,11 @@ Do not stage generated build directories or unrelated user changes. Inspect
 The completed stage notes are authoritative. At the time this guide was added,
 the latest language stage is:
 
-- v0.4 compatibility matrix published after Stage 58 deleted default/copy operations.
+- Stage 59 registered global properties, the first v0.5 host-embedding feature.
 
-The next planned feature is the first v0.5 host-embedding item: registered
-global properties. Confirm the
-latest git history and `docs/stages/` before choosing the next stage number.
+The next planned feature is registered reference type factories and behaviours.
+Confirm the latest git history and `docs/stages/` before choosing the next stage
+number.
 
 ## Common pitfalls
 

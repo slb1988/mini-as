@@ -156,6 +156,10 @@ void TypeChecker::RegisterFunction(FunctionSignature signature) {
     functions_.push_back(std::move(signature));
 }
 
+void TypeChecker::RegisterGlobalProperty(GlobalSignature signature) {
+    registeredGlobals_.push_back(std::move(signature));
+}
+
 bool TypeChecker::Check(AstNode* root) {
     scopes_.clear();
     activeLambdas_.clear();
@@ -540,7 +544,10 @@ void TypeChecker::Predeclare(AstNode* root) {
 }
 
 void TypeChecker::PredeclareGlobals(AstNode* root) {
-    globals_.clear();
+    globals_ = registeredGlobals_;
+    for (const auto& property : registeredGlobals_)
+        Declare(Token{TokenKind::Identifier, property.name, {"registration"}},
+                property.type, property.isConst, true);
     if (!root) return;
     std::vector<AstNode*> declarations;
     for (AstNode* node : TopLevelDeclarations(root)) {
@@ -582,7 +589,7 @@ void TypeChecker::PredeclareGlobals(AstNode* root) {
     }
     for (AstNode* declaration : declarations) {
         globals_.push_back({declaration->token.lexeme, declaration->declaredType,
-                            declaration->isConst, {}});
+                            declaration->isConst, {}, false});
     }
 }
 

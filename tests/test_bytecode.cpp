@@ -111,6 +111,40 @@ TEST_CASE(bytecode_globals_use_stable_ids_for_load_and_store) {
     CHECK(stored);
 }
 
+TEST_CASE(bytecode_registered_globals_preserve_host_stable_ids) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("host-global-bytecode",
+        "int update() { hostCounter += 2; return hostCounter; }", diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    mini_as::TypeChecker checker(diagnostics);
+    mini_as::GlobalSignature property{"hostCounter", mini_as::DataType::Int(), false,
+                                      mini_as::GlobalId{23}, true};
+    checker.RegisterGlobalProperty(property);
+    CHECK(checker.Check(tree.root));
+    mini_as::BytecodeCompiler compiler(diagnostics);
+    auto module = compiler.Compile(tree.root, checker.Functions(), checker.Classes(),
+                                   checker.Globals());
+    CHECK(!diagnostics.HasErrors());
+    const auto index = module.FindGlobalIndex(mini_as::GlobalId{23});
+    CHECK(index.has_value());
+    CHECK(module.globals[*index].signature.host);
+    bool loaded = false;
+    bool stored = false;
+    for (const auto& instruction : module.functions[0].code) {
+        if (instruction.opcode == mini_as::OpCode::LoadGlobal) {
+            loaded = true;
+            CHECK(instruction.operand == 23);
+        }
+        if (instruction.opcode == mini_as::OpCode::StoreGlobal) {
+            stored = true;
+            CHECK(instruction.operand == 23);
+        }
+    }
+    CHECK(loaded);
+    CHECK(stored);
+}
+
 TEST_CASE(bytecode_emits_explicit_integer_width_conversions) {
     mini_as::DiagnosticSink diagnostics;
     mini_as::Tokenizer tokenizer("integer-conversion",

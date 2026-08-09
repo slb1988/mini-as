@@ -25,22 +25,27 @@ int main(int argc, char** argv) {
     if (argc != 2) return 2;
     asIScriptEngine* engine = asCreateScriptEngine(ANGELSCRIPT_VERSION);
     if (!engine) return 3;
+    int hostCounter = 40;
     engine->SetEngineProperty(asEP_ALLOW_UNSAFE_REFERENCES, true);
     engine->SetMessageCallback(asFUNCTION(MessageCallback), nullptr, asCALL_CDECL);
     RegisterScriptWeakRef(engine);
+    if (engine->RegisterGlobalProperty("int hostCounter", &hostCounter) < 0) {
+        engine->ShutDownAndRelease();
+        return 4;
+    }
     asIScriptModule* module = engine->GetModule("compat", asGM_ALWAYS_CREATE);
     const std::string source = ReadFile(argv[1]);
     module->AddScriptSection("compat.as", source.c_str(), source.size());
-    if (module->Build() < 0) { engine->ShutDownAndRelease(); return 4; }
+    if (module->Build() < 0) { engine->ShutDownAndRelease(); return 5; }
     asIScriptFunction* function = module->GetFunctionByDecl("int main()");
-    if (!function) { engine->ShutDownAndRelease(); return 5; }
+    if (!function) { engine->ShutDownAndRelease(); return 6; }
     asIScriptContext* context = engine->CreateContext();
     context->Prepare(function);
     const int state = context->Execute();
     if (state != asEXECUTION_FINISHED) {
         context->Release();
         engine->ShutDownAndRelease();
-        return 6;
+        return 7;
     }
     std::cout << "state=finished\nreturn=int:" << context->GetReturnDWord() << '\n';
     context->Release();

@@ -118,6 +118,7 @@ bool VirtualMachine::Prepare(const BytecodeFunction& function, const std::vector
     module_ = module;
     moduleState_ = state;
     pc_ = 0;
+    stackBase_ = 0;
     suspendRequested_ = false;
     result_ = {};
     result_.state = ExecutionState::Prepared;
@@ -146,7 +147,7 @@ ExecutionResult VirtualMachine::Continue() {
         }
         try { Step(); }
         catch (const std::exception& error) {
-            Fail(function_->code[pc_ ? pc_ - 1 : 0], error.what());
+            HandleException(function_->code[pc_ ? pc_ - 1 : 0], error.what());
         }
         if (safePoint_) safePoint_();
     }
@@ -295,6 +296,7 @@ bool VirtualMachine::Step() {
             function_ = frame.function;
             pc_ = frame.pc;
             locals_ = std::move(frame.locals);
+            stackBase_ = frame.stackBase;
             Push(std::move(returnValue));
             for (auto& output : outputArguments) Push(std::move(output));
         }
@@ -325,9 +327,10 @@ bool VirtualMachine::Step() {
         const std::size_t hiddenArguments = callable->kind == CallableKind::ScriptMethod ? 1 : 0;
         std::vector<Value> arguments(target->signature.parameters.size() + hiddenArguments);
         for (std::size_t i = arguments.size(); i > 0; --i) arguments[i - 1] = Pop();
-        callStack_.push_back({function_, pc_, std::move(locals_)});
+        callStack_.push_back({function_, pc_, std::move(locals_), stackBase_});
         function_ = target;
         pc_ = 0;
+        stackBase_ = stack_.size();
         locals_.assign(target->localCount, Value{});
         for (std::size_t i = 0; i < arguments.size(); ++i) locals_[i] = std::move(arguments[i]);
         break;
@@ -376,9 +379,10 @@ bool VirtualMachine::Step() {
         const BytecodeFunction* target = module_->ResolveVirtual(
             receiver.Get()->GetTypeInfo()->id, callable->objectType, callable->virtualSlot);
         if (!target) throw std::runtime_error("virtual method implementation is unavailable");
-        callStack_.push_back({function_, pc_, std::move(locals_)});
+        callStack_.push_back({function_, pc_, std::move(locals_), stackBase_});
         function_ = target;
         pc_ = 0;
+        stackBase_ = stack_.size();
         locals_.assign(target->localCount, Value{});
         for (std::size_t i = 0; i < arguments.size(); ++i) locals_[i] = std::move(arguments[i]);
         break;
@@ -514,6 +518,54 @@ void VirtualMachine::Fail(const Instruction& instruction, std::string message) {
         result_.callStack.push_back({frame->function ? frame->function->signature.Declaration() : "<unknown>",
                                      std::move(location)});
     }
+}
+
+bool VirtualMachine::HandleException(const Instruction& instruction, std::string message) {
+    const auto findHandler = [](const BytecodeFunction* function, std::size_t faultPc)
+        -> const ExceptionHandler* {
+        if (!function) return nullptr;
+        const ExceptionHandler* selected = nullptr;
+        for (const auto& handler : function->exceptionHandlers) {
+            if (faultPc < handler.tryBegin || faultPc >= handler.tryEnd) continue;
+            if (!selected || handler.tryEnd - handler.tryBegin <
+                             selected->tryEnd - selected->tryBegin) selected = &handler;
+        }
+        return selected;
+    };
+
+    const std::size_t currentFault = pc_ ? pc_ - 1 : 0;
+    const ExceptionHandler* handler = findHandler(function_, currentFault);
+    std::size_t unwindCount = 0;
+    if (!handler) {
+        std::size_t depth = 0;
+        for (auto frame = callStack_.rbegin(); frame != callStack_.rend(); ++frame) {
+            ++depth;
+            const std::size_t faultPc = frame->pc ? frame->pc - 1 : 0;
+            handler = findHandler(frame->function, faultPc);
+            if (handler) { unwindCount = depth; break; }
+        }
+    }
+    if (!handler) {
+        Fail(instruction, std::move(message));
+        return false;
+    }
+
+    while (unwindCount-- > 0) {
+        stack_.resize(stackBase_);
+        CallFrame frame = std::move(callStack_.back());
+        callStack_.pop_back();
+        function_ = frame.function;
+        pc_ = frame.pc;
+        locals_ = std::move(frame.locals);
+        stackBase_ = frame.stackBase;
+    }
+    stack_.resize(stackBase_);
+    pc_ = handler->catchTarget;
+    result_.state = ExecutionState::Active;
+    result_.exception.clear();
+    result_.location = {};
+    result_.callStack.clear();
+    return true;
 }
 
 void VirtualMachine::BinaryArithmetic(const Instruction& instruction) {

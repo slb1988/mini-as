@@ -16,7 +16,8 @@ enum class NodeKind {
     Program, NamespaceDecl, FunctionDecl, Parameter, ClassDecl, InterfaceDecl,
     EnumDecl, EnumValue, TypedefDecl, FieldDecl,
     Block, DeclList, VarDecl, IfStmt, WhileStmt, DoWhileStmt, ForStmt,
-    SwitchStmt, CaseClause, DefaultClause, ReturnStmt, BreakStmt, ContinueStmt, ExprStmt, EmptyStmt,
+    SwitchStmt, CaseClause, DefaultClause, ReturnStmt, BreakStmt, ContinueStmt, TryStmt,
+    ExprStmt, EmptyStmt,
     Assign, Conditional, Binary, Unary, Increment, Cast, ValueCast, Call, NamedArgument, Member, Literal, Identifier
 };
 

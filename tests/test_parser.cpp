@@ -314,3 +314,15 @@ TEST_CASE(parser_expands_compact_and_marks_explicit_property_accessors) {
     CHECK(members[2]->propertyAccessor);
 }
 
+TEST_CASE(parser_builds_try_catch_statements) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer lexer("parse", "void run() { try { work(); } catch { recover(); } }", diagnostics);
+    mini_as::Parser parser(lexer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    CHECK(!diagnostics.HasErrors());
+    auto* statement = tree.root->firstChild->Children().back()->firstChild;
+    CHECK(statement->kind == mini_as::NodeKind::TryStmt);
+    CHECK(statement->Children().size() == 2);
+    CHECK(statement->firstChild->kind == mini_as::NodeKind::Block);
+}
+

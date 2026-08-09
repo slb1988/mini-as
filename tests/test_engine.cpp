@@ -1588,3 +1588,51 @@ TEST_CASE(property_accessor_null_receivers_report_the_access_location) {
     CHECK(context->GetExceptionLocation().row == 4);
 }
 
+TEST_CASE(try_catch_recovers_from_local_and_called_function_exceptions) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("try-catch");
+    module->AddScriptSection("try-catch",
+        "int divide(int value) { return 100 / value; } "
+        "int run() { int result = 1; try { result = divide(0); result = 99; } "
+        "catch { result = 40; } try { try { result = divide(result - 40); } "
+        "catch { result += 2; } } catch { result = -1; } "
+        "try { result += 1; } catch { result = -2; } return result; }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 43);
+    CHECK(context->GetExceptionString().empty());
+}
+
+TEST_CASE(try_requires_a_following_catch_block) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    auto* module = engine->GetModule("bad-try-catch");
+    module->AddScriptSection("bad-try-catch", "int run() { try { return 1; } return 2; }");
+    CHECK(!module->Build());
+    bool missingCatch = false;
+    for (const auto& diagnostic : diagnostics)
+        missingCatch = missingCatch || diagnostic.message.find("expected 'catch'") != std::string::npos;
+    CHECK(missingCatch);
+}
+
+TEST_CASE(try_catch_recovers_from_host_exceptions_without_publishing_them) {
+    auto engine = mini_as::CreateScriptEngine();
+    CHECK(engine->RegisterGlobalFunction("int fail()", [](mini_as::GenericCall& call) {
+        call.SetException("expected host failure");
+    }));
+    auto* module = engine->GetModule("host-try-catch");
+    module->AddScriptSection("host-try-catch",
+        "int run() { int result = 1; try { result = fail(); } catch { result = 42; } return result; }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+    CHECK(context->GetExceptionString().empty());
+}
+

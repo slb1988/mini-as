@@ -455,3 +455,21 @@ TEST_CASE(bytecode_lowers_property_accessors_to_virtual_method_calls) {
     CHECK(virtualCalls == 2);
 }
 
+TEST_CASE(bytecode_records_try_ranges_and_catch_targets) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("try-bytecode",
+        "int run(int value) { try { return 10 / value; } catch { return 42; } }", diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    mini_as::TypeChecker checker(diagnostics);
+    CHECK(checker.Check(tree.root));
+    mini_as::BytecodeCompiler compiler(diagnostics);
+    auto module = compiler.Compile(tree.root, checker.Functions());
+    CHECK(!diagnostics.HasErrors());
+    CHECK(module.functions[0].exceptionHandlers.size() == 1);
+    const auto& handler = module.functions[0].exceptionHandlers[0];
+    CHECK(handler.tryBegin < handler.tryEnd);
+    CHECK(handler.tryEnd < handler.catchTarget);
+    CHECK(handler.catchTarget < module.functions[0].code.size());
+}
+

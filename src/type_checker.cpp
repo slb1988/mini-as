@@ -581,6 +581,10 @@ void TypeChecker::CheckNode(AstNode* node) {
     case NodeKind::ContinueStmt:
         if (loopDepth_ == 0) Error(node, "continue statement is not inside a loop");
         break;
+    case NodeKind::TryStmt:
+        CheckNode(node->firstChild);
+        CheckNode(node->firstChild ? node->firstChild->nextSibling : nullptr);
+        break;
     case NodeKind::ExprStmt: CheckExpression(node->firstChild); break;
     case NodeKind::ClassDecl: {
         const ClassSignature* previousClass = currentClass_;

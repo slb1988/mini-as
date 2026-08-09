@@ -594,6 +594,19 @@ void BytecodeCompiler::CompileStatement(AstNode* node) {
         else target->continueJumps.push_back(Emit(OpCode::Jump, -1, node));
         break;
     }
+    case NodeKind::TryStmt: {
+        AstNode* tryBlock = node->firstChild;
+        AstNode* catchBlock = tryBlock ? tryBlock->nextSibling : nullptr;
+        const std::size_t tryBegin = function_->code.size();
+        CompileStatement(tryBlock);
+        const std::size_t tryEnd = function_->code.size();
+        const auto skipCatch = Emit(OpCode::Jump, -1, node);
+        const std::size_t catchTarget = function_->code.size();
+        CompileStatement(catchBlock);
+        PatchJump(skipCatch, function_->code.size());
+        function_->exceptionHandlers.push_back({tryBegin, tryEnd, catchTarget});
+        break;
+    }
     default: Error(node, "statement cannot be compiled"); break;
     }
 }

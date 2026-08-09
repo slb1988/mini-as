@@ -42,12 +42,14 @@ private:
         const BytecodeFunction* function = nullptr;
         std::size_t pc = 0;
         std::vector<Value> locals;
+        std::size_t stackBase = 0;
     };
 
     bool Step();
     Value Pop();
     void Push(Value value);
     void Fail(const Instruction& instruction, std::string message);
+    bool HandleException(const Instruction& instruction, std::string message);
     void BinaryArithmetic(const Instruction& instruction);
     void Compare(const Instruction& instruction);
 
@@ -58,6 +60,7 @@ private:
     const BytecodeModule* module_ = nullptr;
     ModuleState* moduleState_ = nullptr;
     std::size_t pc_ = 0;
+    std::size_t stackBase_ = 0;
     bool suspendRequested_ = false;
     std::function<void(const SourceLocation&)> lineCallback_;
     ObjectFinalizerQueue* finalizerQueue_ = nullptr;

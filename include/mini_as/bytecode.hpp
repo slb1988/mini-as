@@ -32,10 +32,17 @@ struct Instruction {
     SourceLocation location;
 };
 
+struct ExceptionHandler {
+    std::size_t tryBegin = 0;
+    std::size_t tryEnd = 0;
+    std::size_t catchTarget = 0;
+};
+
 struct BytecodeFunction {
     FunctionSignature signature;
     std::vector<Instruction> code;
     std::vector<Value> constants;
+    std::vector<ExceptionHandler> exceptionHandlers;
     std::size_t localCount = 0;
 };
 

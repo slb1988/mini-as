@@ -143,10 +143,11 @@ Do not stage generated build directories or unrelated user changes. Inspect
 The completed stage notes are authoritative. At the time this guide was added,
 the latest language stage is:
 
-- Stage 49: script class and interface property accessors.
+- Stage 50: script try/catch with table-driven VM stack unwinding.
 
-The next planned language feature is script exceptions. Confirm the latest git
-history and `docs/stages/` before choosing the next stage number.
+The next planned item is the v0.3 compatibility matrix, followed by v0.4
+funcdefs and function handles. Confirm the latest git history and `docs/stages/`
+before choosing the next stage number.
 
 ## Common pitfalls
 

@@ -369,6 +369,15 @@ AstNode* Parser::ParseStatement() {
         Consume(TokenKind::Semicolon, "expected ';' after continue");
         return statement;
     }
+    if (Match(TokenKind::KwTry)) {
+        AstNode* statement = arena_->Make(NodeKind::TryStmt, Previous());
+        if (!Check(TokenKind::LeftBrace)) Error(Current(), "expected block after try");
+        statement->AppendChild(ParseBlock());
+        Consume(TokenKind::KwCatch, "expected 'catch' after try block");
+        if (!Check(TokenKind::LeftBrace)) Error(Current(), "expected block after catch");
+        statement->AppendChild(ParseBlock());
+        return statement;
+    }
     if (IsVariableDeclarationStart()) return ParseVariableDeclaration();
     AstNode* statement = arena_->Make(NodeKind::ExprStmt, Current());
     statement->AppendChild(ParseExpression());

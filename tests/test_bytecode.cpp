@@ -499,3 +499,20 @@ TEST_CASE(bytecode_lowers_generated_copy_construction_to_object_copy) {
     CHECK(copied);
 }
 
+TEST_CASE(bytecode_omits_deleted_default_operation_bodies_and_targets) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("deleted-operation-bytecode",
+        "class Locked { Locked() delete; Locked(const Locked &in other) delete; "
+        "Locked &opAssign(const Locked &in other) delete; } int run() { return 42; }",
+        diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    mini_as::TypeChecker checker(diagnostics);
+    CHECK(checker.Check(tree.root));
+    mini_as::BytecodeCompiler compiler(diagnostics);
+    auto module = compiler.Compile(tree.root, checker.Functions(), checker.Classes());
+    CHECK(!diagnostics.HasErrors());
+    CHECK(module.functions.size() == 1);
+    CHECK(module.functions[0].signature.name == "run");
+}
+

@@ -2127,3 +2127,90 @@ TEST_CASE(null_generated_copy_sources_report_the_call_location) {
     CHECK(context->GetExceptionLocation().row == 4);
 }
 
+TEST_CASE(deleted_default_operations_allow_alternate_construction_and_handle_rebinding) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("deleted-default-operations");
+    module->AddScriptSection("deleted-default-operations",
+        "class NoDefault { int value; NoDefault() delete; NoDefault(int input) { value = input; } } "
+        "class NoCopy { NoCopy() {} NoCopy(const NoCopy &in other) delete; } "
+        "class NoAssign { NoAssign &opAssign(const NoAssign &in other) delete; } "
+        "int run() { NoDefault@ configured = NoDefault(42); NoCopy@ guarded = NoCopy(); "
+        "NoAssign@ left = NoAssign(); NoAssign@ right = NoAssign(); @left = right; "
+        "return guarded is null || !(left is right) ? 0 : configured.value; }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+}
+
+TEST_CASE(deleted_default_operations_reject_implicit_uses) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    auto* module = engine->GetModule("deleted-operation-uses");
+    module->AddScriptSection("deleted-operation-uses",
+        "class NoDefault { NoDefault() delete; } "
+        "class NoCopy { NoCopy() {} NoCopy(const NoCopy &in other) delete; } "
+        "class NoAssign { NoAssign &opAssign(const NoAssign &in other) delete; } "
+        "class Base { Base() delete; Base(int value) {} } class Derived : Base {} "
+        "int badDefault() { NoDefault@ value = NoDefault(); return 0; } "
+        "int badCopy() { NoCopy@ source = NoCopy(); NoCopy@ copied = NoCopy(source); return 0; } "
+        "int badAssign() { NoAssign@ left = NoAssign(); NoAssign@ right = NoAssign(); "
+        "left = right; return 0; }");
+    CHECK(!module->Build());
+    bool defaultConstructor = false, copyConstructor = false, copyAssignment = false;
+    bool deletedBaseConstructor = false;
+    for (const auto& diagnostic : diagnostics) {
+        defaultConstructor = defaultConstructor ||
+            diagnostic.message.find("default constructor for 'NoDefault' is deleted") != std::string::npos;
+        copyConstructor = copyConstructor ||
+            diagnostic.message.find("no matching constructor for 'NoCopy'") != std::string::npos;
+        copyAssignment = copyAssignment ||
+            diagnostic.message.find("copy assignment for 'NoAssign' is deleted") != std::string::npos;
+        deletedBaseConstructor = deletedBaseConstructor ||
+            diagnostic.message.find("default constructor for base class 'Base' is deleted") !=
+                std::string::npos;
+    }
+    CHECK(defaultConstructor);
+    CHECK(copyConstructor);
+    CHECK(copyAssignment);
+    CHECK(deletedBaseConstructor);
+}
+
+TEST_CASE(delete_rejects_non_default_operations_implementations_and_conflicts) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    auto* module = engine->GetModule("invalid-deleted-operations");
+    module->AddScriptSection("invalid-deleted-operations",
+        "class Invalid { Invalid(int value) delete; void method() delete; "
+        "Invalid() delete {} } "
+        "class Conflict { Conflict() delete; Conflict() {} } "
+        "interface Contract { Contract &opAssign(const Contract &in other) delete; } "
+        "void removed() delete;");
+    CHECK(!module->Build());
+    bool nonDefault = false, implementation = false, conflict = false;
+    bool interfaceMethod = false, globalFunction = false;
+    for (const auto& diagnostic : diagnostics) {
+        nonDefault = nonDefault || diagnostic.message.find("only default construction") != std::string::npos;
+        implementation = implementation ||
+            diagnostic.message.find("deleted function cannot have an implementation") != std::string::npos;
+        conflict = conflict ||
+            diagnostic.message.find("cannot define a default constructor that is deleted") != std::string::npos;
+        interfaceMethod = interfaceMethod ||
+            diagnostic.message.find("interface methods cannot be deleted") != std::string::npos;
+        globalFunction = globalFunction ||
+            diagnostic.message.find("only class default operations can be deleted") != std::string::npos;
+    }
+    CHECK(nonDefault);
+    CHECK(implementation);
+    CHECK(conflict);
+    CHECK(interfaceMethod);
+    CHECK(globalFunction);
+}
+

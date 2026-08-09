@@ -105,6 +105,13 @@ CI builds GCC, Clang, and MSVC, runs the differential corpus against exactly
 AngelScript 2.38.0, and has an ASan/UBSan job. Keep
 `-Wall -Wextra -Wpedantic` and MSVC `/W4` free of new warnings.
 
+On this Windows workstation, prioritize the MSVC `/W4` build and the locally
+validated GCC toolchain. Run Clang locally only after loading the Visual Studio
+developer environment. Do not use the interactive Windows Clang sanitizer
+configuration: its runtime can open a blocking crash dialog during C++
+exception tests. Leave ASan/UBSan enforcement to the non-interactive CI/Linux
+job unless a local sanitizer toolchain is known to run cleanly.
+
 Test placement:
 
 - tokenizer/parser shape tests: `tests/test_tokenizer.cpp`,
@@ -143,10 +150,10 @@ Do not stage generated build directories or unrelated user changes. Inspect
 The completed stage notes are authoritative. At the time this guide was added,
 the latest language stage is:
 
-- Stage 57: generated member-wise copy constructors for script classes.
+- Stage 58: deleted default construction, copy construction, and copy assignment.
 
-The v0.3 compatibility matrix is published. The next planned language feature
-is v0.4 disabled default and copy operations. Confirm the
+The v0.3 compatibility matrix is published. The v0.4 feature implementation is
+complete; its compatibility matrix is the next planned stage. Confirm the
 latest git history and `docs/stages/` before choosing the next stage number.
 
 ## Common pitfalls

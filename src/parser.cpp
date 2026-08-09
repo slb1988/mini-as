@@ -399,6 +399,7 @@ AstNode* Parser::ParseFunction(DataType returnType, Token name, bool returnsRefe
     bool sawDefault = false;
     if (!Check(TokenKind::RightParen)) {
         do {
+            const bool parameterConst = Match(TokenKind::KwConst);
             DataType type = ParseType(false);
             ParameterMode mode = ParameterMode::Value;
             if (Match(TokenKind::Amp)) {
@@ -411,6 +412,7 @@ AstNode* Parser::ParseFunction(DataType returnType, Token name, bool returnsRefe
             AstNode* parameter = arena_->Make(NodeKind::Parameter, paramName);
             parameter->declaredType = std::move(type);
             parameter->parameterMode = mode;
+            parameter->isConst = parameterConst;
             if (Match(TokenKind::Equal)) {
                 sawDefault = true;
                 parameter->AppendChild(ParseAssignment());
@@ -422,8 +424,14 @@ AstNode* Parser::ParseFunction(DataType returnType, Token name, bool returnsRefe
     }
     Consume(TokenKind::RightParen, "expected ')' after parameters");
     while (Check(TokenKind::KwConst) ||
-           (Check(TokenKind::Identifier) && Current().lexeme == "property")) {
+           (Check(TokenKind::Identifier) &&
+            (Current().lexeme == "property" || Current().lexeme == "delete"))) {
         if (Match(TokenKind::KwConst)) continue;
+        if (Current().lexeme == "delete") {
+            function->isDeleted = true;
+            Advance();
+            continue;
+        }
         function->propertyAccessor = true;
         Advance();
     }

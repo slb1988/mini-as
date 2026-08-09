@@ -34,6 +34,7 @@ struct AstNode {
     bool implicitThis = false;
     bool isConstructor = false;
     bool isDestructor = false;
+    bool isDeleted = false;
     bool hasExplicitSuper = false;
     bool nonVirtualCall = false;
     bool returnsReference = false;

@@ -326,6 +326,38 @@ void TypeChecker::Predeclare(AstNode* root) {
                     method.parameterModes.push_back(parameter->parameterMode);
                     if (parameter->firstChild) ++method.defaultArgumentCount;
                 }
+                AstNode* body = child->firstChild;
+                while (body && body->kind == NodeKind::Parameter) body = body->nextSibling;
+                if (child->isDeleted) {
+                    if (type.interfaceType) {
+                        Error(child, "interface methods cannot be deleted");
+                        if (body && body->kind == NodeKind::Block)
+                            Error(child, "deleted function cannot have an implementation");
+                        continue;
+                    }
+                    const bool sameClassParameter = method.parameters.size() == 1 &&
+                        method.parameters[0].kind == TypeKind::Object &&
+                        method.parameters[0].objectName == type.name;
+                    if (method.constructor && method.parameters.empty()) {
+                        if (type.defaultConstructorDeleted)
+                            Error(child, "default constructor is already deleted");
+                        type.defaultConstructorDeleted = true;
+                    } else if (method.constructor && sameClassParameter) {
+                        if (type.defaultCopyConstructorDeleted)
+                            Error(child, "default copy constructor is already deleted");
+                        type.defaultCopyConstructorDeleted = true;
+                    } else if (!method.constructor && method.name == "opAssign" &&
+                               sameClassParameter) {
+                        if (type.defaultCopyAssignmentDeleted)
+                            Error(child, "default copy assignment is already deleted");
+                        type.defaultCopyAssignmentDeleted = true;
+                    } else {
+                        Error(child, "only default construction, copy construction, and copy assignment can be deleted");
+                    }
+                    if (body && body->kind == NodeKind::Block)
+                        Error(child, "deleted function cannot have an implementation");
+                    continue;
+                }
                 bool duplicate = false;
                 for (const auto& existing : type.methods) {
                     if (existing.name == method.name && existing.parameters == method.parameters &&
@@ -337,14 +369,26 @@ void TypeChecker::Predeclare(AstNode* root) {
                 if (duplicate) Error(child, "duplicate method or constructor '" + method.Declaration() + "'");
                 if (method.destructor && !method.parameters.empty())
                     Error(child, "destructor cannot declare parameters");
-                AstNode* body = child->firstChild;
-                while (body && body->kind == NodeKind::Parameter) body = body->nextSibling;
                 if (method.destructor && (!body || body->kind != NodeKind::Block))
                     Error(child, "destructor must have a body");
                 type.methods.push_back(std::move(method));
             }
         }
+        const auto sameClassParameter = [&type](const FunctionSignature& method) {
+            return method.parameters.size() == 1 && method.parameters[0].kind == TypeKind::Object &&
+                method.parameters[0].objectName == type.name;
+        };
+        for (const auto& method : type.methods) {
+            if (type.defaultConstructorDeleted && method.constructor && method.parameters.empty())
+                Error(node, "cannot define a default constructor that is deleted");
+            if (type.defaultCopyConstructorDeleted && method.constructor && sameClassParameter(method))
+                Error(node, "cannot define a copy constructor that is deleted");
+            if (type.defaultCopyAssignmentDeleted && method.name == "opAssign" &&
+                sameClassParameter(method))
+                Error(node, "cannot define a copy assignment that is deleted");
+        }
         type.generatedCopyConstructor = !type.interfaceType &&
+            !type.defaultCopyConstructorDeleted &&
             std::none_of(type.methods.begin(), type.methods.end(), [](const auto& method) {
                 return method.constructor && method.parameters.size() == 1;
             });
@@ -469,6 +513,14 @@ void TypeChecker::Predeclare(AstNode* root) {
     }
     for (AstNode* node : TopLevelDeclarations(root)) {
         if (node->kind != NodeKind::FunctionDecl) continue;
+        if (node->isDeleted) {
+            Error(node, "only class default operations can be deleted");
+            AstNode* body = node->firstChild;
+            while (body && body->kind == NodeKind::Parameter) body = body->nextSibling;
+            if (body && body->kind == NodeKind::Block)
+                Error(node, "deleted function cannot have an implementation");
+            continue;
+        }
         FunctionSignature signature{node->token.lexeme, node->declaredType, {}, false, {}, {}, false, false, 0, {}, {},
                                     node->returnsReference, node->returnReferenceConst, false};
         for (AstNode* child = node->firstChild; child && child->kind == NodeKind::Parameter;
@@ -678,7 +730,7 @@ void TypeChecker::CheckNode(AstNode* node) {
         const std::string previousNamespace = currentNamespace_;
         currentNamespace_ = NamespaceOf(node->token.lexeme);
         currentClass_ = FindClass(node->token.lexeme);
-        bool hasConstructor = false;
+        bool hasConstructor = currentClass_ && currentClass_->defaultConstructorDeleted;
         for (AstNode* member = node->firstChild; member; member = member->nextSibling) {
             if (member->kind == NodeKind::FieldDecl && member->firstChild) {
                 const DataType value = CheckExpression(member->firstChild);
@@ -690,7 +742,7 @@ void TypeChecker::CheckNode(AstNode* node) {
             if (member->kind == NodeKind::FieldDecl && IsWeakRef(member->declaredType) &&
                 !FindClass(member->declaredType.objectName))
                 Error(member, "weakref subtype must name a script class");
-            if (member->kind == NodeKind::FunctionDecl && member->firstChild) {
+            if (member->kind == NodeKind::FunctionDecl && member->firstChild && !member->isDeleted) {
                 hasConstructor = hasConstructor || member->isConstructor;
                 CheckFunction(member);
             }
@@ -706,7 +758,10 @@ void TypeChecker::CheckNode(AstNode* node) {
                     if (MatchArguments(method, {}, {})) defaultConstructor = &method;
                 }
             }
-            if (hasDeclaredConstructors && !defaultConstructor)
+            if (base && base->defaultConstructorDeleted && !defaultConstructor)
+                Error(node, "default constructor for base class '" + currentClass_->baseClass +
+                            "' is deleted");
+            else if (hasDeclaredConstructors && !defaultConstructor)
                 Error(node, "base class '" + currentClass_->baseClass +
                             "' has no default constructor");
             else if (defaultConstructor)
@@ -774,7 +829,10 @@ void TypeChecker::CheckFunction(AstNode* node) {
                     if (MatchArguments(method, {}, {})) defaultConstructor = &method;
                 }
             }
-            if (hasDeclaredConstructors && !defaultConstructor)
+            if (base && base->defaultConstructorDeleted && !defaultConstructor)
+                Error(node, "default constructor for base class '" + currentClass_->baseClass +
+                            "' is deleted; call super(...) explicitly");
+            else if (hasDeclaredConstructors && !defaultConstructor)
                 Error(node, "base class '" + currentClass_->baseClass +
                             "' has no default constructor; call super(...) explicitly");
             else if (defaultConstructor)
@@ -976,6 +1034,13 @@ DataType TypeChecker::CheckExpression(AstNode* node, std::optional<DataType> exp
                 node->operatorMethod = method->name;
                 CheckAccess(node, method->access, method->objectType, "method", method->name);
                 result = method->returnType;
+                break;
+            }
+            const ClassSignature* targetClass = FindClass(target.objectName);
+            if (node->token.kind == TokenKind::Equal && !explicitHandleTarget && targetClass &&
+                targetClass->defaultCopyAssignmentDeleted) {
+                Error(node, "copy assignment for '" + targetClass->name + "' is deleted");
+                result = DataType::Invalid();
                 break;
             }
             if (node->token.kind != TokenKind::Equal) {
@@ -1385,7 +1450,9 @@ DataType TypeChecker::CheckCall(AstNode* node) {
                 if (cost && *cost < bestCost) { constructor = &candidate; bestCost = *cost; }
             }
         }
-        if ((hasConstructors && !constructor) || (!hasConstructors && !arguments.empty()))
+        if (base && base->defaultConstructorDeleted && arguments.empty() && !constructor)
+            Error(node, "default constructor for base class '" + currentClass_->baseClass + "' is deleted");
+        else if ((hasConstructors && !constructor) || (!hasConstructors && !arguments.empty()))
             Error(node, "no matching base constructor for '" + currentClass_->baseClass + "'");
         else if (constructor) {
             ValidateReferenceArguments(*constructor, argumentNodes, argumentNames);
@@ -1409,6 +1476,10 @@ DataType TypeChecker::CheckCall(AstNode* node) {
                 hasConstructors = true;
                 const auto cost = MatchArguments(candidate, arguments, argumentNames);
                 if (cost && *cost < bestCost) { constructor = &candidate; bestCost = *cost; }
+            }
+            if (type->defaultConstructorDeleted && arguments.empty() && !constructor) {
+                Error(node, "default constructor for '" + type->name + "' is deleted");
+                return DataType::Invalid();
             }
             const bool generatedCopy = type->generatedCopyConstructor && arguments.size() == 1 &&
                 argumentNames[0].empty() &&

@@ -431,3 +431,24 @@ TEST_CASE(parser_builds_weakref_template_types_and_direct_initializers) {
           mini_as::DataType::WeakRef("Payload"));
 }
 
+TEST_CASE(parser_marks_deleted_default_operations_and_const_reference_parameters) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("deleted-operations",
+        "class Locked { Locked() delete; Locked(const Locked &in other) delete; "
+        "Locked &opAssign(const Locked &in other) delete; }", diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    CHECK(!diagnostics.HasErrors());
+    const auto members = tree.root->firstChild->Children();
+    CHECK(members.size() == 3);
+    CHECK(members[0]->isConstructor);
+    CHECK(members[0]->isDeleted);
+    CHECK(members[1]->isConstructor);
+    CHECK(members[1]->isDeleted);
+    CHECK(members[1]->firstChild->isConst);
+    CHECK(members[1]->firstChild->parameterMode == mini_as::ParameterMode::In);
+    CHECK(members[2]->token.lexeme == "opAssign");
+    CHECK(members[2]->returnsReference);
+    CHECK(members[2]->isDeleted);
+}
+

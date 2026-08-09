@@ -270,7 +270,7 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
     for (AstNode* node : TopLevelDeclarations(root))
         if (node->kind == NodeKind::ClassDecl) classNodes_[node->token.lexeme] = node;
     for (AstNode* node : TopLevelDeclarations(root)) {
-        if (node->kind == NodeKind::FunctionDecl) {
+        if (node->kind == NodeKind::FunctionDecl && !node->isDeleted) {
             FunctionSignature signature{node->token.lexeme, node->declaredType, {}, false, {}, {}, false, false, 0, {}, {},
                                         node->returnsReference, node->returnReferenceConst, false};
             for (AstNode* parameter = node->firstChild;
@@ -284,7 +284,7 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
         }
         if (node->kind == NodeKind::ClassDecl) {
             for (AstNode* methodNode = node->firstChild; methodNode; methodNode = methodNode->nextSibling) {
-                if (methodNode->kind != NodeKind::FunctionDecl) continue;
+                if (methodNode->kind != NodeKind::FunctionDecl || methodNode->isDeleted) continue;
                 FunctionSignature method{methodNode->token.lexeme, methodNode->declaredType, {}, false, {},
                                          node->token.lexeme, true, methodNode->isConstructor, 0, {}, {},
                                          methodNode->returnsReference, methodNode->returnReferenceConst,
@@ -352,7 +352,7 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
         }
     }
     for (AstNode* node : TopLevelDeclarations(root)) {
-        if (node->kind != NodeKind::FunctionDecl) continue;
+        if (node->kind != NodeKind::FunctionDecl || node->isDeleted) continue;
         FunctionSignature astSignature{node->token.lexeme, node->declaredType, {}, false, {}, {}, false, false, 0, {}, {},
                                        node->returnsReference, node->returnReferenceConst, false};
         for (AstNode* child = node->firstChild; child && child->kind == NodeKind::Parameter; child = child->nextSibling) {
@@ -365,7 +365,8 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
     for (AstNode* typeNode : TopLevelDeclarations(root)) {
         if (typeNode->kind != NodeKind::ClassDecl) continue;
         for (AstNode* methodNode = typeNode->firstChild; methodNode; methodNode = methodNode->nextSibling) {
-            if (methodNode->kind != NodeKind::FunctionDecl || !methodNode->firstChild) continue;
+            if (methodNode->kind != NodeKind::FunctionDecl || methodNode->isDeleted ||
+                !methodNode->firstChild) continue;
             FunctionSignature method{methodNode->token.lexeme, methodNode->declaredType, {}, false, {},
                                      typeNode->token.lexeme, true, methodNode->isConstructor, 0, {}, {},
                                      methodNode->returnsReference, methodNode->returnReferenceConst,

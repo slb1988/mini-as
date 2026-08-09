@@ -384,4 +384,11 @@ if(MINI_AS_BUILD_COMPAT_TESTS)
       -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
       -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/generated_copy_constructors.as
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_deleted_default_operations
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/deleted_default_operations.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
 endif()

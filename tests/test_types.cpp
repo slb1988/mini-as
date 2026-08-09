@@ -183,6 +183,24 @@ TEST_CASE(type_checker_marks_generated_copy_constructors_using_official_suppress
     CHECK(!checker.Classes()[2].generatedCopyConstructor);
 }
 
+TEST_CASE(type_checker_records_deleted_default_operations_without_callable_methods) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("deleted-operation-types",
+        "class Locked { Locked() delete; Locked(const Locked &in other) delete; "
+        "Locked &opAssign(const Locked &in other) delete; }", diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    mini_as::TypeChecker checker(diagnostics);
+    CHECK(checker.Check(tree.root));
+    CHECK(checker.Classes().size() == 1);
+    const auto& type = checker.Classes()[0];
+    CHECK(type.defaultConstructorDeleted);
+    CHECK(type.defaultCopyConstructorDeleted);
+    CHECK(type.defaultCopyAssignmentDeleted);
+    CHECK(!type.generatedCopyConstructor);
+    CHECK(type.methods.empty());
+}
+
 TEST_CASE(type_checker_resolves_current_parent_and_explicit_namespaces) {
     mini_as::DiagnosticSink diagnostics;
     mini_as::Tokenizer tokenizer("types",

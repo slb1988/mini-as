@@ -859,3 +859,43 @@ TEST_CASE(namespaces_reject_unknown_qualified_symbols) {
     CHECK(unknown);
 }
 
+TEST_CASE(default_arguments_support_declaring_namespaces_methods_and_constructors) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("defaults");
+    module->AddScriptSection("defaults",
+        "namespace Config { int bonus = 2; int add(int value, int delta = bonus) { return value + delta; } } "
+        "class Box { int value; Box(int initial = 40) { value = initial; } "
+        "int add(int delta = 2) { return value + delta; } } "
+        "int main() { Box@ box = Box(); return Config::add(40) + box.add() - 42; }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int main()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+}
+
+TEST_CASE(default_arguments_check_types_and_report_runtime_locations) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    auto* bad = engine->GetModule("bad-defaults");
+    bad->AddScriptSection("bad-defaults", "int bad(int value = \"text\") { return value; }");
+    CHECK(!bad->Build());
+    bool wrongType = false;
+    for (const auto& diagnostic : diagnostics)
+        wrongType = wrongType || diagnostic.message.find("cannot initialize default argument") != std::string::npos;
+    CHECK(wrongType);
+
+    auto* runtime = engine->GetModule("runtime-defaults");
+    runtime->AddScriptSection("runtime-defaults",
+        "int zero = 0;\nint fail(int value = 1 / zero) { return value; }\nint main() { return fail(); }");
+    CHECK(runtime->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(runtime->GetFunctionByDecl("int main()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Exception);
+    CHECK(context->GetExceptionString() == "division by zero");
+    CHECK(context->GetExceptionLocation().row == 2);
+}
+

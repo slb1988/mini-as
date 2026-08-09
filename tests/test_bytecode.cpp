@@ -222,3 +222,20 @@ TEST_CASE(bytecode_uses_qualified_function_and_global_symbol_ids) {
     CHECK(mini_as::Disassemble(module.functions[1]).find("CALL") != std::string::npos);
 }
 
+TEST_CASE(bytecode_materializes_missing_default_arguments_at_call_sites) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("default-bytecode",
+        "int add(int value, int delta = 2) { return value + delta; } int main() { return add(40); }",
+        diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    mini_as::TypeChecker checker(diagnostics);
+    CHECK(checker.Check(tree.root));
+    mini_as::BytecodeCompiler compiler(diagnostics);
+    auto module = compiler.Compile(tree.root, checker.Functions());
+    CHECK(!diagnostics.HasErrors());
+    CHECK(module.functions[1].constants.size() == 2);
+    CHECK(module.functions[1].constants[1].As<std::int32_t>() == 2);
+    CHECK(module.callables[0].parameterCount == 2);
+}
+

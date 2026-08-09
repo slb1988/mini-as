@@ -155,3 +155,26 @@ TEST_CASE(parser_preserves_namespace_hierarchy_and_qualified_declarations) {
     CHECK(inner->firstChild->nextSibling->token.lexeme == "Outer::Inner::read");
 }
 
+TEST_CASE(parser_attaches_default_expressions_to_parameters) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer lexer("parse", "int add(int value, int delta = 2) { return value + delta; }",
+                             diagnostics);
+    mini_as::Parser parser(lexer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    CHECK(!diagnostics.HasErrors());
+    const auto parameters = tree.root->firstChild->Children();
+    CHECK(parameters[0]->kind == mini_as::NodeKind::Parameter);
+    CHECK(parameters[0]->firstChild == nullptr);
+    CHECK(parameters[1]->kind == mini_as::NodeKind::Parameter);
+    CHECK(parameters[1]->firstChild->kind == mini_as::NodeKind::Literal);
+}
+
+TEST_CASE(parser_rejects_required_parameters_after_defaults) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer lexer("parse", "int bad(int first = 1, int second) { return second; }", diagnostics);
+    mini_as::Parser parser(lexer.ScanAll(), diagnostics);
+    parser.Parse();
+    CHECK(diagnostics.HasErrors());
+    CHECK(diagnostics.All().back().message.find("must also have defaults") != std::string::npos);
+}
+

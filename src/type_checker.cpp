@@ -185,8 +185,10 @@ void TypeChecker::Predeclare(AstNode* root) {
                 FunctionSignature method{child->token.lexeme, child->declaredType, {}, false, {},
                                          type.name, true, child->isConstructor};
                 for (AstNode* parameter = child->firstChild;
-                     parameter && parameter->kind == NodeKind::Parameter; parameter = parameter->nextSibling)
+                     parameter && parameter->kind == NodeKind::Parameter; parameter = parameter->nextSibling) {
                     method.parameters.push_back(parameter->declaredType);
+                    if (parameter->firstChild) ++method.defaultArgumentCount;
+                }
                 bool duplicate = false;
                 for (const auto& existing : type.methods) {
                     if (existing.name == method.name && existing.parameters == method.parameters &&
@@ -218,7 +220,10 @@ void TypeChecker::Predeclare(AstNode* root) {
         if (node->kind != NodeKind::FunctionDecl) continue;
         FunctionSignature signature{node->token.lexeme, node->declaredType, {}, false, {}, {}, false, false};
         for (AstNode* child = node->firstChild; child && child->kind == NodeKind::Parameter;
-             child = child->nextSibling) signature.parameters.push_back(child->declaredType);
+             child = child->nextSibling) {
+            signature.parameters.push_back(child->declaredType);
+            if (child->firstChild) ++signature.defaultArgumentCount;
+        }
         for (const auto& existing : functions_) {
             if (existing.name == signature.name && existing.parameters == signature.parameters) {
                 Error(node, "duplicate function '" + signature.Declaration() + "'");
@@ -434,6 +439,13 @@ void TypeChecker::CheckFunction(AstNode* node) {
     scopes_.emplace_back();
     AstNode* child = node->firstChild;
     while (child && child->kind == NodeKind::Parameter) {
+        if (child->firstChild) {
+            const DataType value = CheckExpression(child->firstChild);
+            if (!CanConvert(value, child->declaredType)) {
+                Error(child, "cannot initialize default argument of type " +
+                             child->declaredType.Name() + " with " + value.Name());
+            }
+        }
         Declare(child->token, child->declaredType);
         child = child->nextSibling;
     }
@@ -636,7 +648,8 @@ DataType TypeChecker::CheckCall(AstNode* node) {
             for (const auto& candidate : type->methods) {
                 if (!candidate.constructor) continue;
                 hasConstructors = true;
-                if (candidate.parameters.size() != arguments.size()) continue;
+                const std::size_t minimum = candidate.parameters.size() - candidate.defaultArgumentCount;
+                if (arguments.size() < minimum || arguments.size() > candidate.parameters.size()) continue;
                 int cost = 0;
                 bool viable = true;
                 for (std::size_t i = 0; i < arguments.size(); ++i) {
@@ -671,7 +684,8 @@ DataType TypeChecker::CheckCall(AstNode* node) {
     int bestCost = 1000000;
     for (const auto& function : functions_) {
         const auto nameCost = NameMatchCost(function.name, callee->token.lexeme, currentNamespace_);
-        if (!nameCost || function.parameters.size() != arguments.size()) continue;
+        const std::size_t minimum = function.parameters.size() - function.defaultArgumentCount;
+        if (!nameCost || arguments.size() < minimum || arguments.size() > function.parameters.size()) continue;
         int cost = *nameCost;
         bool viable = true;
         for (std::size_t i = 0; i < arguments.size(); ++i) {
@@ -713,7 +727,9 @@ const FunctionSignature* TypeChecker::FindMethod(
     const FunctionSignature* best = nullptr;
     int bestCost = 1000000;
     for (const auto& method : type->methods) {
-        if (method.constructor || method.name != name || method.parameters.size() != arguments.size()) continue;
+        const std::size_t minimum = method.parameters.size() - method.defaultArgumentCount;
+        if (method.constructor || method.name != name || arguments.size() < minimum ||
+            arguments.size() > method.parameters.size()) continue;
         int cost = 0;
         bool viable = true;
         for (std::size_t i = 0; i < arguments.size(); ++i) {

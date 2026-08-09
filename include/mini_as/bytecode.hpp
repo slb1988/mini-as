@@ -161,6 +161,7 @@ private:
     std::string currentNamespace_;
     std::uint32_t implicitThisSlot_ = 0;
     std::unordered_map<std::string, AstNode*> classNodes_;
+    std::unordered_map<std::string, AstNode*> functionNodes_;
 };
 
 } // namespace mini_as

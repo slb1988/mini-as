@@ -18,6 +18,7 @@ struct FunctionSignature {
     std::string objectType;
     bool method = false;
     bool constructor = false;
+    std::size_t defaultArgumentCount = 0;
 
     std::string Declaration() const;
 };

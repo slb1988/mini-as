@@ -237,12 +237,19 @@ AstNode* Parser::ParseFunction(DataType returnType, Token name) {
     AstNode* function = arena_->Make(NodeKind::FunctionDecl, name);
     function->declaredType = std::move(returnType);
     Consume(TokenKind::LeftParen, "expected '(' after function name");
+    bool sawDefault = false;
     if (!Check(TokenKind::RightParen)) {
         do {
             DataType type = ParseType(false);
             Token paramName = Consume(TokenKind::Identifier, "expected parameter name");
             AstNode* parameter = arena_->Make(NodeKind::Parameter, paramName);
             parameter->declaredType = std::move(type);
+            if (Match(TokenKind::Equal)) {
+                sawDefault = true;
+                parameter->AppendChild(ParseAssignment());
+            } else if (sawDefault) {
+                Error(paramName, "parameters after a default argument must also have defaults");
+            }
             function->AppendChild(parameter);
         } while (Match(TokenKind::Comma));
     }

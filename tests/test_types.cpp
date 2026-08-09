@@ -84,3 +84,16 @@ TEST_CASE(type_checker_resolves_current_parent_and_explicit_namespaces) {
     CHECK(checker.Functions().back().name == "main");
 }
 
+TEST_CASE(type_checker_counts_and_validates_default_arguments) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("types",
+        "int add(int value, int first = 1, int second = 2) { return value + first + second; } "
+        "int main() { return add(39); }",
+        diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    mini_as::TypeChecker checker(diagnostics);
+    CHECK(checker.Check(tree.root));
+    CHECK(checker.Functions()[0].defaultArgumentCount == 2);
+}
+

@@ -157,6 +157,7 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
     }
     classIds_.clear();
     classNodes_.clear();
+    functionNodes_.clear();
     std::uint32_t nextFunctionId = 0;
     for (const auto& signature : signatures_) {
         if (signature.id.IsValid() && signature.id.value >= nextFunctionId)
@@ -176,6 +177,30 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
     if (!root) return module_;
     for (AstNode* node : TopLevelDeclarations(root))
         if (node->kind == NodeKind::ClassDecl) classNodes_[node->token.lexeme] = node;
+    for (AstNode* node : TopLevelDeclarations(root)) {
+        if (node->kind == NodeKind::FunctionDecl) {
+            FunctionSignature signature{node->token.lexeme, node->declaredType, {}, false, {}, {}, false, false};
+            for (AstNode* parameter = node->firstChild;
+                 parameter && parameter->kind == NodeKind::Parameter; parameter = parameter->nextSibling) {
+                signature.parameters.push_back(parameter->declaredType);
+                if (parameter->firstChild) ++signature.defaultArgumentCount;
+            }
+            functionNodes_[FunctionKey(signature)] = node;
+        }
+        if (node->kind == NodeKind::ClassDecl) {
+            for (AstNode* methodNode = node->firstChild; methodNode; methodNode = methodNode->nextSibling) {
+                if (methodNode->kind != NodeKind::FunctionDecl) continue;
+                FunctionSignature method{methodNode->token.lexeme, methodNode->declaredType, {}, false, {},
+                                         node->token.lexeme, true, methodNode->isConstructor};
+                for (AstNode* parameter = methodNode->firstChild;
+                     parameter && parameter->kind == NodeKind::Parameter; parameter = parameter->nextSibling) {
+                    method.parameters.push_back(parameter->declaredType);
+                    if (parameter->firstChild) ++method.defaultArgumentCount;
+                }
+                functionNodes_[FunctionKey(method)] = methodNode;
+            }
+        }
+    }
     for (const auto& signature : signatures_) {
         if (signature.host) {
             hostIds_[FunctionKey(signature)] = signature.id;
@@ -872,8 +897,9 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
         const FunctionSignature* constructor = nullptr;
         int bestCost = 1000000;
         for (const auto& signature : signatures_) {
+            const std::size_t minimum = signature.parameters.size() - signature.defaultArgumentCount;
             if (!signature.constructor || signature.objectType != resolvedClassName ||
-                signature.parameters.size() != arguments.size()) continue;
+                arguments.size() < minimum || arguments.size() > signature.parameters.size()) continue;
             int cost = 0;
             bool viable = true;
             for (std::size_t i = 0; i < arguments.size(); ++i) {
@@ -885,9 +911,19 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
         }
         if (constructor) {
             Emit(OpCode::Dup, 0, node);
-            for (std::size_t i = 0; i < arguments.size(); ++i) {
-                CompileExpression(arguments[i]);
-                EmitConversion(arguments[i]->inferredType, constructor->parameters[i], arguments[i]);
+            const auto definition = functionNodes_.find(FunctionKey(*constructor));
+            AstNode* parameter = definition == functionNodes_.end() ? nullptr : definition->second->firstChild;
+            for (std::size_t i = 0; i < constructor->parameters.size(); ++i) {
+                while (parameter && parameter->kind != NodeKind::Parameter) parameter = parameter->nextSibling;
+                AstNode* expression = i < arguments.size() ? arguments[i]
+                    : (parameter ? parameter->firstChild : nullptr);
+                if (!expression) { Error(node, "default constructor argument is missing"); return; }
+                const std::string previousNamespace = currentNamespace_;
+                if (i >= arguments.size()) currentNamespace_ = NamespaceOf(constructor->objectType);
+                CompileExpression(expression);
+                currentNamespace_ = previousNamespace;
+                EmitConversion(expression->inferredType, constructor->parameters[i], expression);
+                if (parameter) parameter = parameter->nextSibling;
             }
             const auto target = functionIds_.find(FunctionKey(*constructor));
             if (target == functionIds_.end()) { Error(node, "constructor target is missing"); return; }
@@ -905,7 +941,9 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
     const std::string receiverType = explicitMethod
         ? callee->firstChild->inferredType.objectName : currentObjectType_;
     for (const auto& signature : signatures_) {
-        if (signature.constructor || signature.parameters.size() != arguments.size()) continue;
+        const std::size_t minimum = signature.parameters.size() - signature.defaultArgumentCount;
+        if (signature.constructor || arguments.size() < minimum ||
+            arguments.size() > signature.parameters.size()) continue;
         std::optional<int> nameCost;
         if (signature.method) {
             if (signature.name == callName) nameCost = 0;
@@ -929,9 +967,20 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
         if (explicitMethod) CompileExpression(callee->firstChild);
         else Emit(OpCode::LoadLocal, static_cast<std::int32_t>(implicitThisSlot_), callee);
     }
-    for (std::size_t i = 0; i < arguments.size(); ++i) {
-        CompileExpression(arguments[i]);
-        EmitConversion(arguments[i]->inferredType, target->parameters[i], arguments[i]);
+    const auto definition = functionNodes_.find(FunctionKey(*target));
+    AstNode* parameter = definition == functionNodes_.end() ? nullptr : definition->second->firstChild;
+    for (std::size_t i = 0; i < target->parameters.size(); ++i) {
+        while (parameter && parameter->kind != NodeKind::Parameter) parameter = parameter->nextSibling;
+        AstNode* expression = i < arguments.size() ? arguments[i]
+            : (parameter ? parameter->firstChild : nullptr);
+        if (!expression) { Error(node, "default argument is missing"); return; }
+        const std::string previousNamespace = currentNamespace_;
+        if (i >= arguments.size()) currentNamespace_ = NamespaceOf(
+            target->method ? target->objectType : target->name);
+        CompileExpression(expression);
+        currentNamespace_ = previousNamespace;
+        EmitConversion(expression->inferredType, target->parameters[i], expression);
+        if (parameter) parameter = parameter->nextSibling;
     }
     if (target->method) {
         const ClassSignature* ownerType = nullptr;

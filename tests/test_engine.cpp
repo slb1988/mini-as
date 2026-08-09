@@ -795,3 +795,33 @@ TEST_CASE(enums_reject_duplicate_nonconstant_and_mutated_values) {
     CHECK(mutation);
 }
 
+TEST_CASE(typedefs_alias_primitive_types_across_function_and_variable_declarations) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("typedefs");
+    module->AddScriptSection("typedefs",
+        "typedef int Score; Score bonus = 2; "
+        "Score add(Score value) { Score result = value + bonus; return result; } "
+        "int main() { return add(40); }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int main()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+}
+
+TEST_CASE(typedefs_reject_duplicate_alias_names) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    auto* module = engine->GetModule("bad-typedefs");
+    module->AddScriptSection("bad-typedefs",
+        "typedef int Number; typedef float Number; int main() { return 0; }");
+    CHECK(!module->Build());
+    bool duplicate = false;
+    for (const auto& diagnostic : diagnostics)
+        duplicate = duplicate || diagnostic.message.find("duplicate typedef 'Number'") != std::string::npos;
+    CHECK(duplicate);
+}
+

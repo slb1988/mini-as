@@ -109,3 +109,29 @@ TEST_CASE(parser_builds_typed_enum_values_with_optional_initializers) {
     CHECK(declarations[1]->declaredType == mini_as::DataType::Enum("Color"));
 }
 
+TEST_CASE(parser_resolves_primitive_typedefs_in_all_declarations) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer lexer("parse",
+        "typedef int Score; Score total = 40; Score add(Score value) { Score next = value + 2; return next; }",
+        diagnostics);
+    mini_as::Parser parser(lexer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    CHECK(!diagnostics.HasErrors());
+    const auto declarations = tree.root->Children();
+    CHECK(declarations[0]->kind == mini_as::NodeKind::TypedefDecl);
+    CHECK(declarations[0]->declaredType == mini_as::DataType::Int());
+    CHECK(declarations[1]->declaredType == mini_as::DataType::Int());
+    CHECK(declarations[2]->declaredType == mini_as::DataType::Int());
+    CHECK(declarations[2]->firstChild->declaredType == mini_as::DataType::Int());
+    CHECK(declarations[2]->Children().back()->firstChild->declaredType == mini_as::DataType::Int());
+}
+
+TEST_CASE(parser_rejects_nonprimitive_typedef_sources) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer lexer("parse", "class Box {} typedef Box Alias;", diagnostics);
+    mini_as::Parser parser(lexer.ScanAll(), diagnostics);
+    parser.Parse();
+    CHECK(diagnostics.HasErrors());
+    CHECK(diagnostics.All().back().message.find("built-in primitive") != std::string::npos);
+}
+

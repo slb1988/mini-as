@@ -49,6 +49,12 @@ struct EnumSignature {
     TypeId id;
 };
 
+struct TypedefSignature {
+    std::string name;
+    DataType underlyingType;
+    TypeId id;
+};
+
 class TypeChecker {
 public:
     explicit TypeChecker(DiagnosticSink& diagnostics);
@@ -58,6 +64,7 @@ public:
     const std::vector<ClassSignature>& Classes() const;
     const std::vector<GlobalSignature>& Globals() const;
     const std::vector<EnumSignature>& Enums() const;
+    const std::vector<TypedefSignature>& Typedefs() const;
 
 private:
     struct VariableSymbol {
@@ -65,6 +72,7 @@ private:
         bool isConst = false;
     };
 
+    void PredeclareTypedefs(AstNode* root);
     void PredeclareEnums(AstNode* root);
     void Predeclare(AstNode* root);
     void PredeclareGlobals(AstNode* root);
@@ -90,6 +98,7 @@ private:
     std::vector<ClassSignature> classes_;
     std::vector<GlobalSignature> globals_;
     std::vector<EnumSignature> enums_;
+    std::vector<TypedefSignature> typedefs_;
     std::unordered_map<std::string, Value> enumConstants_;
     std::vector<std::unordered_map<std::string, VariableSymbol>> scopes_;
     DataType currentReturn_ = DataType::Void();

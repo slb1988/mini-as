@@ -52,3 +52,18 @@ TEST_CASE(type_checker_resolves_enum_constant_expressions_and_preserves_identity
     CHECK(tree.root->Children()[1]->declaredType == mini_as::DataType::Enum("Color"));
 }
 
+TEST_CASE(type_checker_exposes_typedef_metadata_with_canonical_storage_type) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("types",
+        "typedef uint64 EntityId; EntityId identity(EntityId value) { return value; }",
+        diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    mini_as::TypeChecker checker(diagnostics);
+    CHECK(checker.Check(tree.root));
+    CHECK(checker.Typedefs().size() == 1);
+    CHECK(checker.Typedefs()[0].name == "EntityId");
+    CHECK(checker.Typedefs()[0].underlyingType == mini_as::DataType::UInt64());
+    CHECK(checker.Functions().back().returnType == mini_as::DataType::UInt64());
+}
+

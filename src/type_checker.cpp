@@ -27,6 +27,7 @@ void TypeChecker::RegisterFunction(FunctionSignature signature) {
 bool TypeChecker::Check(AstNode* root) {
     scopes_.clear();
     scopes_.emplace_back();
+    PredeclareTypedefs(root);
     PredeclareEnums(root);
     Predeclare(root);
     PredeclareGlobals(root);
@@ -38,6 +39,21 @@ const std::vector<FunctionSignature>& TypeChecker::Functions() const { return fu
 const std::vector<ClassSignature>& TypeChecker::Classes() const { return classes_; }
 const std::vector<GlobalSignature>& TypeChecker::Globals() const { return globals_; }
 const std::vector<EnumSignature>& TypeChecker::Enums() const { return enums_; }
+const std::vector<TypedefSignature>& TypeChecker::Typedefs() const { return typedefs_; }
+
+void TypeChecker::PredeclareTypedefs(AstNode* root) {
+    typedefs_.clear();
+    if (!root) return;
+    for (AstNode* node = root->firstChild; node; node = node->nextSibling) {
+        if (node->kind != NodeKind::TypedefDecl) continue;
+        bool duplicate = false;
+        for (const auto& existing : typedefs_) {
+            if (existing.name == node->token.lexeme) duplicate = true;
+        }
+        if (duplicate) Error(node, "duplicate typedef '" + node->token.lexeme + "'");
+        else typedefs_.push_back({node->token.lexeme, node->declaredType, {}});
+    }
+}
 
 void TypeChecker::PredeclareEnums(AstNode* root) {
     enums_.clear();
@@ -346,6 +362,7 @@ void TypeChecker::CheckNode(AstNode* node) {
         break;
     }
     case NodeKind::InterfaceDecl: case NodeKind::EnumDecl: case NodeKind::EnumValue:
+    case NodeKind::TypedefDecl:
     case NodeKind::EmptyStmt:
     case NodeKind::CaseClause: case NodeKind::DefaultClause: break;
     default: CheckExpression(node); break;

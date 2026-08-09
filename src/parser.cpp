@@ -1,8 +1,29 @@
 #include "mini_as/parser.hpp"
 
+#include <optional>
 #include <utility>
 
 namespace mini_as {
+namespace {
+
+std::optional<DataType> TypedefPrimitive(TokenKind kind) {
+    switch (kind) {
+    case TokenKind::KwBool: return DataType::Bool();
+    case TokenKind::KwInt8: return DataType::Int8();
+    case TokenKind::KwInt16: return DataType::Int16();
+    case TokenKind::KwInt: return DataType::Int();
+    case TokenKind::KwInt64: return DataType::Int64();
+    case TokenKind::KwUInt8: return DataType::UInt8();
+    case TokenKind::KwUInt16: return DataType::UInt16();
+    case TokenKind::KwUInt: return DataType::UInt();
+    case TokenKind::KwUInt64: return DataType::UInt64();
+    case TokenKind::KwFloat: return DataType::Float();
+    case TokenKind::KwDouble: return DataType::Double();
+    default: return std::nullopt;
+    }
+}
+
+} // namespace
 
 void AstNode::AppendChild(AstNode* child) {
     if (!child) return;
@@ -34,6 +55,11 @@ Parser::Parser(std::vector<Token> tokens, DiagnosticSink& diagnostics)
             tokens_[index + 1].kind == TokenKind::Identifier) {
             enumTypes_.insert(tokens_[index + 1].lexeme);
         }
+        if (tokens_[index].kind == TokenKind::KwTypedef && index + 2 < tokens_.size()) {
+            const auto primitive = TypedefPrimitive(tokens_[index + 1].kind);
+            if (primitive && tokens_[index + 2].kind == TokenKind::Identifier)
+                typedefTypes_[tokens_[index + 2].lexeme] = *primitive;
+        }
     }
 }
 
@@ -54,6 +80,7 @@ AstNode* Parser::ParseTopLevel() {
     if (Match(TokenKind::KwClass)) return ParseClass(false);
     if (Match(TokenKind::KwInterface)) return ParseClass(true);
     if (Match(TokenKind::KwEnum)) return ParseEnum();
+    if (Match(TokenKind::KwTypedef)) return ParseTypedef();
     if (IsTypeStart()) {
         const auto saved = current_;
         DataType type = ParseType(true);
@@ -87,6 +114,17 @@ AstNode* Parser::ParseEnum() {
     }
     Consume(TokenKind::RightBrace, "expected '}' after enum body");
     Match(TokenKind::Semicolon);
+    return declaration;
+}
+
+AstNode* Parser::ParseTypedef() {
+    const bool primitive = TypedefPrimitive(Current().kind).has_value();
+    DataType source = ParseType(false);
+    Token name = Consume(TokenKind::Identifier, "expected typedef name");
+    AstNode* declaration = arena_->Make(NodeKind::TypedefDecl, name);
+    declaration->declaredType = std::move(source);
+    if (!primitive) Error(name, "typedef source must be a built-in primitive type");
+    Consume(TokenKind::Semicolon, "expected ';' after typedef");
     return declaration;
 }
 
@@ -409,8 +447,10 @@ DataType Parser::ParseType(bool allowVoid) {
     else if (Match(TokenKind::KwString)) type = DataType::String();
     else if (Match(TokenKind::Identifier)) {
         const std::string& name = Previous().lexeme;
-        type = enumTypes_.find(name) != enumTypes_.end() ? DataType::Enum(name)
-                                                        : DataType::Object(name);
+        const auto alias = typedefTypes_.find(name);
+        if (alias != typedefTypes_.end()) type = alias->second;
+        else type = enumTypes_.find(name) != enumTypes_.end() ? DataType::Enum(name)
+                                                              : DataType::Object(name);
     }
     else { Error(Current(), "expected type"); return DataType::Invalid(); }
     if (Match(TokenKind::At)) type.isHandle = true;
@@ -476,7 +516,8 @@ void Parser::Synchronize() {
         case TokenKind::KwFor: case TokenKind::KwSwitch: case TokenKind::KwCase:
         case TokenKind::KwDefault: case TokenKind::KwReturn: case TokenKind::KwBreak:
         case TokenKind::KwContinue:
-        case TokenKind::KwClass: case TokenKind::KwInterface: case TokenKind::KwEnum: return;
+        case TokenKind::KwClass: case TokenKind::KwInterface: case TokenKind::KwEnum:
+        case TokenKind::KwTypedef: return;
         default: Advance();
         }
     }

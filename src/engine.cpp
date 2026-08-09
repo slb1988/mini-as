@@ -69,6 +69,8 @@ bool ScriptModule::Build() {
     BytecodeCompiler compiler(diagnostics);
     auto enums = checker.Enums();
     for (auto& type : enums) type.id = engine_.GetOrCreateTypeId(type.name);
+    auto typedefs = checker.Typedefs();
+    for (auto& type : typedefs) type.id = engine_.GetOrCreateTypeId(type.name);
     BytecodeModule candidate = compiler.Compile(tree.root, functions, classes, globals, enums);
     if (diagnostics.HasErrors()) return false;
     std::vector<const TypeInfo*> concreteTypes;

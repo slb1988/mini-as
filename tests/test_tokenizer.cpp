@@ -104,3 +104,13 @@ TEST_CASE(tokenizer_recognizes_enum_declarations) {
     CHECK(tokens[4].kind == mini_as::TokenKind::Comma);
 }
 
+TEST_CASE(tokenizer_recognizes_typedef_declarations) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer lexer("typedef", "typedef uint64 EntityId;", diagnostics);
+    const auto tokens = lexer.ScanAll();
+    CHECK(!diagnostics.HasErrors());
+    CHECK(tokens[0].kind == mini_as::TokenKind::KwTypedef);
+    CHECK(tokens[1].kind == mini_as::TokenKind::KwUInt64);
+    CHECK(tokens[2].lexeme == "EntityId");
+}
+

@@ -3,13 +3,14 @@
 #include "mini_as/tokenizer.hpp"
 
 #include <memory>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 namespace mini_as {
 
 enum class NodeKind {
-    Program, FunctionDecl, Parameter, ClassDecl, InterfaceDecl, EnumDecl, EnumValue, FieldDecl,
+    Program, FunctionDecl, Parameter, ClassDecl, InterfaceDecl, EnumDecl, EnumValue, TypedefDecl, FieldDecl,
     Block, DeclList, VarDecl, IfStmt, WhileStmt, DoWhileStmt, ForStmt,
     SwitchStmt, CaseClause, DefaultClause, ReturnStmt, BreakStmt, ContinueStmt, ExprStmt, EmptyStmt,
     Assign, Conditional, Binary, Unary, Increment, Call, Member, Literal, Identifier
@@ -55,6 +56,7 @@ private:
     AstNode* ParseTopLevel();
     AstNode* ParseClass(bool isInterface);
     AstNode* ParseEnum();
+    AstNode* ParseTypedef();
     AstNode* ParseFunction(DataType returnType, Token name);
     AstNode* ParseBlock();
     AstNode* ParseStatement();
@@ -101,6 +103,7 @@ private:
     std::size_t current_ = 0;
     AstArena* arena_ = nullptr;
     std::unordered_set<std::string> enumTypes_;
+    std::unordered_map<std::string, DataType> typedefTypes_;
 };
 
 } // namespace mini_as

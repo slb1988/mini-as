@@ -1242,3 +1242,57 @@ TEST_CASE(null_base_class_virtual_dispatch_reports_the_call_location) {
     CHECK(context->GetExceptionLocation().row == 3);
 }
 
+TEST_CASE(private_and_protected_members_respect_class_hierarchy_access) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("member-access");
+    module->AddScriptSection("member-access",
+        "class Base { private int secret = 1; protected int value; "
+        "protected Base(int input) { value = input; } "
+        "private int hidden() { return secret; } "
+        "protected int score() { return value + hidden(); } "
+        "int read() { return score(); } } "
+        "class Derived : Base { Derived() { super(40); } "
+        "int bump() { value += 2; return score(); } } "
+        "int run() { Derived@ item = Derived(); return item.read() + item.bump(); }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 84);
+}
+
+TEST_CASE(private_and_protected_members_reject_unauthorized_access) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    auto* module = engine->GetModule("bad-member-access");
+    module->AddScriptSection("bad-member-access",
+        "class Base { private int secret; protected int guarded; private Base() {} "
+        "private int hidden() { return 1; } protected int shielded() { return 2; } } "
+        "class Derived : Base { Derived() { super(); } "
+        "int breach() { return secret + hidden(); } } "
+        "int run() { Base@ item = Base(); return item.guarded + item.shielded(); }");
+    CHECK(!module->Build());
+    bool privateConstructor = false, privateField = false, privateMethod = false;
+    bool protectedField = false, protectedMethod = false;
+    for (const auto& diagnostic : diagnostics) {
+        privateConstructor = privateConstructor ||
+            diagnostic.message.find("private constructor 'Base::Base'") != std::string::npos;
+        privateField = privateField ||
+            diagnostic.message.find("private field 'Base::secret'") != std::string::npos;
+        privateMethod = privateMethod ||
+            diagnostic.message.find("private method 'Base::hidden'") != std::string::npos;
+        protectedField = protectedField ||
+            diagnostic.message.find("protected field 'Base::guarded'") != std::string::npos;
+        protectedMethod = protectedMethod ||
+            diagnostic.message.find("protected method 'Base::shielded'") != std::string::npos;
+    }
+    CHECK(privateConstructor);
+    CHECK(privateField);
+    CHECK(privateMethod);
+    CHECK(protectedField);
+    CHECK(protectedMethod);
+}
+

@@ -29,6 +29,15 @@ TEST_CASE(tokenizer_recognizes_const_qualifier) {
     CHECK(tokens[1].kind == mini_as::TokenKind::KwInt);
 }
 
+TEST_CASE(tokenizer_recognizes_member_access_qualifiers) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer lexer("access", "private protected", diagnostics);
+    const auto tokens = lexer.ScanAll();
+    CHECK(!diagnostics.HasErrors());
+    CHECK(tokens[0].kind == mini_as::TokenKind::KwPrivate);
+    CHECK(tokens[1].kind == mini_as::TokenKind::KwProtected);
+}
+
 TEST_CASE(tokenizer_recognizes_the_integer_type_family) {
     mini_as::DiagnosticSink diagnostics;
     mini_as::Tokenizer lexer("integers",

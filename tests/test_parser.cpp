@@ -254,3 +254,30 @@ TEST_CASE(parser_preserves_class_and_interface_inheritance_lists) {
     CHECK(inherited[1]->token.lexeme == "IValue");
 }
 
+TEST_CASE(parser_preserves_private_and_protected_class_members) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer lexer("parse",
+        "class Box { private int value; protected Box() {} "
+        "private ~Box() {} protected int read() { return value; } }",
+        diagnostics);
+    mini_as::Parser parser(lexer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    CHECK(!diagnostics.HasErrors());
+    const auto members = tree.root->firstChild->Children();
+    CHECK(members[0]->memberAccess == mini_as::MemberAccess::Private);
+    CHECK(members[1]->isConstructor);
+    CHECK(members[1]->memberAccess == mini_as::MemberAccess::Protected);
+    CHECK(members[2]->isDestructor);
+    CHECK(members[2]->memberAccess == mini_as::MemberAccess::Private);
+    CHECK(members[3]->memberAccess == mini_as::MemberAccess::Protected);
+}
+
+TEST_CASE(parser_rejects_access_qualifiers_on_interface_members) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer lexer("parse", "interface IValue { private int get(); }", diagnostics);
+    mini_as::Parser parser(lexer.ScanAll(), diagnostics);
+    parser.Parse();
+    CHECK(diagnostics.HasErrors());
+    CHECK(diagnostics.All()[0].message.find("interface members") != std::string::npos);
+}
+

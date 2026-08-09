@@ -24,8 +24,16 @@ struct FunctionSignature {
     bool returnsReference = false;
     bool returnReferenceConst = false;
     bool destructor = false;
+    MemberAccess access = MemberAccess::Public;
 
     std::string Declaration() const;
+};
+
+struct FieldSignature {
+    std::string name;
+    DataType type;
+    std::string objectType;
+    MemberAccess access = MemberAccess::Public;
 };
 
 struct ClassSignature {
@@ -34,7 +42,7 @@ struct ClassSignature {
     std::vector<std::string> inheritedTypes;
     std::string baseClass;
     std::vector<std::string> interfaces;
-    std::vector<std::pair<std::string, DataType>> fields;
+    std::vector<FieldSignature> fields;
     std::size_t inheritedFieldCount = 0;
     std::vector<FunctionSignature> methods;
     TypeId id;
@@ -113,6 +121,9 @@ private:
                                     const std::vector<std::string>& argumentNames);
     const ClassSignature* FindClass(std::string_view name) const;
     bool IsDerivedFrom(std::string_view derived, std::string_view base) const;
+    bool CanAccess(MemberAccess access, std::string_view declaringType) const;
+    void CheckAccess(const AstNode* node, MemberAccess access, std::string_view declaringType,
+                     std::string_view memberKind, std::string_view memberName);
     void Declare(const Token& name, const DataType& type, bool isConst = false,
                  bool returnableReference = false);
     bool CanReturnReference(const AstNode* node) const;

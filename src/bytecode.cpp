@@ -676,10 +676,10 @@ std::optional<BytecodeCompiler::LValueRef> BytecodeCompiler::ResolveLValue(AstNo
             for (const auto& type : classes_) {
                 if (type.name != currentObjectType_) continue;
                 for (std::size_t index = 0; index < type.fields.size(); ++index) {
-                    if (type.fields[index].first != expression->token.lexeme) continue;
+                    if (type.fields[index].name != expression->token.lexeme) continue;
                     LValueRef result;
                     result.kind = LValueRef::Kind::Field;
-                    result.type = type.fields[index].second;
+                    result.type = type.fields[index].type;
                     result.field = static_cast<std::uint32_t>(index);
                     return result;
                 }
@@ -1494,7 +1494,8 @@ std::optional<std::pair<std::size_t, DataType>> BytecodeCompiler::FindField(cons
     for (const auto& type : classes_) {
         if (type.name != typeName) continue;
         for (std::size_t i = 0; i < type.fields.size(); ++i) {
-            if (type.fields[i].first == member->token.lexeme) return std::make_pair(i, type.fields[i].second);
+            if (type.fields[i].name == member->token.lexeme)
+                return std::make_pair(i, type.fields[i].type);
         }
     }
     return std::nullopt;

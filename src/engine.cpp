@@ -297,7 +297,10 @@ const TypeInfo* ScriptEngine::RegisterScriptType(const ClassSignature& signature
     type->baseClass = signature.baseClass;
     type->baseType = nullptr;
     type->collector = signature.interfaceType ? nullptr : &garbageCollector_;
-    type->fields = signature.fields;
+    type->fields.clear();
+    type->fields.reserve(signature.fields.size());
+    for (const auto& field : signature.fields)
+        type->fields.emplace_back(field.name, field.type);
     type->interfaces = signature.interfaces;
     type->interfaceMethodTable.clear();
     for (const auto& interfaceName : signature.interfaces) {

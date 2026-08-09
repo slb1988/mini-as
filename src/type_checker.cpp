@@ -191,12 +191,16 @@ void TypeChecker::Predeclare(AstNode* root) {
             child = child->nextSibling;
         }
         for (; child; child = child->nextSibling) {
-            if (child->kind == NodeKind::FieldDecl) type.fields.push_back({child->token.lexeme, child->declaredType});
+            if (child->kind == NodeKind::FieldDecl) {
+                type.fields.push_back({child->token.lexeme, child->declaredType,
+                                       type.name, child->memberAccess});
+            }
             else if (child->kind == NodeKind::FunctionDecl) {
                 FunctionSignature method{child->token.lexeme, child->declaredType, {}, false, {},
                                          type.name, true, child->isConstructor, 0, {}, {},
                                          child->returnsReference, child->returnReferenceConst,
                                          child->isDestructor};
+                method.access = child->memberAccess;
                 for (AstNode* parameter = child->firstChild;
                      parameter && parameter->kind == NodeKind::Parameter; parameter = parameter->nextSibling) {
                     method.parameters.push_back(parameter->declaredType);
@@ -263,13 +267,13 @@ void TypeChecker::Predeclare(AstNode* root) {
             resolveInheritance(*inherited);
             if (inheritanceState[inherited->name] == 1) continue;
             type.inheritedFieldCount = inherited->fields.size();
-            std::vector<std::pair<std::string, DataType>> fields = inherited->fields;
+            std::vector<FieldSignature> fields = inherited->fields;
             for (const auto& field : type.fields) {
                 const auto duplicate = std::find_if(fields.begin(), fields.end(), [&](const auto& existing) {
-                    return existing.first == field.first;
+                    return existing.name == field.name;
                 });
                 if (duplicate != fields.end())
-                    Error(root, "field '" + field.first + "' conflicts with an inherited field");
+                    Error(root, "field '" + field.name + "' conflicts with an inherited field");
                 fields.push_back(field);
             }
             type.fields = std::move(fields);
@@ -527,18 +531,20 @@ void TypeChecker::CheckNode(AstNode* node) {
         if (currentClass_ && !currentClass_->baseClass.empty() && !hasConstructor) {
             const ClassSignature* base = FindClass(currentClass_->baseClass);
             bool hasDeclaredConstructors = false;
-            bool hasDefaultConstructor = false;
+            const FunctionSignature* defaultConstructor = nullptr;
             if (base) {
                 for (const auto& method : base->methods) {
                     if (!method.constructor) continue;
                     hasDeclaredConstructors = true;
-                    hasDefaultConstructor = hasDefaultConstructor ||
-                        MatchArguments(method, {}, {}).has_value();
+                    if (MatchArguments(method, {}, {})) defaultConstructor = &method;
                 }
             }
-            if (hasDeclaredConstructors && !hasDefaultConstructor)
+            if (hasDeclaredConstructors && !defaultConstructor)
                 Error(node, "base class '" + currentClass_->baseClass +
                             "' has no default constructor");
+            else if (defaultConstructor)
+                CheckAccess(node, defaultConstructor->access, defaultConstructor->objectType,
+                            "constructor", defaultConstructor->name);
         }
         currentClass_ = previousClass;
         currentNamespace_ = previousNamespace;
@@ -587,18 +593,20 @@ void TypeChecker::CheckFunction(AstNode* node) {
         if (currentClass_ && !currentClass_->baseClass.empty() && superCallCount_ == 0) {
             const ClassSignature* base = FindClass(currentClass_->baseClass);
             bool hasDeclaredConstructors = false;
-            bool hasDefaultConstructor = false;
+            const FunctionSignature* defaultConstructor = nullptr;
             if (base) {
                 for (const auto& method : base->methods) {
                     if (!method.constructor) continue;
                     hasDeclaredConstructors = true;
-                    hasDefaultConstructor = hasDefaultConstructor ||
-                        MatchArguments(method, {}, {}).has_value();
+                    if (MatchArguments(method, {}, {})) defaultConstructor = &method;
                 }
             }
-            if (hasDeclaredConstructors && !hasDefaultConstructor)
+            if (hasDeclaredConstructors && !defaultConstructor)
                 Error(node, "base class '" + currentClass_->baseClass +
                             "' has no default constructor; call super(...) explicitly");
+            else if (defaultConstructor)
+                CheckAccess(node, defaultConstructor->access, defaultConstructor->objectType,
+                            "constructor", defaultConstructor->name);
         }
     }
     scopes_.pop_back();
@@ -639,9 +647,10 @@ DataType TypeChecker::CheckExpression(AstNode* node) {
         if (type) result = type->type;
         if (!result.IsValid() && currentClass_) {
             for (const auto& field : currentClass_->fields) {
-                if (field.first == node->token.lexeme) {
-                    result = field.second;
+                if (field.name == node->token.lexeme) {
+                    result = field.type;
                     node->implicitThis = true;
+                    CheckAccess(node, field.access, field.objectType, "field", field.name);
                     break;
                 }
             }
@@ -658,7 +667,12 @@ DataType TypeChecker::CheckExpression(AstNode* node) {
         const ClassSignature* type = FindClass(object.objectName);
         if (!type) Error(node, "unknown object type '" + object.objectName + "'");
         else {
-            for (const auto& field : type->fields) if (field.first == node->token.lexeme) result = field.second;
+            for (const auto& field : type->fields) {
+                if (field.name != node->token.lexeme) continue;
+                result = field.type;
+                CheckAccess(node, field.access, field.objectType, "field", field.name);
+                break;
+            }
             if (!result.IsValid()) Error(node, "type '" + type->name + "' has no field '" + node->token.lexeme + "'");
         }
         break;
@@ -824,8 +838,11 @@ DataType TypeChecker::CheckCall(AstNode* node) {
         }
         if ((hasConstructors && !constructor) || (!hasConstructors && !arguments.empty()))
             Error(node, "no matching base constructor for '" + currentClass_->baseClass + "'");
-        else if (constructor)
+        else if (constructor) {
             ValidateReferenceArguments(*constructor, argumentNodes, argumentNames);
+            CheckAccess(node, constructor->access, constructor->objectType,
+                        "constructor", constructor->name);
+        }
         node->nonVirtualCall = true;
         return DataType::Void();
     }
@@ -848,8 +865,11 @@ DataType TypeChecker::CheckCall(AstNode* node) {
                 Error(node, "no matching constructor for '" + type->name + "'");
                 return DataType::Invalid();
             }
-            if (constructor)
+            if (constructor) {
                 ValidateReferenceArguments(*constructor, argumentNodes, argumentNames);
+                CheckAccess(node, constructor->access, constructor->objectType,
+                            "constructor", constructor->name);
+            }
             return DataType::Object(type->name, true);
         }
     }
@@ -859,6 +879,7 @@ DataType TypeChecker::CheckCall(AstNode* node) {
         if (!method) Error(node, "no matching method for '" + callee->token.lexeme + "'");
         else {
             ValidateReferenceArguments(*method, argumentNodes, argumentNames);
+            CheckAccess(node, method->access, method->objectType, "method", method->name);
             node->returnsReference = method->returnsReference;
             node->returnReferenceConst = method->returnReferenceConst;
         }
@@ -877,6 +898,7 @@ DataType TypeChecker::CheckCall(AstNode* node) {
             if (!method) Error(node, "no matching base method for '" + callee->token.lexeme + "'");
             else {
                 ValidateReferenceArguments(*method, argumentNodes, argumentNames);
+                CheckAccess(node, method->access, method->objectType, "method", method->name);
                 node->returnsReference = method->returnsReference;
                 node->returnReferenceConst = method->returnReferenceConst;
                 node->nonVirtualCall = true;
@@ -889,6 +911,7 @@ DataType TypeChecker::CheckCall(AstNode* node) {
             DataType::Object(currentClass_->name, true), callee->token.lexeme, arguments, argumentNames);
         if (method) {
             ValidateReferenceArguments(*method, argumentNodes, argumentNames);
+            CheckAccess(node, method->access, method->objectType, "method", method->name);
             node->returnsReference = method->returnsReference;
             node->returnReferenceConst = method->returnReferenceConst;
             return method->returnType;
@@ -1078,6 +1101,23 @@ bool TypeChecker::IsDerivedFrom(std::string_view derived, std::string_view base)
         type = type->baseClass.empty() ? nullptr : FindClass(type->baseClass);
     }
     return false;
+}
+
+bool TypeChecker::CanAccess(MemberAccess access, std::string_view declaringType) const {
+    if (access == MemberAccess::Public) return true;
+    if (!currentClass_) return false;
+    if (currentClass_->name == declaringType) return true;
+    return access == MemberAccess::Protected &&
+           IsDerivedFrom(currentClass_->name, declaringType);
+}
+
+void TypeChecker::CheckAccess(const AstNode* node, MemberAccess access,
+                              std::string_view declaringType, std::string_view memberKind,
+                              std::string_view memberName) {
+    if (CanAccess(access, declaringType)) return;
+    const char* visibility = access == MemberAccess::Private ? "private" : "protected";
+    Error(node, "cannot access " + std::string(visibility) + " " + std::string(memberKind) +
+                " '" + std::string(declaringType) + "::" + std::string(memberName) + "'");
 }
 
 void TypeChecker::Declare(const Token& name, const DataType& type, bool isConst,

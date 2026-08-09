@@ -10,6 +10,7 @@
 namespace mini_as {
 
 enum class ParameterMode { Value, In, Out, InOut };
+enum class MemberAccess { Public, Protected, Private };
 
 enum class NodeKind {
     Program, NamespaceDecl, FunctionDecl, Parameter, ClassDecl, InterfaceDecl,
@@ -35,6 +36,7 @@ struct AstNode {
     bool nonVirtualCall = false;
     bool returnsReference = false;
     bool returnReferenceConst = false;
+    MemberAccess memberAccess = MemberAccess::Public;
     ParameterMode parameterMode = ParameterMode::Value;
     AstNode* firstChild = nullptr;
     AstNode* nextSibling = nullptr;

@@ -212,6 +212,17 @@ AstNode* Parser::ParseClass(bool isInterface) {
     }
     Consume(TokenKind::LeftBrace, "expected '{' before type body");
     while (!Check(TokenKind::RightBrace) && !Check(TokenKind::End)) {
+        MemberAccess access = MemberAccess::Public;
+        Token accessToken;
+        if (Match(TokenKind::KwPrivate)) {
+            access = MemberAccess::Private;
+            accessToken = Previous();
+        } else if (Match(TokenKind::KwProtected)) {
+            access = MemberAccess::Protected;
+            accessToken = Previous();
+        }
+        if (isInterface && access != MemberAccess::Public)
+            Error(accessToken, "interface members cannot be private or protected");
         if (Check(TokenKind::Tilde)) {
             const Token tilde = Advance();
             Token destructorName = Consume(TokenKind::Identifier, "expected destructor name after '~'");
@@ -221,6 +232,7 @@ AstNode* Parser::ParseClass(bool isInterface) {
             destructorName.lexeme = "~" + destructorName.lexeme;
             AstNode* destructor = ParseFunction(DataType::Void(), std::move(destructorName));
             destructor->isDestructor = true;
+            destructor->memberAccess = access;
             node->AppendChild(destructor);
             continue;
         }
@@ -229,6 +241,7 @@ AstNode* Parser::ParseClass(bool isInterface) {
             Token constructorName = Advance();
             AstNode* constructor = ParseFunction(DataType::Void(), std::move(constructorName));
             constructor->isConstructor = true;
+            constructor->memberAccess = access;
             node->AppendChild(constructor);
             continue;
         }
@@ -238,10 +251,12 @@ AstNode* Parser::ParseClass(bool isInterface) {
         Token memberName = Consume(TokenKind::Identifier, "expected member name");
         if (Check(TokenKind::LeftParen)) {
             AstNode* method = ParseFunction(type, std::move(memberName), returnsReference, returnConst);
+            method->memberAccess = access;
             node->AppendChild(method);
         } else {
             AstNode* field = arena_->Make(NodeKind::FieldDecl, memberName);
             field->declaredType = type;
+            field->memberAccess = access;
             if (Match(TokenKind::Equal)) field->AppendChild(ParseExpression());
             Consume(TokenKind::Semicolon, "expected ';' after field");
             node->AppendChild(field);

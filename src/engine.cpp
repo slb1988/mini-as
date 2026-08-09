@@ -6,6 +6,12 @@
 namespace mini_as {
 namespace {
 
+std::string NamespaceOf(std::string_view qualifiedName) {
+    const auto separator = qualifiedName.rfind("::");
+    return separator == std::string_view::npos ? std::string{}
+                                               : std::string(qualifiedName.substr(0, separator));
+}
+
 Value DefaultGlobalValue(const DataType& type, const ScriptEngine& engine) {
     if (type == DataType::Bool()) return Value(false);
     if (type.IsInteger()) return Value::Integer(type, 0);
@@ -49,6 +55,10 @@ bool ScriptModule::Build() {
     SourceLocation endLocation{sections_.empty() ? name_ : sections_.back().name};
     tokens.push_back({TokenKind::End, {}, std::move(endLocation)});
     Parser parser(std::move(tokens), diagnostics);
+    for (const auto& type : engine_.hostEnums_) parser.RegisterEnumType(type.name);
+    for (const auto& type : engine_.hostTypedefs_)
+        parser.RegisterTypedefType(type.name, type.underlyingType);
+    for (const auto& type : engine_.hostFuncdefs_) parser.RegisterFuncdefType(type.name);
     auto tree = parser.Parse();
     TypeChecker checker(diagnostics);
     for (const auto& signature : engine_.HostSignatures()) checker.RegisterFunction(signature);
@@ -56,6 +66,9 @@ bool ScriptModule::Build() {
         checker.RegisterGlobalProperty(signature);
     for (const auto& signature : engine_.HostTypeSignatures())
         checker.RegisterObjectType(signature);
+    for (const auto& signature : engine_.hostEnums_) checker.RegisterEnum(signature);
+    for (const auto& signature : engine_.hostTypedefs_) checker.RegisterTypedef(signature);
+    for (const auto& signature : engine_.hostFuncdefs_) checker.RegisterFuncdef(signature);
     const bool typed = !diagnostics.HasErrors() && checker.Check(tree.root);
     if (!typed) return false;
     auto functions = checker.Functions();
@@ -279,6 +292,7 @@ bool ScriptEngine::RegisterGlobalFunction(std::string declaration, GenericFuncti
     DiagnosticSink diagnostics([this](const Diagnostic& diagnostic) { ForwardDiagnostic(diagnostic); });
     auto signature = ParseFunctionDeclaration(declaration, diagnostics);
     if (!signature || !callback) return false;
+    ResolveRegisteredTypes(*signature);
     if (signature->readOnlyMethod) {
         diagnostics.Report({"registration"}, Severity::Error,
                            "global functions cannot use the method const qualifier");
@@ -304,7 +318,7 @@ bool ScriptEngine::RegisterGlobalFunction(std::string declaration, GenericFuncti
 }
 
 const TypeInfo* ScriptEngine::RegisterObjectType(std::string name) {
-    if (name.empty() || objectTypes_.find(name) != objectTypes_.end()) return nullptr;
+    if (name.empty() || HasRegisteredType(name)) return nullptr;
     auto type = std::make_unique<TypeInfo>();
     type->name = name;
     type->id = GetOrCreateTypeId(name);
@@ -315,7 +329,7 @@ const TypeInfo* ScriptEngine::RegisterObjectType(std::string name) {
 }
 
 const TypeInfo* ScriptEngine::RegisterValueType(std::string name, Value defaultValue) {
-    if (name.empty() || objectTypes_.find(name) != objectTypes_.end() ||
+    if (name.empty() || HasRegisteredType(name) ||
         defaultValue.Type() != DataType::Object(name, false)) return nullptr;
     auto type = std::make_unique<TypeInfo>();
     type->name = name;
@@ -326,6 +340,80 @@ const TypeInfo* ScriptEngine::RegisterValueType(std::string name, Value defaultV
     const TypeInfo* result = type.get();
     objectTypes_.emplace(std::move(name), std::move(type));
     return result;
+}
+
+bool ScriptEngine::RegisterEnum(std::string name) {
+    DiagnosticSink diagnostics([this](const Diagnostic& diagnostic) { ForwardDiagnostic(diagnostic); });
+    if (name.empty() || HasRegisteredType(name)) {
+        diagnostics.Report({"registration"}, Severity::Error,
+                           "duplicate or invalid registered enum '" + name + "'");
+        return false;
+    }
+    hostEnums_.push_back({std::move(name), {}, {}});
+    hostEnums_.back().id = GetOrCreateTypeId(hostEnums_.back().name);
+    return true;
+}
+
+bool ScriptEngine::RegisterEnumValue(std::string enumName, std::string valueName,
+                                     std::int32_t value) {
+    DiagnosticSink diagnostics([this](const Diagnostic& diagnostic) { ForwardDiagnostic(diagnostic); });
+    const auto type = std::find_if(hostEnums_.begin(), hostEnums_.end(),
+        [&](const auto& candidate) { return candidate.name == enumName; });
+    if (type == hostEnums_.end()) {
+        diagnostics.Report({"registration"}, Severity::Error,
+                           "enum type '" + enumName + "' is not registered");
+        return false;
+    }
+    if (valueName.empty()) {
+        diagnostics.Report({"registration"}, Severity::Error,
+                           "registered enum value name cannot be empty");
+        return false;
+    }
+    const std::string nameSpace = NamespaceOf(enumName);
+    for (const auto& registered : hostEnums_) {
+        if (NamespaceOf(registered.name) != nameSpace) continue;
+        for (const auto& existing : registered.values) {
+            if (existing.name != valueName) continue;
+            diagnostics.Report({"registration"}, Severity::Error,
+                               "duplicate registered enum value '" + valueName + "'");
+            return false;
+        }
+    }
+    type->values.push_back({std::move(valueName), value});
+    return true;
+}
+
+bool ScriptEngine::RegisterTypedef(std::string name, DataType underlyingType) {
+    DiagnosticSink diagnostics([this](const Diagnostic& diagnostic) { ForwardDiagnostic(diagnostic); });
+    const bool primitive = underlyingType == DataType::Bool() || underlyingType.IsInteger() ||
+        underlyingType == DataType::Float() || underlyingType == DataType::Double();
+    if (name.empty() || HasRegisteredType(name) || !primitive ||
+        underlyingType.kind == TypeKind::Enum) {
+        diagnostics.Report({"registration"}, Severity::Error,
+                           "registered typedef requires a unique name and primitive type");
+        return false;
+    }
+    hostTypedefs_.push_back({std::move(name), std::move(underlyingType), {}});
+    hostTypedefs_.back().id = GetOrCreateTypeId(hostTypedefs_.back().name);
+    return true;
+}
+
+bool ScriptEngine::RegisterFuncdef(std::string declaration) {
+    DiagnosticSink diagnostics([this](const Diagnostic& diagnostic) { ForwardDiagnostic(diagnostic); });
+    auto signature = ParseFunctionDeclaration(declaration, diagnostics);
+    if (!signature) return false;
+    ResolveRegisteredTypes(*signature);
+    if (signature->name.empty() || HasRegisteredType(signature->name) ||
+        signature->readOnlyMethod) {
+        diagnostics.Report({"registration"}, Severity::Error,
+                           "duplicate or invalid registered funcdef '" + signature->name + "'");
+        return false;
+    }
+    signature->host = false;
+    FuncdefSignature type{signature->name, std::move(*signature), {}, {}};
+    type.id = GetOrCreateTypeId(type.name);
+    hostFuncdefs_.push_back(std::move(type));
+    return true;
 }
 
 bool ScriptEngine::RegisterObjectFactory(std::string typeName, std::string declaration,
@@ -344,6 +432,7 @@ bool ScriptEngine::RegisterObjectFactory(std::string typeName, std::string decla
                                "object factory callback cannot be empty");
         return false;
     }
+    ResolveRegisteredTypes(*signature);
     const DataType expected = DataType::Object(typeName, true);
     if (signature->name != "f" || signature->returnType != expected ||
         signature->returnsReference || signature->readOnlyMethod) {
@@ -382,6 +471,7 @@ bool ScriptEngine::RegisterObjectMethod(std::string typeName, std::string declar
                                "object method callback cannot be empty");
         return false;
     }
+    ResolveRegisteredTypes(*signature);
     if (signature->returnsReference) {
         diagnostics.Report({"registration"}, Severity::Error,
                            "registered object method return references are not supported yet");
@@ -425,6 +515,7 @@ bool ScriptEngine::RegisterObjectProperty(std::string typeName, std::string decl
                                "object property getter cannot be empty");
         return false;
     }
+    parsed->type = ResolveRegisteredType(std::move(parsed->type));
     if (parsed->type.kind == TypeKind::Object &&
         (!parsed->type.isHandle || !GetTypeInfo(parsed->type.objectName))) {
         diagnostics.Report({"registration"}, Severity::Error,
@@ -486,6 +577,7 @@ bool ScriptEngine::RegisterGlobalProperty(std::string declaration, Value* storag
                                "global property storage cannot be null");
         return false;
     }
+    signature->type = ResolveRegisteredType(std::move(signature->type));
     if (!signature->type.IsNumeric() && signature->type != DataType::Bool() &&
         signature->type != DataType::String()) {
         diagnostics.Report({"registration"}, Severity::Error,
@@ -612,6 +704,39 @@ std::vector<ClassSignature> ScriptEngine::HostTypeSignatures() const {
         signatures.push_back(std::move(signature));
     }
     return signatures;
+}
+
+DataType ScriptEngine::ResolveRegisteredType(DataType type) const {
+    if (type.kind != TypeKind::Object) return type;
+    for (const auto& alias : hostTypedefs_) {
+        if (alias.name != type.objectName) continue;
+        if (type.isHandle) return DataType::Invalid();
+        return alias.underlyingType;
+    }
+    for (const auto& typeInfo : hostEnums_) {
+        if (typeInfo.name != type.objectName) continue;
+        if (type.isHandle) return DataType::Invalid();
+        return DataType::Enum(typeInfo.name);
+    }
+    for (const auto& typeInfo : hostFuncdefs_) {
+        if (typeInfo.name == type.objectName)
+            return DataType::Function(typeInfo.name, type.isHandle);
+    }
+    return type;
+}
+
+void ScriptEngine::ResolveRegisteredTypes(FunctionSignature& signature) const {
+    signature.returnType = ResolveRegisteredType(std::move(signature.returnType));
+    for (auto& parameter : signature.parameters)
+        parameter = ResolveRegisteredType(std::move(parameter));
+}
+
+bool ScriptEngine::HasRegisteredType(std::string_view name) const {
+    if (objectTypes_.find(std::string(name)) != objectTypes_.end()) return true;
+    for (const auto& type : hostEnums_) if (type.name == name) return true;
+    for (const auto& type : hostTypedefs_) if (type.name == name) return true;
+    for (const auto& type : hostFuncdefs_) if (type.name == name) return true;
+    return false;
 }
 
 FunctionId ScriptEngine::GetOrCreateFunctionId(std::string key) {

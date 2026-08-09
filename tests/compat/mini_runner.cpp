@@ -40,18 +40,27 @@ int main(int argc, char** argv) {
                   << ':' << diagnostic.message << '\n';
     });
     if (!engine->RegisterGlobalProperty("int hostCounter", &hostCounter)) return 3;
+    if (!engine->RegisterEnum("HostColor") ||
+        !engine->RegisterEnumValue("HostColor", "HostRed", 40) ||
+        !engine->RegisterEnumValue("HostColor", "HostBlue", 42) ||
+        !engine->RegisterTypedef("HostScore", mini_as::DataType::Int()) ||
+        !engine->RegisterFuncdef("HostScore HostTransform(HostScore value)")) return 4;
+    if (!engine->RegisterGlobalFunction("HostScore Lift(HostScore value)",
+        [](mini_as::GenericCall& call) {
+            call.SetReturnInt(call.GetArgInt(0) + 2);
+        })) return 5;
     if (!engine->RegisterValueType("HostValue",
-        mini_as::Value::HostValue("HostValue", CompatValue{}))) return 4;
+        mini_as::Value::HostValue("HostValue", CompatValue{}))) return 6;
     if (!engine->RegisterGlobalFunction("int ReadHostValue(HostValue value)",
         [](mini_as::GenericCall& call) {
             call.SetReturnInt(call.GetArg(0).AsHostValue<CompatValue>().value);
-        })) return 5;
+        })) return 7;
     if (!engine->RegisterObjectMethod("HostValue", "int get() const",
         [](mini_as::GenericCall& call) {
             call.SetReturnInt(call.GetObjectValue().AsHostValue<CompatValue>().value);
-        })) return 6;
+        })) return 8;
     const auto* hostRefType = engine->RegisterObjectType("HostRef");
-    if (!hostRefType) return 7;
+    if (!hostRefType) return 9;
     if (!engine->RegisterObjectProperty("HostRef", "int value",
         [](const mini_as::ObjectHandle& object) {
             const auto* value = dynamic_cast<const CompatReference*>(object.Get());
@@ -61,24 +70,24 @@ int main(int argc, char** argv) {
             auto* target = dynamic_cast<CompatReference*>(object.Get());
             if (!target) throw std::runtime_error("invalid HostRef receiver");
             target->value = value.As<std::int32_t>();
-        })) return 8;
+        })) return 10;
     if (!engine->RegisterObjectFactory("HostRef", "HostRef@ f(int value)",
         [hostRefType](mini_as::GenericCall& call) {
             call.SetReturnObject(mini_as::ObjectHandle(
                 new CompatReference(hostRefType, call.GetArgInt(0))));
-        })) return 9;
+        })) return 11;
     if (!engine->RegisterObjectMethod("HostRef", "int get() const",
         [](mini_as::GenericCall& call) {
             const auto* value = dynamic_cast<const CompatReference*>(call.GetObject().Get());
             if (!value) { call.SetException("invalid HostRef receiver"); return; }
             call.SetReturnInt(value->value);
-        })) return 10;
+        })) return 12;
     auto* module = engine->GetModule("compat", mini_as::ModulePolicy::AlwaysCreate);
     module->AddScriptSection("compat.as", ReadFile(argv[1]));
-    if (!module->Build()) return 11;
+    if (!module->Build()) return 13;
     auto context = engine->CreateContext();
-    if (!context->Prepare(module->GetFunctionByDecl("int main()"))) return 12;
-    if (context->Execute() != mini_as::ExecutionState::Finished) return 13;
+    if (!context->Prepare(module->GetFunctionByDecl("int main()"))) return 14;
+    if (context->Execute() != mini_as::ExecutionState::Finished) return 15;
     std::cout << "state=finished\nreturn=int:" << context->GetReturnInt() << '\n';
     return 0;
 }

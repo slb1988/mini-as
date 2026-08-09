@@ -98,6 +98,9 @@ public:
     void RegisterFunction(FunctionSignature signature);
     void RegisterGlobalProperty(GlobalSignature signature);
     void RegisterObjectType(ClassSignature signature);
+    void RegisterEnum(EnumSignature signature);
+    void RegisterTypedef(TypedefSignature signature);
+    void RegisterFuncdef(FuncdefSignature signature);
     bool Check(AstNode* root);
     const std::vector<FunctionSignature>& Functions() const;
     const std::vector<ClassSignature>& Classes() const;
@@ -169,6 +172,9 @@ private:
     std::vector<FunctionSignature> functions_;
     std::vector<GlobalSignature> registeredGlobals_;
     std::vector<ClassSignature> registeredClasses_;
+    std::vector<EnumSignature> registeredEnums_;
+    std::vector<TypedefSignature> registeredTypedefs_;
+    std::vector<FuncdefSignature> registeredFuncdefs_;
     std::vector<ClassSignature> classes_;
     std::vector<GlobalSignature> globals_;
     std::vector<EnumSignature> enums_;

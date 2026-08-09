@@ -71,6 +71,9 @@ struct SyntaxTree {
 class Parser {
 public:
     Parser(std::vector<Token> tokens, DiagnosticSink& diagnostics);
+    void RegisterEnumType(std::string name);
+    void RegisterTypedefType(std::string name, DataType underlyingType);
+    void RegisterFuncdefType(std::string name);
     SyntaxTree Parse();
 
 private:

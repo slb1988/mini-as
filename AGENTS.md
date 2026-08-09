@@ -150,12 +150,11 @@ Do not stage generated build directories or unrelated user changes. Inspect
 The completed stage notes are authoritative. At the time this guide was added,
 the latest language stage is:
 
-- Stage 63 registered value types with `std::any`-backed deep copies, default and
-  copy construction, value argument/return/write-back support, and const generic
-  methods.
+- Stage 64 registered enums, typedefs, and funcdefs by seeding the parser and type
+  checker catalogs and reusing typed enum constants plus function-handle bytecode.
 
-The next planned feature is registered enums, typedefs, and funcdefs. Confirm the
-latest git history and `docs/stages/` before choosing the next stage number.
+The next planned feature is stable type reflection metadata. Confirm the latest git
+history and `docs/stages/` before choosing the next stage number.
 
 ## Common pitfalls
 
@@ -182,6 +181,9 @@ latest git history and `docs/stages/` before choosing the next stage number.
 - Registered value types live in `HostValueStorage` and copy through `std::any`.
   Const callbacks receive the value through `GenericCall::GetObjectValue()`;
   reject mutable methods until receiver writeback is implemented.
+- Registered enums, typedefs, and funcdefs must be injected into `Parser` before
+  parsing and into `TypeChecker` before `Check`; otherwise their surface spelling
+  degrades to an object type and later bytecode metadata will be inconsistent.
 - Preserve the last successful module image on parser, type-check, bytecode, or
   global-initializer failure.
 - Do not edit compatibility expectations merely to make mini and official

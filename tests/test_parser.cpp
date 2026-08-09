@@ -16,6 +16,23 @@ TEST_CASE(parser_builds_function_tree_with_precedence) {
     CHECK(expression->Children()[1]->token.kind == mini_as::TokenKind::Star);
 }
 
+TEST_CASE(parser_resolves_registered_enum_typedef_and_funcdef_types) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer lexer("registered-types",
+        "HostScore value = Red; HostCallback@ callback; HostColor color = Red;", diagnostics);
+    mini_as::Parser parser(lexer.ScanAll(), diagnostics);
+    parser.RegisterTypedefType("HostScore", mini_as::DataType::Int());
+    parser.RegisterFuncdefType("HostCallback");
+    parser.RegisterEnumType("HostColor");
+    auto tree = parser.Parse();
+    CHECK(!diagnostics.HasErrors());
+    const auto declarations = tree.root->Children();
+    CHECK(declarations.size() == 3);
+    CHECK(declarations[0]->declaredType == mini_as::DataType::Int());
+    CHECK(declarations[1]->declaredType == mini_as::DataType::Function("HostCallback", true));
+    CHECK(declarations[2]->declaredType == mini_as::DataType::Enum("HostColor"));
+}
+
 TEST_CASE(parser_groups_multiple_declarations_with_independent_initializers) {
     mini_as::DiagnosticSink diagnostics;
     mini_as::Tokenizer lexer("parse", "int f() { int a = 1, b, c = a + 2; return c; }", diagnostics);

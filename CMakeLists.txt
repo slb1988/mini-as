@@ -426,4 +426,11 @@ if(MINI_AS_BUILD_COMPAT_TESTS)
       -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
       -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/registered_value_types.as
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_registered_named_types
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/registered_named_types.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
 endif()

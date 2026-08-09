@@ -149,6 +149,18 @@ Parser::Parser(std::vector<Token> tokens, DiagnosticSink& diagnostics)
     }
 }
 
+void Parser::RegisterEnumType(std::string name) {
+    enumTypes_.insert(std::move(name));
+}
+
+void Parser::RegisterTypedefType(std::string name, DataType underlyingType) {
+    typedefTypes_[std::move(name)] = std::move(underlyingType);
+}
+
+void Parser::RegisterFuncdefType(std::string name) {
+    funcdefTypes_.insert(std::move(name));
+}
+
 SyntaxTree Parser::Parse() {
     SyntaxTree tree;
     arena_ = &tree.arena;

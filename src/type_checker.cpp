@@ -166,6 +166,18 @@ void TypeChecker::RegisterObjectType(ClassSignature signature) {
     registeredClasses_.push_back(std::move(signature));
 }
 
+void TypeChecker::RegisterEnum(EnumSignature signature) {
+    registeredEnums_.push_back(std::move(signature));
+}
+
+void TypeChecker::RegisterTypedef(TypedefSignature signature) {
+    registeredTypedefs_.push_back(std::move(signature));
+}
+
+void TypeChecker::RegisterFuncdef(FuncdefSignature signature) {
+    registeredFuncdefs_.push_back(std::move(signature));
+}
+
 bool TypeChecker::Check(AstNode* root) {
     scopes_.clear();
     activeLambdas_.clear();
@@ -187,7 +199,7 @@ const std::vector<TypedefSignature>& TypeChecker::Typedefs() const { return type
 const std::vector<FuncdefSignature>& TypeChecker::Funcdefs() const { return funcdefs_; }
 
 void TypeChecker::PredeclareFuncdefs(AstNode* root) {
-    funcdefs_.clear();
+    funcdefs_ = registeredFuncdefs_;
     if (!root) return;
     std::vector<FuncdefDeclaration> declarations;
     CollectFuncdefDeclarations(root, declarations);
@@ -195,6 +207,12 @@ void TypeChecker::PredeclareFuncdefs(AstNode* root) {
         AstNode* node = declaration.node;
         bool duplicate = false;
         for (const auto& existing : funcdefs_)
+            duplicate = duplicate || existing.name == node->token.lexeme;
+        for (const auto& existing : registeredEnums_)
+            duplicate = duplicate || existing.name == node->token.lexeme;
+        for (const auto& existing : registeredTypedefs_)
+            duplicate = duplicate || existing.name == node->token.lexeme;
+        for (const auto& existing : registeredClasses_)
             duplicate = duplicate || existing.name == node->token.lexeme;
         for (AstNode* other : TopLevelDeclarations(root)) {
             if (other == node) continue;
@@ -222,7 +240,7 @@ void TypeChecker::PredeclareFuncdefs(AstNode* root) {
 }
 
 void TypeChecker::PredeclareTypedefs(AstNode* root) {
-    typedefs_.clear();
+    typedefs_ = registeredTypedefs_;
     if (!root) return;
     for (AstNode* node : TopLevelDeclarations(root)) {
         if (node->kind != NodeKind::TypedefDecl) continue;
@@ -230,14 +248,31 @@ void TypeChecker::PredeclareTypedefs(AstNode* root) {
         for (const auto& existing : typedefs_) {
             if (existing.name == node->token.lexeme) duplicate = true;
         }
+        for (const auto& existing : registeredEnums_)
+            duplicate = duplicate || existing.name == node->token.lexeme;
+        for (const auto& existing : registeredFuncdefs_)
+            duplicate = duplicate || existing.name == node->token.lexeme;
+        for (const auto& existing : registeredClasses_)
+            duplicate = duplicate || existing.name == node->token.lexeme;
         if (duplicate) Error(node, "duplicate typedef '" + node->token.lexeme + "'");
         else typedefs_.push_back({node->token.lexeme, node->declaredType, {}});
     }
 }
 
 void TypeChecker::PredeclareEnums(AstNode* root) {
-    enums_.clear();
+    enums_ = registeredEnums_;
     enumConstants_.clear();
+    for (const auto& type : registeredEnums_) {
+        const DataType enumType = DataType::Enum(type.name);
+        const std::string enumNamespace = NamespaceOf(type.name);
+        for (const auto& value : type.values) {
+            const std::string qualifiedValue = enumNamespace.empty()
+                ? value.name : enumNamespace + "::" + value.name;
+            enumConstants_.emplace(
+                qualifiedValue,
+                Value::Integer(enumType, static_cast<std::uint32_t>(value.value)));
+        }
+    }
     if (!root) return;
     for (AstNode* node : TopLevelDeclarations(root)) {
         if (node->kind != NodeKind::EnumDecl) continue;
@@ -245,6 +280,12 @@ void TypeChecker::PredeclareEnums(AstNode* root) {
         for (const auto& existing : enums_) {
             if (existing.name == node->token.lexeme) duplicateType = true;
         }
+        for (const auto& existing : registeredTypedefs_)
+            duplicateType = duplicateType || existing.name == node->token.lexeme;
+        for (const auto& existing : registeredFuncdefs_)
+            duplicateType = duplicateType || existing.name == node->token.lexeme;
+        for (const auto& existing : registeredClasses_)
+            duplicateType = duplicateType || existing.name == node->token.lexeme;
         if (duplicateType) {
             Error(node, "duplicate enum '" + node->token.lexeme + "'");
             continue;
@@ -310,7 +351,14 @@ void TypeChecker::Predeclare(AstNode* root) {
         const auto duplicateType = std::find_if(classes_.begin(), classes_.end(), [&](const auto& type) {
             return type.name == node->token.lexeme;
         });
-        if (duplicateType != classes_.end()) {
+        bool conflictingType = duplicateType != classes_.end();
+        for (const auto& type : enums_)
+            conflictingType = conflictingType || type.name == node->token.lexeme;
+        for (const auto& type : typedefs_)
+            conflictingType = conflictingType || type.name == node->token.lexeme;
+        for (const auto& type : funcdefs_)
+            conflictingType = conflictingType || type.name == node->token.lexeme;
+        if (conflictingType) {
             Error(node, "duplicate type '" + node->token.lexeme + "'");
             continue;
         }

@@ -204,3 +204,67 @@ TEST_CASE(registered_global_property_type_drift_reports_script_location) {
     CHECK(context->GetExceptionLocation().row == 2);
 }
 
+TEST_CASE(registered_enums_typedefs_and_funcdefs_share_the_script_type_system) {
+    auto engine = mini_as::CreateScriptEngine();
+    CHECK(engine->RegisterEnum("HostColor"));
+    CHECK(engine->RegisterEnumValue("HostColor", "HostRed", 40));
+    CHECK(engine->RegisterEnumValue("HostColor", "HostBlue", 42));
+    CHECK(engine->RegisterTypedef("HostScore", mini_as::DataType::Int()));
+    CHECK(engine->RegisterFuncdef("HostScore HostTransform(HostScore value)"));
+    CHECK(engine->RegisterGlobalFunction("HostScore Lift(HostScore value)",
+        [](mini_as::GenericCall& call) {
+            call.SetReturnInt(call.GetArgInt(0) + 2);
+        }));
+    auto* module = engine->GetModule("registered-named-types");
+    module->AddScriptSection("registered-named-types",
+        "HostColor selected = HostRed; HostTransform@ transform = @Lift; "
+        "int main() { return transform(selected) + (selected == HostRed ? 0 : 100); }");
+    CHECK(module->Build());
+    const auto* function = module->GetFunctionByDecl("int main()");
+    CHECK(function != nullptr);
+    bool handleCall = false;
+    for (const auto& instruction : function->code)
+        handleCall = handleCall || instruction.opcode == mini_as::OpCode::CallHandle;
+    CHECK(handleCall);
+    CHECK(module->Bytecode().funcdefs.size() == 1);
+    CHECK(module->Bytecode().funcdefs[0].name == "HostTransform");
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(function));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+}
+
+TEST_CASE(registered_named_types_reject_duplicates_invalid_values_and_bad_callbacks) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    CHECK(engine->RegisterEnum("HostColor"));
+    CHECK(!engine->RegisterEnum("HostColor"));
+    CHECK(!engine->RegisterEnumValue("Missing", "Red", 1));
+    CHECK(!engine->RegisterEnumValue("HostColor", "", 1));
+    CHECK(engine->RegisterEnumValue("HostColor", "Red", 40));
+    CHECK(!engine->RegisterEnumValue("HostColor", "Red", 41));
+    CHECK(!engine->RegisterTypedef("HostColor", mini_as::DataType::Int()));
+    CHECK(!engine->RegisterTypedef("BadAlias", mini_as::DataType::String()));
+    CHECK(engine->RegisterTypedef("HostScore", mini_as::DataType::Int()));
+    CHECK(engine->RegisterFuncdef("HostScore HostTransform(HostScore value)"));
+    CHECK(!engine->RegisterFuncdef("HostScore HostTransform(HostScore value)"));
+    CHECK(!engine->RegisterFuncdef("not a declaration"));
+    auto* module = engine->GetModule("bad-registered-named-types");
+    module->AddScriptSection("bad-registered-named-types",
+        "class HostColor {} float Wrong(float value) { return value; } "
+        "int main() { HostTransform@ transform = @Wrong; return 0; }");
+    CHECK(!module->Build());
+    bool mismatch = false, collision = false;
+    for (const auto& diagnostic : diagnostics) {
+        mismatch = mismatch || diagnostic.message.find("no function matching a funcdef for 'Wrong'") !=
+            std::string::npos;
+        collision = collision || diagnostic.message.find("duplicate type 'HostColor'") !=
+            std::string::npos;
+    }
+    CHECK(mismatch);
+    CHECK(collision);
+}
+

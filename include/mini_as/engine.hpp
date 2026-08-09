@@ -91,6 +91,10 @@ public:
     bool RegisterGlobalProperty(std::string declaration, Value* storage);
     const TypeInfo* RegisterObjectType(std::string name);
     const TypeInfo* RegisterValueType(std::string name, Value defaultValue);
+    bool RegisterEnum(std::string name);
+    bool RegisterEnumValue(std::string enumName, std::string valueName, std::int32_t value);
+    bool RegisterTypedef(std::string name, DataType underlyingType);
+    bool RegisterFuncdef(std::string declaration);
     bool RegisterObjectFactory(std::string typeName, std::string declaration,
                                GenericFunction callback);
     bool RegisterObjectMethod(std::string typeName, std::string declaration,
@@ -112,6 +116,9 @@ private:
     std::vector<FunctionSignature> HostSignatures() const;
     std::vector<GlobalSignature> HostPropertySignatures() const;
     std::vector<ClassSignature> HostTypeSignatures() const;
+    DataType ResolveRegisteredType(DataType type) const;
+    void ResolveRegisteredTypes(FunctionSignature& signature) const;
+    bool HasRegisteredType(std::string_view name) const;
     const TypeInfo* RegisterScriptType(const ClassSignature& type);
     void LinkScriptType(const ClassSignature& type);
     FunctionId GetOrCreateFunctionId(std::string key);
@@ -128,6 +135,9 @@ private:
     std::deque<RegisteredHostFunction> hostFunctions_;
     std::deque<RegisteredHostProperty> hostProperties_;
     std::deque<RegisteredHostObjectProperty> hostObjectProperties_;
+    std::vector<EnumSignature> hostEnums_;
+    std::vector<TypedefSignature> hostTypedefs_;
+    std::vector<FuncdefSignature> hostFuncdefs_;
     GarbageCollector garbageCollector_;
     std::unordered_map<std::string, std::unique_ptr<TypeInfo>> objectTypes_;
     std::unordered_map<std::string, FunctionId> functionIds_;

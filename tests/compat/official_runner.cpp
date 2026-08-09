@@ -56,6 +56,10 @@ void GetHostValue(asIScriptGeneric* call) {
     call->SetReturnDWord(static_cast<asDWORD>(value ? value->value : 0));
 }
 
+void Lift(asIScriptGeneric* call) {
+    call->SetReturnDWord(call->GetArgDWord(0) + 2);
+}
+
 void CompatReferenceFactory(asIScriptGeneric* call) {
     call->SetReturnAddress(new CompatReference(static_cast<int>(call->GetArgDWord(0))));
 }
@@ -85,6 +89,16 @@ int main(int argc, char** argv) {
         engine->ShutDownAndRelease();
         return 4;
     }
+    if (engine->RegisterEnum("HostColor") < 0 ||
+        engine->RegisterEnumValue("HostColor", "HostRed", 40) < 0 ||
+        engine->RegisterEnumValue("HostColor", "HostBlue", 42) < 0 ||
+        engine->RegisterTypedef("HostScore", "int") < 0 ||
+        engine->RegisterFuncdef("HostScore HostTransform(HostScore value)") < 0 ||
+        engine->RegisterGlobalFunction("HostScore Lift(HostScore value)",
+            asFUNCTION(Lift), asCALL_GENERIC) < 0) {
+        engine->ShutDownAndRelease();
+        return 5;
+    }
     if (engine->RegisterObjectType("HostValue", sizeof(CompatValue),
             asOBJ_VALUE | asGetTypeTraits<CompatValue>()) < 0 ||
         engine->RegisterObjectBehaviour("HostValue", asBEHAVE_CONSTRUCT, "void f()",
@@ -102,7 +116,7 @@ int main(int argc, char** argv) {
         engine->RegisterGlobalFunction("int ReadHostValue(HostValue value)",
             asFUNCTION(ReadHostValue), asCALL_GENERIC) < 0) {
         engine->ShutDownAndRelease();
-        return 5;
+        return 6;
     }
     if (engine->RegisterObjectType("HostRef", 0, asOBJ_REF) < 0 ||
         engine->RegisterObjectProperty("HostRef", "int value",
@@ -116,14 +130,14 @@ int main(int argc, char** argv) {
         engine->RegisterObjectMethod("HostRef", "int get() const",
             asMETHOD(CompatReference, Get), asCALL_THISCALL) < 0) {
         engine->ShutDownAndRelease();
-        return 6;
+        return 7;
     }
     asIScriptModule* module = engine->GetModule("compat", asGM_ALWAYS_CREATE);
     const std::string source = ReadFile(argv[1]);
     module->AddScriptSection("compat.as", source.c_str(), source.size());
-    if (module->Build() < 0) { engine->ShutDownAndRelease(); return 7; }
+    if (module->Build() < 0) { engine->ShutDownAndRelease(); return 8; }
     asIScriptFunction* function = module->GetFunctionByDecl("int main()");
-    if (!function) { engine->ShutDownAndRelease(); return 8; }
+    if (!function) { engine->ShutDownAndRelease(); return 9; }
     asIScriptContext* context = engine->CreateContext();
     context->Prepare(function);
     const int state = context->Execute();

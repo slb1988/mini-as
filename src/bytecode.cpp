@@ -186,13 +186,15 @@ BytecodeCompiler::BytecodeCompiler(DiagnosticSink& diagnostics) : diagnostics_(d
 BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<FunctionSignature>& signatures,
                                          const std::vector<ClassSignature>& classes,
                                          const std::vector<GlobalSignature>& globals,
-                                         const std::vector<EnumSignature>& enums) {
+                                         const std::vector<EnumSignature>& enums,
+                                         const std::vector<FuncdefSignature>& funcdefs) {
     module_ = {};
     signatures_ = signatures;
     functionIndices_.clear();
     functionIds_.clear();
     hostIds_.clear();
     classes_ = classes;
+    module_.funcdefs = funcdefs;
     for (const auto& type : classes_)
         for (const auto& method : type.methods) signatures_.push_back(method);
     globals_ = globals;

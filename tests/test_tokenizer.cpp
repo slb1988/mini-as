@@ -152,3 +152,11 @@ TEST_CASE(tokenizer_keeps_property_as_a_contextual_identifier) {
     CHECK(tokens[5].lexeme == "property");
 }
 
+TEST_CASE(tokenizer_recognizes_funcdef_declarations) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer lexer("funcdef", "funcdef bool Filter(int, int);", diagnostics);
+    const auto tokens = lexer.ScanAll();
+    CHECK(!diagnostics.HasErrors());
+    CHECK(tokens[0].kind == mini_as::TokenKind::KwFuncdef);
+}
+

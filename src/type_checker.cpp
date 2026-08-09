@@ -127,6 +127,7 @@ bool TypeChecker::Check(AstNode* root) {
     scopes_.emplace_back();
     PredeclareTypedefs(root);
     PredeclareEnums(root);
+    PredeclareFuncdefs(root);
     Predeclare(root);
     PredeclareGlobals(root);
     for (AstNode* child : TopLevelDeclarations(root)) CheckNode(child);
@@ -138,6 +139,39 @@ const std::vector<ClassSignature>& TypeChecker::Classes() const { return classes
 const std::vector<GlobalSignature>& TypeChecker::Globals() const { return globals_; }
 const std::vector<EnumSignature>& TypeChecker::Enums() const { return enums_; }
 const std::vector<TypedefSignature>& TypeChecker::Typedefs() const { return typedefs_; }
+const std::vector<FuncdefSignature>& TypeChecker::Funcdefs() const { return funcdefs_; }
+
+void TypeChecker::PredeclareFuncdefs(AstNode* root) {
+    funcdefs_.clear();
+    if (!root) return;
+    for (AstNode* node : TopLevelDeclarations(root)) {
+        if (node->kind != NodeKind::FuncdefDecl) continue;
+        bool duplicate = false;
+        for (const auto& existing : funcdefs_)
+            duplicate = duplicate || existing.name == node->token.lexeme;
+        for (AstNode* other : TopLevelDeclarations(root)) {
+            if (other == node) continue;
+            if ((other->kind == NodeKind::ClassDecl || other->kind == NodeKind::InterfaceDecl ||
+                 other->kind == NodeKind::EnumDecl || other->kind == NodeKind::TypedefDecl) &&
+                other->token.lexeme == node->token.lexeme) duplicate = true;
+        }
+        if (duplicate) {
+            Error(node, "duplicate or conflicting funcdef '" + node->token.lexeme + "'");
+            continue;
+        }
+        FunctionSignature signature{node->token.lexeme, node->declaredType, {}, false, {}, {}, false,
+                                    false, 0, {}, {}, node->returnsReference,
+                                    node->returnReferenceConst, false};
+        for (AstNode* parameter = node->firstChild; parameter; parameter = parameter->nextSibling) {
+            signature.parameters.push_back(parameter->declaredType);
+            signature.parameterNames.push_back(parameter->token.lexeme);
+            signature.parameterModes.push_back(parameter->parameterMode);
+            if (parameter->firstChild)
+                Error(parameter, "funcdef parameters cannot have default arguments");
+        }
+        funcdefs_.push_back({node->token.lexeme, std::move(signature), {}});
+    }
+}
 
 void TypeChecker::PredeclareTypedefs(AstNode* root) {
     typedefs_.clear();
@@ -628,7 +662,7 @@ void TypeChecker::CheckNode(AstNode* node) {
         break;
     }
     case NodeKind::InterfaceDecl: case NodeKind::EnumDecl: case NodeKind::EnumValue:
-    case NodeKind::TypedefDecl: case NodeKind::NamespaceDecl:
+    case NodeKind::TypedefDecl: case NodeKind::FuncdefDecl: case NodeKind::NamespaceDecl:
     case NodeKind::EmptyStmt:
     case NodeKind::CaseClause: case NodeKind::DefaultClause: break;
     default: CheckExpression(node); break;

@@ -1636,3 +1636,44 @@ TEST_CASE(try_catch_recovers_from_host_exceptions_without_publishing_them) {
     CHECK(context->GetExceptionString().empty());
 }
 
+TEST_CASE(funcdef_declarations_publish_stable_module_metadata) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("funcdefs");
+    module->AddScriptSection("funcdefs",
+        "funcdef void Notify(string message); "
+        "namespace Events { funcdef bool Filter(int, int &inout value); } "
+        "int run() { return 42; }");
+    CHECK(module->Build());
+    CHECK(module->Bytecode().funcdefs.size() == 2);
+    CHECK(module->Bytecode().funcdefs[0].name == "Notify");
+    CHECK(module->Bytecode().funcdefs[0].id.IsValid());
+    CHECK(module->Bytecode().funcdefs[1].name == "Events::Filter");
+    CHECK(module->Bytecode().funcdefs[1].id.IsValid());
+    CHECK(module->Bytecode().funcdefs[0].id != module->Bytecode().funcdefs[1].id);
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+}
+
+TEST_CASE(funcdef_declarations_reject_duplicates_conflicts_and_defaults) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    auto* module = engine->GetModule("bad-funcdefs");
+    module->AddScriptSection("bad-funcdefs",
+        "funcdef void Same(int); funcdef int Same(float); "
+        "class Conflict {} funcdef void Conflict(); "
+        "funcdef void Defaults(int value = 1); int run() { return 0; }");
+    CHECK(!module->Build());
+    bool duplicate = false, defaultArgument = false;
+    for (const auto& diagnostic : diagnostics) {
+        duplicate = duplicate || diagnostic.message.find("duplicate or conflicting funcdef") != std::string::npos;
+        defaultArgument = defaultArgument || diagnostic.message.find("cannot have default arguments") != std::string::npos;
+    }
+    CHECK(duplicate);
+    CHECK(defaultArgument);
+}
+

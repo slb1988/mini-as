@@ -14,7 +14,7 @@ enum class MemberAccess { Public, Protected, Private };
 
 enum class NodeKind {
     Program, NamespaceDecl, FunctionDecl, Parameter, ClassDecl, InterfaceDecl,
-    EnumDecl, EnumValue, TypedefDecl, FieldDecl,
+    EnumDecl, EnumValue, TypedefDecl, FuncdefDecl, FieldDecl,
     Block, DeclList, VarDecl, IfStmt, WhileStmt, DoWhileStmt, ForStmt,
     SwitchStmt, CaseClause, DefaultClause, ReturnStmt, BreakStmt, ContinueStmt, TryStmt,
     ExprStmt, EmptyStmt,
@@ -75,6 +75,7 @@ private:
     AstNode* ParseClass(bool isInterface);
     AstNode* ParseEnum();
     AstNode* ParseTypedef();
+    AstNode* ParseFuncdef();
     AstNode* ParseFunction(DataType returnType, Token name, bool returnsReference = false,
                            bool returnReferenceConst = false);
     AstNode* ParseBlock();

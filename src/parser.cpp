@@ -122,6 +122,7 @@ AstNode* Parser::ParseTopLevel() {
     if (Match(TokenKind::KwInterface)) return ParseClass(true);
     if (Match(TokenKind::KwEnum)) return ParseEnum();
     if (Match(TokenKind::KwTypedef)) return ParseTypedef();
+    if (Match(TokenKind::KwFuncdef)) return ParseFuncdef();
     if (IsTypeStart() || Check(TokenKind::KwConst)) {
         const auto saved = current_;
         const bool returnConst = Match(TokenKind::KwConst);
@@ -195,6 +196,41 @@ AstNode* Parser::ParseTypedef() {
     declaration->declaredType = std::move(source);
     if (!primitive) Error(name, "typedef source must be a built-in primitive type");
     Consume(TokenKind::Semicolon, "expected ';' after typedef");
+    return declaration;
+}
+
+AstNode* Parser::ParseFuncdef() {
+    const bool returnConst = Match(TokenKind::KwConst);
+    DataType returnType = ParseType(true);
+    const bool returnsReference = Match(TokenKind::Amp);
+    Token name = Consume(TokenKind::Identifier, "expected funcdef name");
+    name.lexeme = QualifyDeclaration(name.lexeme);
+    AstNode* declaration = arena_->Make(NodeKind::FuncdefDecl, name);
+    declaration->declaredType = std::move(returnType);
+    declaration->returnsReference = returnsReference;
+    declaration->returnReferenceConst = returnConst;
+    Consume(TokenKind::LeftParen, "expected '(' after funcdef name");
+    if (!Check(TokenKind::RightParen)) {
+        do {
+            Token parameterToken;
+            parameterToken.location = Current().location;
+            AstNode* parameter = arena_->Make(NodeKind::Parameter, parameterToken);
+            parameter->declaredType = ParseType(false);
+            if (Match(TokenKind::Amp)) {
+                if (Match(TokenKind::KwIn)) parameter->parameterMode = ParameterMode::In;
+                else if (Match(TokenKind::KwOut)) parameter->parameterMode = ParameterMode::Out;
+                else if (Match(TokenKind::KwInOut)) parameter->parameterMode = ParameterMode::InOut;
+                else parameter->parameterMode = ParameterMode::InOut;
+            }
+            if (Check(TokenKind::Identifier)) parameter->token = Advance();
+            if (Match(TokenKind::Equal)) {
+                parameter->AppendChild(ParseAssignment());
+            }
+            declaration->AppendChild(parameter);
+        } while (Match(TokenKind::Comma));
+    }
+    Consume(TokenKind::RightParen, "expected ')' after funcdef parameters");
+    Consume(TokenKind::Semicolon, "expected ';' after funcdef declaration");
     return declaration;
 }
 

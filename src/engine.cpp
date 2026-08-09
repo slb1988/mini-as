@@ -71,7 +71,9 @@ bool ScriptModule::Build() {
     for (auto& type : enums) type.id = engine_.GetOrCreateTypeId(type.name);
     auto typedefs = checker.Typedefs();
     for (auto& type : typedefs) type.id = engine_.GetOrCreateTypeId(type.name);
-    BytecodeModule candidate = compiler.Compile(tree.root, functions, classes, globals, enums);
+    auto funcdefs = checker.Funcdefs();
+    for (auto& type : funcdefs) type.id = engine_.GetOrCreateTypeId(type.name);
+    BytecodeModule candidate = compiler.Compile(tree.root, functions, classes, globals, enums, funcdefs);
     if (diagnostics.HasErrors()) return false;
     std::vector<const TypeInfo*> scriptTypes;
     for (const auto& type : classes) {

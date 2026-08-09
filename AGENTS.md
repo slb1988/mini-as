@@ -143,10 +143,10 @@ Do not stage generated build directories or unrelated user changes. Inspect
 The completed stage notes are authoritative. At the time this guide was added,
 the latest language stage is:
 
-- Stage 50: script try/catch with table-driven VM stack unwinding.
+- Stage 51: global and namespace funcdef declarations with stable metadata.
 
 The v0.3 compatibility matrix is published. The next planned language feature
-is the v0.4 funcdef declaration, followed by function handles. Confirm the
+is v0.4 function handles, followed by delegates. Confirm the
 latest git history and `docs/stages/` before choosing the next stage number.
 
 ## Common pitfalls

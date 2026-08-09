@@ -86,6 +86,7 @@ struct BytecodeModule {
     std::vector<std::pair<FunctionId, const RegisteredHostFunction*>> hostFunctions;
     std::vector<std::pair<TypeId, const TypeInfo*>> objectTypes;
     std::vector<std::pair<TypeId, FunctionId>> destructors;
+    std::vector<FuncdefSignature> funcdefs;
 
     const BytecodeFunction* FindFunction(FunctionId id) const;
     const RegisteredHostFunction* FindHostFunction(FunctionId id) const;
@@ -107,7 +108,8 @@ public:
     BytecodeModule Compile(AstNode* root, const std::vector<FunctionSignature>& signatures,
                            const std::vector<ClassSignature>& classes = {},
                            const std::vector<GlobalSignature>& globals = {},
-                           const std::vector<EnumSignature>& enums = {});
+                           const std::vector<EnumSignature>& enums = {},
+                           const std::vector<FuncdefSignature>& funcdefs = {});
 
 private:
     using ReferenceReceiverMap = std::unordered_map<const AstNode*, VariableId>;

@@ -326,3 +326,22 @@ TEST_CASE(parser_builds_try_catch_statements) {
     CHECK(statement->firstChild->kind == mini_as::NodeKind::Block);
 }
 
+TEST_CASE(parser_builds_funcdef_signatures_with_optional_parameter_names) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer lexer("parse",
+        "funcdef const int &Lookup(string, int &out result);", diagnostics);
+    mini_as::Parser parser(lexer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    CHECK(!diagnostics.HasErrors());
+    auto* declaration = tree.root->firstChild;
+    CHECK(declaration->kind == mini_as::NodeKind::FuncdefDecl);
+    CHECK(declaration->token.lexeme == "Lookup");
+    CHECK(declaration->returnsReference);
+    CHECK(declaration->returnReferenceConst);
+    const auto parameters = declaration->Children();
+    CHECK(parameters.size() == 2);
+    CHECK(parameters[0]->token.lexeme.empty());
+    CHECK(parameters[1]->token.lexeme == "result");
+    CHECK(parameters[1]->parameterMode == mini_as::ParameterMode::Out);
+}
+

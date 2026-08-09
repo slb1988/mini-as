@@ -67,6 +67,22 @@ TEST_CASE(type_checker_exposes_typedef_metadata_with_canonical_storage_type) {
     CHECK(checker.Functions().back().returnType == mini_as::DataType::UInt64());
 }
 
+TEST_CASE(type_checker_exposes_funcdef_signature_metadata) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("funcdef-types",
+        "namespace Events { funcdef bool Filter(int, int &inout value); }", diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    mini_as::TypeChecker checker(diagnostics);
+    CHECK(checker.Check(tree.root));
+    CHECK(checker.Funcdefs().size() == 1);
+    const auto& funcdef = checker.Funcdefs()[0];
+    CHECK(funcdef.name == "Events::Filter");
+    CHECK(funcdef.signature.returnType == mini_as::DataType::Bool());
+    CHECK(funcdef.signature.parameters.size() == 2);
+    CHECK(funcdef.signature.parameterModes[1] == mini_as::ParameterMode::InOut);
+}
+
 TEST_CASE(type_checker_resolves_current_parent_and_explicit_namespaces) {
     mini_as::DiagnosticSink diagnostics;
     mini_as::Tokenizer tokenizer("types",

@@ -58,6 +58,11 @@ std::string FunctionSignature::Declaration() const {
     for (std::size_t i = 0; i < parameters.size(); ++i) {
         if (i) out << ", ";
         out << parameters[i].Name();
+        const ParameterMode mode = i < parameterModes.size()
+            ? parameterModes[i] : ParameterMode::Value;
+        if (mode == ParameterMode::In) out << " &in";
+        else if (mode == ParameterMode::Out) out << " &out";
+        else if (mode == ParameterMode::InOut) out << " &inout";
     }
     return out.str() + ')';
 }
@@ -183,11 +188,12 @@ void TypeChecker::Predeclare(AstNode* root) {
             if (child->kind == NodeKind::FieldDecl) type.fields.push_back({child->token.lexeme, child->declaredType});
             else if (child->kind == NodeKind::FunctionDecl) {
                 FunctionSignature method{child->token.lexeme, child->declaredType, {}, false, {},
-                                         type.name, true, child->isConstructor, 0, {}};
+                                         type.name, true, child->isConstructor, 0, {}, {}};
                 for (AstNode* parameter = child->firstChild;
                      parameter && parameter->kind == NodeKind::Parameter; parameter = parameter->nextSibling) {
                     method.parameters.push_back(parameter->declaredType);
                     method.parameterNames.push_back(parameter->token.lexeme);
+                    method.parameterModes.push_back(parameter->parameterMode);
                     if (parameter->firstChild) ++method.defaultArgumentCount;
                 }
                 bool duplicate = false;
@@ -210,7 +216,8 @@ void TypeChecker::Predeclare(AstNode* root) {
                 bool found = false;
                 for (const auto& method : type.methods) {
                     if (method.name == required.name && method.returnType == required.returnType &&
-                        method.parameters == required.parameters) found = true;
+                        method.parameters == required.parameters &&
+                        method.parameterModes == required.parameterModes) found = true;
                 }
                 if (!found) Error(root, "class '" + type.name + "' does not implement " +
                                         interfaceName + "::" + required.Declaration());
@@ -219,11 +226,12 @@ void TypeChecker::Predeclare(AstNode* root) {
     }
     for (AstNode* node : TopLevelDeclarations(root)) {
         if (node->kind != NodeKind::FunctionDecl) continue;
-        FunctionSignature signature{node->token.lexeme, node->declaredType, {}, false, {}, {}, false, false, 0, {}};
+        FunctionSignature signature{node->token.lexeme, node->declaredType, {}, false, {}, {}, false, false, 0, {}, {}};
         for (AstNode* child = node->firstChild; child && child->kind == NodeKind::Parameter;
              child = child->nextSibling) {
             signature.parameters.push_back(child->declaredType);
             signature.parameterNames.push_back(child->token.lexeme);
+            signature.parameterModes.push_back(child->parameterMode);
             if (child->firstChild) ++signature.defaultArgumentCount;
         }
         for (const auto& existing : functions_) {
@@ -442,13 +450,17 @@ void TypeChecker::CheckFunction(AstNode* node) {
     AstNode* child = node->firstChild;
     while (child && child->kind == NodeKind::Parameter) {
         if (child->firstChild) {
+            if (child->parameterMode == ParameterMode::Out ||
+                child->parameterMode == ParameterMode::InOut) {
+                Error(child, "out and inout parameters cannot have default arguments");
+            }
             const DataType value = CheckExpression(child->firstChild);
             if (!CanConvert(value, child->declaredType)) {
                 Error(child, "cannot initialize default argument of type " +
                              child->declaredType.Name() + " with " + value.Name());
             }
         }
-        Declare(child->token, child->declaredType);
+        Declare(child->token, child->declaredType, child->parameterMode == ParameterMode::In);
         child = child->nextSibling;
     }
     if (child && child->kind == NodeKind::Block) CheckBlock(child, false);
@@ -635,12 +647,14 @@ DataType TypeChecker::CheckCall(AstNode* node) {
     AstNode* callee = node->firstChild;
     if (!callee) return DataType::Invalid();
     std::vector<DataType> arguments;
+    std::vector<AstNode*> argumentNodes;
     std::vector<std::string> argumentNames;
     for (AstNode* argument = callee->nextSibling; argument; argument = argument->nextSibling) {
         AstNode* expression = argument->kind == NodeKind::NamedArgument ? argument->firstChild : argument;
         const DataType type = CheckExpression(expression);
         argument->inferredType = type;
         arguments.push_back(type);
+        argumentNodes.push_back(expression);
         argumentNames.push_back(argument->kind == NodeKind::NamedArgument ? argument->token.lexeme
                                                                           : std::string{});
     }
@@ -663,6 +677,8 @@ DataType TypeChecker::CheckCall(AstNode* node) {
                 Error(node, "no matching constructor for '" + type->name + "'");
                 return DataType::Invalid();
             }
+            if (constructor)
+                ValidateReferenceArguments(*constructor, argumentNodes, argumentNames);
             return DataType::Object(type->name, true);
         }
     }
@@ -670,6 +686,7 @@ DataType TypeChecker::CheckCall(AstNode* node) {
         const DataType object = CheckExpression(callee->firstChild);
         const FunctionSignature* method = FindMethod(object, callee->token.lexeme, arguments, argumentNames);
         if (!method) Error(node, "no matching method for '" + callee->token.lexeme + "'");
+        else ValidateReferenceArguments(*method, argumentNodes, argumentNames);
         return method ? method->returnType : DataType::Invalid();
     }
     if (callee->kind != NodeKind::Identifier) {
@@ -678,7 +695,10 @@ DataType TypeChecker::CheckCall(AstNode* node) {
     if (currentClass_) {
         const FunctionSignature* method = FindMethod(
             DataType::Object(currentClass_->name, true), callee->token.lexeme, arguments, argumentNames);
-        if (method) return method->returnType;
+        if (method) {
+            ValidateReferenceArguments(*method, argumentNodes, argumentNames);
+            return method->returnType;
+        }
     }
     const FunctionSignature* best = nullptr;
     int bestCost = 1000000;
@@ -693,6 +713,7 @@ DataType TypeChecker::CheckCall(AstNode* node) {
         Error(node, "no matching function for '" + callee->token.lexeme + "'");
         return DataType::Invalid();
     }
+    ValidateReferenceArguments(*best, argumentNodes, argumentNames);
     return best->returnType;
 }
 
@@ -750,7 +771,12 @@ std::optional<int> TypeChecker::MatchArguments(
             positional = parameter + 1;
         }
         if (parameter >= assigned.size() || assigned[parameter]) return std::nullopt;
-        const auto conversion = ConversionCost(arguments[argument], signature.parameters[parameter]);
+        const ParameterMode mode = parameter < signature.parameterModes.size()
+            ? signature.parameterModes[parameter] : ParameterMode::Value;
+        const auto conversion = (mode == ParameterMode::Out || mode == ParameterMode::InOut)
+            ? (arguments[argument] == signature.parameters[parameter]
+                   ? std::optional<int>{0} : std::nullopt)
+            : ConversionCost(arguments[argument], signature.parameters[parameter]);
         if (!conversion) return std::nullopt;
         assigned[parameter] = true;
         cost += *conversion;
@@ -759,6 +785,45 @@ std::optional<int> TypeChecker::MatchArguments(
     for (std::size_t index = 0; index < assigned.size(); ++index)
         if (!assigned[index] && index < firstDefault) return std::nullopt;
     return cost;
+}
+
+bool TypeChecker::ValidateReferenceArguments(
+    const FunctionSignature& signature, const std::vector<AstNode*>& arguments,
+    const std::vector<std::string>& argumentNames) {
+    std::vector<AstNode*> ordered(signature.parameters.size(), nullptr);
+    std::size_t positional = 0;
+    for (std::size_t argument = 0; argument < arguments.size(); ++argument) {
+        std::size_t parameter = positional;
+        if (!argumentNames[argument].empty()) {
+            parameter = signature.parameterNames.size();
+            for (std::size_t index = 0; index < signature.parameterNames.size(); ++index) {
+                if (signature.parameterNames[index] == argumentNames[argument]) {
+                    parameter = index;
+                    break;
+                }
+            }
+        } else {
+            while (parameter < ordered.size() && ordered[parameter]) ++parameter;
+            positional = parameter + 1;
+        }
+        if (parameter < ordered.size()) ordered[parameter] = arguments[argument];
+    }
+    bool valid = true;
+    for (std::size_t parameter = 0; parameter < ordered.size(); ++parameter) {
+        const ParameterMode mode = parameter < signature.parameterModes.size()
+            ? signature.parameterModes[parameter] : ParameterMode::Value;
+        if (mode != ParameterMode::Out && mode != ParameterMode::InOut) continue;
+        AstNode* argument = ordered[parameter];
+        if (!argument) continue;
+        if (argument->kind != NodeKind::Identifier && argument->kind != NodeKind::Member) {
+            Error(argument, "out and inout arguments must be assignable lvalues");
+            valid = false;
+        } else if (IsReadOnlyLValue(argument)) {
+            Error(argument, "const value cannot be passed to out or inout parameter");
+            valid = false;
+        }
+    }
+    return valid;
 }
 
 bool TypeChecker::IsReadOnlyLValue(const AstNode* node) const {

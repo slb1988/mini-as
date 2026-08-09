@@ -217,7 +217,8 @@ bool ScriptEngine::RegisterGlobalFunction(std::string declaration, GenericFuncti
     auto signature = ParseFunctionDeclaration(declaration, diagnostics);
     if (!signature || !callback) return false;
     for (const auto& existing : hostFunctions_) {
-        if (existing.signature.Declaration() == signature->Declaration()) {
+        if (existing.signature.name == signature->name &&
+            existing.signature.parameters == signature->parameters) {
             diagnostics.Report({"registration"}, Severity::Error,
                                "duplicate global function '" + signature->Declaration() + "'");
             return false;

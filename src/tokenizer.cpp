@@ -25,6 +25,7 @@ const std::unordered_map<std::string, TokenKind> kKeywords = {
     {"return", TokenKind::KwReturn}, {"class", TokenKind::KwClass},
     {"interface", TokenKind::KwInterface}, {"enum", TokenKind::KwEnum},
     {"typedef", TokenKind::KwTypedef}, {"namespace", TokenKind::KwNamespace},
+    {"in", TokenKind::KwIn}, {"out", TokenKind::KwOut}, {"inout", TokenKind::KwInOut},
     {"is", TokenKind::KwIs},
     {"null", TokenKind::KwNull},
 };
@@ -45,7 +46,8 @@ std::string_view TokenName(TokenKind kind) {
         "uint8", "uint16", "uint", "uint64", "float", "double", "string",
         "true", "false", "const", "auto",
         "if", "else", "while", "do", "for", "switch", "case", "default",
-        "return", "break", "continue", "class", "interface", "enum", "typedef", "namespace", "is", "null",
+        "return", "break", "continue", "class", "interface", "enum", "typedef", "namespace",
+        "in", "out", "inout", "is", "null",
         "(", ")", "{", "}", ",", ".", ";", ":", "::", "?", "@", "+", "-", "*", "**", "/", "%",
         "++", "--",
         "+=", "-=", "*=", "**=", "/=", "%=",

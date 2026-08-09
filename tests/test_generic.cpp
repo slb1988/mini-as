@@ -58,3 +58,22 @@ TEST_CASE(generic_call_supports_double_arguments_and_returns) {
     CHECK(context->GetReturnDouble() == 42.0);
 }
 
+TEST_CASE(generic_call_writes_out_and_inout_arguments_back_to_script) {
+    auto engine = mini_as::CreateScriptEngine();
+    CHECK(engine->RegisterGlobalFunction(
+        "void Update(int &out result, int &inout total)",
+        [](mini_as::GenericCall& call) {
+            call.SetArgInt(0, 40);
+            call.SetArgInt(1, call.GetArgInt(1) + 2);
+        }));
+    auto* module = engine->GetModule("host-references");
+    module->AddScriptSection("host-references",
+        "int main() { int result; int total = 40; Update(result, total); "
+        "return result + total - 40; }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int main()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+}
+

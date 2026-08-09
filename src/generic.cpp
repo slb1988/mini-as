@@ -34,7 +34,7 @@ DataType ReadType(const std::vector<Token>& tokens, std::size_t& index) {
 
 } // namespace
 
-GenericCall::GenericCall(const std::vector<Value>& arguments) : arguments_(arguments) {}
+GenericCall::GenericCall(std::vector<Value>& arguments) : arguments_(arguments) {}
 std::size_t GenericCall::GetArgCount() const { return arguments_.size(); }
 const Value& GenericCall::GetArg(std::size_t index) const { return arguments_.at(index); }
 std::int32_t GenericCall::GetArgInt(std::size_t index) const { return GetArg(index).As<std::int32_t>(); }
@@ -43,6 +43,17 @@ double GenericCall::GetArgDouble(std::size_t index) const { return GetArg(index)
 bool GenericCall::GetArgBool(std::size_t index) const { return GetArg(index).As<bool>(); }
 const std::string& GenericCall::GetArgString(std::size_t index) const { return GetArg(index).As<std::string>(); }
 const ObjectHandle& GenericCall::GetArgObject(std::size_t index) const { return GetArg(index).As<ObjectHandle>(); }
+void GenericCall::SetArg(std::size_t index, Value value) { arguments_.at(index) = std::move(value); }
+void GenericCall::SetArgInt(std::size_t index, std::int32_t value) { SetArg(index, Value(value)); }
+void GenericCall::SetArgFloat(std::size_t index, float value) { SetArg(index, Value(value)); }
+void GenericCall::SetArgDouble(std::size_t index, double value) { SetArg(index, Value(value)); }
+void GenericCall::SetArgBool(std::size_t index, bool value) { SetArg(index, Value(value)); }
+void GenericCall::SetArgString(std::size_t index, std::string value) {
+    SetArg(index, Value(std::move(value)));
+}
+void GenericCall::SetArgObject(std::size_t index, ObjectHandle value) {
+    SetArg(index, Value(std::move(value)));
+}
 void GenericCall::SetReturn(Value value) { returnValue_ = std::move(value); }
 void GenericCall::SetReturnInt(std::int32_t value) { SetReturn(Value(value)); }
 void GenericCall::SetReturnFloat(float value) { SetReturn(Value(value)); }
@@ -56,9 +67,7 @@ const std::string& GenericCall::Exception() const { return exception_; }
 
 std::optional<FunctionSignature> ParseFunctionDeclaration(
     std::string_view declaration, DiagnosticSink& diagnostics) {
-    std::string normalized(declaration);
-    for (char& ch : normalized) if (ch == '&') ch = ' ';
-    Tokenizer tokenizer("registration", normalized, diagnostics);
+    Tokenizer tokenizer("registration", declaration, diagnostics);
     const auto tokens = tokenizer.ScanAll();
     if (diagnostics.HasErrors()) return std::nullopt;
     std::size_t index = 0;
@@ -83,6 +92,21 @@ std::optional<FunctionSignature> ParseFunctionDeclaration(
             return std::nullopt;
         }
         signature.parameters.push_back(std::move(parameter));
+        ParameterMode mode = ParameterMode::Value;
+        if (index < tokens.size() && tokens[index].kind == TokenKind::Amp) {
+            ++index;
+            if (index < tokens.size() && tokens[index].kind == TokenKind::KwIn) {
+                mode = ParameterMode::In;
+                ++index;
+            } else if (index < tokens.size() && tokens[index].kind == TokenKind::KwOut) {
+                mode = ParameterMode::Out;
+                ++index;
+            } else if (index < tokens.size() && tokens[index].kind == TokenKind::KwInOut) {
+                mode = ParameterMode::InOut;
+                ++index;
+            } else mode = ParameterMode::InOut;
+        }
+        signature.parameterModes.push_back(mode);
         if (index < tokens.size() && tokens[index].kind == TokenKind::Identifier)
             signature.parameterNames.push_back(tokens[index].lexeme);
         else signature.parameterNames.emplace_back();

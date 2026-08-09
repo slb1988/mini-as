@@ -258,3 +258,25 @@ TEST_CASE(bytecode_orders_named_arguments_into_parameter_slots) {
     CHECK(module.functions[1].constants[2].As<std::int32_t>() == 2);
 }
 
+TEST_CASE(bytecode_emits_reference_parameter_copy_in_and_writeback) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("reference-bytecode",
+        "void update(int &out result, int &in source, int &inout total) { "
+        "result = source * 2; total += result; } "
+        "int global = 1; int main() { int total = 2; update(global, 20, total); return total; }",
+        diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    mini_as::TypeChecker checker(diagnostics);
+    CHECK(checker.Check(tree.root));
+    mini_as::BytecodeCompiler compiler(diagnostics);
+    auto module = compiler.Compile(tree.root, checker.Functions(), checker.Classes(), checker.Globals());
+    CHECK(!diagnostics.HasErrors());
+    CHECK(module.functions[0].signature.Declaration() ==
+          "void update(int &out, int &in, int &inout)");
+    const auto listing = mini_as::Disassemble(module.functions[1]);
+    CHECK(listing.find("CALL") != std::string::npos);
+    CHECK(listing.find("STORE_GLOBAL") != std::string::npos);
+    CHECK(listing.find("STORE_LOCAL") != std::string::npos);
+}
+

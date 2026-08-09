@@ -99,6 +99,8 @@ public:
                            const std::vector<EnumSignature>& enums = {});
 
 private:
+    using ReferenceReceiverMap = std::unordered_map<const AstNode*, VariableId>;
+
     struct LValueRef {
         enum class Kind { Local, Global, Field, Index } kind = Kind::Local;
         DataType type = DataType::Invalid();
@@ -125,6 +127,13 @@ private:
     void CompileBinary(AstNode* node);
     void CompileLogical(AstNode* node);
     void CompileCall(AstNode* node);
+    void CompileCallArgument(const FunctionSignature& signature, std::size_t index,
+                             AstNode* expression, ReferenceReceiverMap& receivers);
+    void CompileReferenceWritebacks(const FunctionSignature& signature,
+                                    const std::vector<AstNode*>& arguments,
+                                    const ReferenceReceiverMap& receivers,
+                                    const AstNode* source);
+    void EmitDefaultValue(const DataType& type, const AstNode* source);
     std::optional<LValueRef> ResolveLValue(AstNode* expression) const;
     void CompileLValueLoad(const LValueRef& target, const AstNode* source);
     void CompileLValueStore(const LValueRef& target, AstNode* value, const AstNode* source);

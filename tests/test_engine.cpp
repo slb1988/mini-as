@@ -931,3 +931,77 @@ TEST_CASE(named_arguments_reject_unknown_and_duplicate_parameter_names) {
     CHECK(noMatch);
 }
 
+TEST_CASE(reference_parameters_copy_values_back_to_locals_globals_and_fields) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("reference-parameters");
+    module->AddScriptSection("reference-parameters",
+        "int globalValue = 1; "
+        "void adjust(int &out doubled, int &in value, int &inout total) { "
+        "doubled = value * 2; total += doubled; } "
+        "class Box { int value = 0; void add(int &inout target) { target += 2; } } "
+        "int main() { int total = 2; Box@ box = Box(); "
+        "adjust(globalValue, 20, total); box.add(total); adjust(box.value, 1, total); "
+        "return globalValue + total + box.value - 46; }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int main()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+}
+
+TEST_CASE(reference_field_receivers_are_evaluated_once_before_the_call) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("reference-receiver");
+    module->AddScriptSection("reference-receiver",
+        "class Box { int value = 0; } int probes = 0; "
+        "Box@ select(Box@ box) { probes++; return box; } "
+        "void fill(int &out value) { value = 42; } "
+        "int main() { Box@ box = Box(); fill(select(box).value); "
+        "return probes == 1 ? box.value : 0; }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int main()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+}
+
+TEST_CASE(reference_parameters_reject_non_lvalues_const_targets_and_writes_to_in) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    auto* module = engine->GetModule("bad-reference-parameters");
+    module->AddScriptSection("bad-reference-parameters",
+        "void input(int &in value) { value = 2; } "
+        "void output(int &out value) { value = 1; } "
+        "int main() { const int fixed = 0; output(1); output(fixed); return 0; }");
+    CHECK(!module->Build());
+    bool nonLvalue = false, constTarget = false, writeToIn = false;
+    for (const auto& diagnostic : diagnostics) {
+        nonLvalue = nonLvalue ||
+            diagnostic.message.find("must be assignable lvalues") != std::string::npos;
+        constTarget = constTarget ||
+            diagnostic.message.find("const value cannot be passed") != std::string::npos;
+        writeToIn = writeToIn ||
+            diagnostic.message.find("cannot assign to const variable 'value'") != std::string::npos;
+    }
+    CHECK(nonLvalue);
+    CHECK(constTarget);
+    CHECK(writeToIn);
+}
+
+TEST_CASE(reference_parameter_runtime_errors_report_the_callee_location) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("reference-runtime");
+    module->AddScriptSection("reference-runtime",
+        "void fail(int &inout value) {\n value = value / 0;\n}\n"
+        "int main() { int value = 1; fail(value); return value; }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int main()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Exception);
+    CHECK(context->GetExceptionString() == "division by zero");
+    CHECK(context->GetExceptionLocation().row == 2);
+}
+

@@ -20,6 +20,7 @@ struct FunctionSignature {
     bool constructor = false;
     std::size_t defaultArgumentCount = 0;
     std::vector<std::string> parameterNames;
+    std::vector<ParameterMode> parameterModes;
 
     std::string Declaration() const;
 };
@@ -94,6 +95,9 @@ private:
     std::optional<int> MatchArguments(const FunctionSignature& signature,
                                       const std::vector<DataType>& arguments,
                                       const std::vector<std::string>& argumentNames) const;
+    bool ValidateReferenceArguments(const FunctionSignature& signature,
+                                    const std::vector<AstNode*>& arguments,
+                                    const std::vector<std::string>& argumentNames);
     const ClassSignature* FindClass(std::string_view name) const;
     void Declare(const Token& name, const DataType& type, bool isConst = false);
     bool CanConvert(const DataType& from, const DataType& to) const;

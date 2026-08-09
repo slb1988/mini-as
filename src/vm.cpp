@@ -41,6 +41,20 @@ bool ValuesEqual(const Value& left, const Value& right) {
     return left == right;
 }
 
+ParameterMode ParameterModeAt(const FunctionSignature& signature, std::size_t index) {
+    return index < signature.parameterModes.size()
+        ? signature.parameterModes[index] : ParameterMode::Value;
+}
+
+bool MatchesDeclaredType(const Value& value, const DataType& expected) {
+    if (value.Type() == expected) return true;
+    if (value.Type().kind != TypeKind::Object || expected.kind != TypeKind::Object) return false;
+    const auto& handle = value.As<ObjectHandle>();
+    if (!handle) return expected.isHandle;
+    const auto* object = dynamic_cast<const ScriptObject*>(handle.Get());
+    return object && object->Implements(expected.objectName);
+}
+
 bool CheckedMultiply(std::int64_t left, std::int64_t right, std::int64_t& result) {
     if (left == 0 || right == 0) { result = 0; return true; }
     if ((left == -1 && right == std::numeric_limits<std::int64_t>::min()) ||
@@ -239,6 +253,13 @@ bool VirtualMachine::Step() {
     case OpCode::Greater: case OpCode::GreaterEqual: Compare(instruction); break;
     case OpCode::Return: {
         Value returnValue = Pop();
+        std::vector<Value> outputArguments;
+        const std::size_t parameterOffset = function_->signature.method ? 1 : 0;
+        for (std::size_t index = 0; index < function_->signature.parameters.size(); ++index) {
+            const ParameterMode mode = ParameterModeAt(function_->signature, index);
+            if (mode == ParameterMode::Out || mode == ParameterMode::InOut)
+                outputArguments.push_back(locals_.at(parameterOffset + index));
+        }
         if (callStack_.empty()) {
             result_.returnValue = std::move(returnValue);
             result_.state = ExecutionState::Finished;
@@ -249,6 +270,7 @@ bool VirtualMachine::Step() {
             pc_ = frame.pc;
             locals_ = std::move(frame.locals);
             Push(std::move(returnValue));
+            for (auto& output : outputArguments) Push(std::move(output));
         }
         break;
     }
@@ -303,6 +325,16 @@ bool VirtualMachine::Step() {
                                      " but declared " + target->signature.returnType.Name());
         }
         Push(call.ReturnValue());
+        for (std::size_t index = 0; index < target->signature.parameters.size(); ++index) {
+            const ParameterMode mode = ParameterModeAt(target->signature, index);
+            if (mode == ParameterMode::Out || mode == ParameterMode::InOut) {
+                if (!MatchesDeclaredType(arguments[index], target->signature.parameters[index]))
+                    throw std::runtime_error("host function wrote " + arguments[index].Type().Name() +
+                                             " to " + target->signature.parameters[index].Name() +
+                                             " output parameter");
+                Push(std::move(arguments[index]));
+            }
+        }
         break;
     }
     case OpCode::CallVirtual: {

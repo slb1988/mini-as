@@ -58,6 +58,11 @@ AstNode* ArgumentExpression(AstNode* argument) {
     return argument && argument->kind == NodeKind::NamedArgument ? argument->firstChild : argument;
 }
 
+ParameterMode ParameterModeAt(const FunctionSignature& signature, std::size_t index) {
+    return index < signature.parameterModes.size()
+        ? signature.parameterModes[index] : ParameterMode::Value;
+}
+
 std::optional<std::vector<AstNode*>> OrderArguments(
     const FunctionSignature& signature, const std::vector<AstNode*>& arguments) {
     if (arguments.size() > signature.parameters.size()) return std::nullopt;
@@ -209,11 +214,12 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
         if (node->kind == NodeKind::ClassDecl) classNodes_[node->token.lexeme] = node;
     for (AstNode* node : TopLevelDeclarations(root)) {
         if (node->kind == NodeKind::FunctionDecl) {
-            FunctionSignature signature{node->token.lexeme, node->declaredType, {}, false, {}, {}, false, false, 0, {}};
+            FunctionSignature signature{node->token.lexeme, node->declaredType, {}, false, {}, {}, false, false, 0, {}, {}};
             for (AstNode* parameter = node->firstChild;
                  parameter && parameter->kind == NodeKind::Parameter; parameter = parameter->nextSibling) {
                 signature.parameters.push_back(parameter->declaredType);
                 signature.parameterNames.push_back(parameter->token.lexeme);
+                signature.parameterModes.push_back(parameter->parameterMode);
                 if (parameter->firstChild) ++signature.defaultArgumentCount;
             }
             functionNodes_[FunctionKey(signature)] = node;
@@ -222,11 +228,12 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
             for (AstNode* methodNode = node->firstChild; methodNode; methodNode = methodNode->nextSibling) {
                 if (methodNode->kind != NodeKind::FunctionDecl) continue;
                 FunctionSignature method{methodNode->token.lexeme, methodNode->declaredType, {}, false, {},
-                                         node->token.lexeme, true, methodNode->isConstructor, 0, {}};
+                                         node->token.lexeme, true, methodNode->isConstructor, 0, {}, {}};
                 for (AstNode* parameter = methodNode->firstChild;
                      parameter && parameter->kind == NodeKind::Parameter; parameter = parameter->nextSibling) {
                     method.parameters.push_back(parameter->declaredType);
                     method.parameterNames.push_back(parameter->token.lexeme);
+                    method.parameterModes.push_back(parameter->parameterMode);
                     if (parameter->firstChild) ++method.defaultArgumentCount;
                 }
                 functionNodes_[FunctionKey(method)] = methodNode;
@@ -263,7 +270,8 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
                 for (const auto& implementation : concrete.methods) {
                     if (implementation.constructor || implementation.name != required.name ||
                         implementation.returnType != required.returnType ||
-                        implementation.parameters != required.parameters) continue;
+                        implementation.parameters != required.parameters ||
+                        implementation.parameterModes != required.parameterModes) continue;
                     const auto found = functionIds_.find(FunctionKey(implementation));
                     if (found != functionIds_.end())
                         module_.virtualDispatch.push_back({concrete.id, interfaceType->id,
@@ -274,9 +282,11 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
     }
     for (AstNode* node : TopLevelDeclarations(root)) {
         if (node->kind != NodeKind::FunctionDecl) continue;
-        FunctionSignature astSignature{node->token.lexeme, node->declaredType, {}, false, {}, {}, false, false, 0, {}};
-        for (AstNode* child = node->firstChild; child && child->kind == NodeKind::Parameter; child = child->nextSibling)
+        FunctionSignature astSignature{node->token.lexeme, node->declaredType, {}, false, {}, {}, false, false, 0, {}, {}};
+        for (AstNode* child = node->firstChild; child && child->kind == NodeKind::Parameter; child = child->nextSibling) {
             astSignature.parameters.push_back(child->declaredType);
+            astSignature.parameterModes.push_back(child->parameterMode);
+        }
         const auto found = functionIndices_.find(FunctionKey(astSignature));
         if (found != functionIndices_.end()) CompileFunction(node, found->second);
     }
@@ -285,10 +295,12 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
         for (AstNode* methodNode = typeNode->firstChild; methodNode; methodNode = methodNode->nextSibling) {
             if (methodNode->kind != NodeKind::FunctionDecl || !methodNode->firstChild) continue;
             FunctionSignature method{methodNode->token.lexeme, methodNode->declaredType, {}, false, {},
-                                     typeNode->token.lexeme, true, methodNode->isConstructor, 0, {}};
+                                     typeNode->token.lexeme, true, methodNode->isConstructor, 0, {}, {}};
             for (AstNode* parameter = methodNode->firstChild;
-                 parameter && parameter->kind == NodeKind::Parameter; parameter = parameter->nextSibling)
+                 parameter && parameter->kind == NodeKind::Parameter; parameter = parameter->nextSibling) {
                 method.parameters.push_back(parameter->declaredType);
+                method.parameterModes.push_back(parameter->parameterMode);
+            }
             const auto found = functionIndices_.find(FunctionKey(method));
             if (found != functionIndices_.end())
                 CompileFunction(methodNode, found->second, typeNode->token.lexeme);
@@ -924,6 +936,7 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
         if (classFound != classIds_.end()) { resolvedClassName = candidate; break; }
     }
     if (!explicitMethod && classFound != classIds_.end()) {
+        ReferenceReceiverMap referenceReceivers;
         Emit(OpCode::NewObject, static_cast<std::int32_t>(classFound->second.value), node);
         CompileFieldInitializers(resolvedClassName, node);
         const FunctionSignature* constructor = nullptr;
@@ -936,7 +949,11 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
             bool viable = true;
             for (std::size_t i = 0; i < ordered->size(); ++i) {
                 if (!(*ordered)[i]) continue;
-                const auto conversion = ConversionCost((*ordered)[i]->inferredType, signature.parameters[i]);
+                const ParameterMode mode = ParameterModeAt(signature, i);
+                const auto conversion = (mode == ParameterMode::Out || mode == ParameterMode::InOut)
+                    ? ((*ordered)[i]->inferredType == signature.parameters[i]
+                           ? std::optional<int>{0} : std::nullopt)
+                    : ConversionCost((*ordered)[i]->inferredType, signature.parameters[i]);
                 if (!conversion) { viable = false; break; }
                 cost += *conversion;
             }
@@ -955,9 +972,8 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
                 if (!expression) { Error(node, "default constructor argument is missing"); return; }
                 const std::string previousNamespace = currentNamespace_;
                 if (!(*ordered)[i]) currentNamespace_ = NamespaceOf(constructor->objectType);
-                CompileExpression(expression);
+                CompileCallArgument(*constructor, i, expression, referenceReceivers);
                 currentNamespace_ = previousNamespace;
-                EmitConversion(expression->inferredType, constructor->parameters[i], expression);
                 if (parameter) parameter = parameter->nextSibling;
             }
             const auto target = functionIds_.find(FunctionKey(*constructor));
@@ -965,6 +981,7 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
             Emit(OpCode::Call, AddCallable({CallableKind::ScriptMethod, target->second,
                                             classFound->second, 0,
                                             static_cast<std::uint32_t>(constructor->parameters.size())}), node);
+            CompileReferenceWritebacks(*constructor, *ordered, referenceReceivers, node);
             Emit(OpCode::Pop, 0, node);
         } else if (!arguments.empty()) {
             Error(node, "constructor target is missing");
@@ -992,7 +1009,11 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
         bool viable = true;
         for (std::size_t i = 0; i < ordered->size(); ++i) {
             if (!(*ordered)[i]) continue;
-            const auto conversion = ConversionCost((*ordered)[i]->inferredType, signature.parameters[i]);
+            const ParameterMode mode = ParameterModeAt(signature, i);
+            const auto conversion = (mode == ParameterMode::Out || mode == ParameterMode::InOut)
+                ? ((*ordered)[i]->inferredType == signature.parameters[i]
+                       ? std::optional<int>{0} : std::nullopt)
+                : ConversionCost((*ordered)[i]->inferredType, signature.parameters[i]);
             if (!conversion) { viable = false; break; }
             cost += *conversion;
         }
@@ -1001,6 +1022,7 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
     if (!target) { Error(node, "cannot resolve script call"); return; }
     const auto ordered = OrderArguments(*target, arguments);
     if (!ordered) { Error(node, "call arguments cannot be ordered"); return; }
+    ReferenceReceiverMap referenceReceivers;
     if (target->method) {
         if (explicitMethod) CompileExpression(callee->firstChild);
         else Emit(OpCode::LoadLocal, static_cast<std::int32_t>(implicitThisSlot_), callee);
@@ -1015,9 +1037,8 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
         const std::string previousNamespace = currentNamespace_;
         if (!(*ordered)[i]) currentNamespace_ = NamespaceOf(
             target->method ? target->objectType : target->name);
-        CompileExpression(expression);
+        CompileCallArgument(*target, i, expression, referenceReceivers);
         currentNamespace_ = previousNamespace;
-        EmitConversion(expression->inferredType, target->parameters[i], expression);
         if (parameter) parameter = parameter->nextSibling;
     }
     if (target->method) {
@@ -1029,7 +1050,8 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
             for (std::size_t index = 0; index < ownerType->methods.size(); ++index) {
                 const auto& method = ownerType->methods[index];
                 if (method.name == target->name && method.returnType == target->returnType &&
-                    method.parameters == target->parameters) {
+                    method.parameters == target->parameters &&
+                    method.parameterModes == target->parameterModes) {
                     slot = static_cast<std::uint32_t>(index);
                     foundSlot = true;
                     break;
@@ -1039,6 +1061,7 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
             Emit(OpCode::CallVirtual,
                  AddCallable({CallableKind::VirtualMethod, {}, ownerType->id, slot,
                               static_cast<std::uint32_t>(target->parameters.size())}), node);
+            CompileReferenceWritebacks(*target, *ordered, referenceReceivers, node);
             return;
         }
     }
@@ -1060,6 +1083,98 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
                                        found->second, owner, 0,
                                        static_cast<std::uint32_t>(target->parameters.size())}), node);
     }
+    CompileReferenceWritebacks(*target, *ordered, referenceReceivers, node);
+}
+
+void BytecodeCompiler::CompileCallArgument(const FunctionSignature& signature, std::size_t index,
+                                           AstNode* expression,
+                                           ReferenceReceiverMap& receivers) {
+    const ParameterMode mode = ParameterModeAt(signature, index);
+    const auto target = (mode == ParameterMode::Out || mode == ParameterMode::InOut)
+        ? ResolveLValue(expression) : std::optional<LValueRef>{};
+    if ((mode == ParameterMode::Out || mode == ParameterMode::InOut) && !target) {
+        Error(expression, "reference argument cannot be compiled as an lvalue");
+        EmitDefaultValue(signature.parameters[index], expression);
+        return;
+    }
+    if (target && target->kind == LValueRef::Kind::Field && target->receiver) {
+        CompileExpression(target->receiver);
+        Emit(OpCode::Dup, 0, expression);
+        const VariableId receiverSlot{nextLocal_++};
+        Emit(OpCode::StoreLocal, static_cast<std::int32_t>(receiverSlot.value), expression);
+        receivers.emplace(expression, receiverSlot);
+        if (mode == ParameterMode::Out) Emit(OpCode::Pop, 0, expression);
+        else Emit(OpCode::LoadField, static_cast<std::int32_t>(target->field), expression);
+        if (mode == ParameterMode::Out)
+            EmitDefaultValue(signature.parameters[index], expression);
+        return;
+    }
+    if (mode == ParameterMode::Out) {
+        EmitDefaultValue(signature.parameters[index], expression);
+        return;
+    }
+    if (mode == ParameterMode::InOut) {
+        CompileLValueLoad(*target, expression);
+        return;
+    }
+    CompileExpression(expression);
+    EmitConversion(expression->inferredType, signature.parameters[index], expression);
+}
+
+void BytecodeCompiler::CompileReferenceWritebacks(
+    const FunctionSignature& signature, const std::vector<AstNode*>& arguments,
+    const ReferenceReceiverMap& receivers, const AstNode* source) {
+    for (std::size_t index = signature.parameters.size(); index > 0; --index) {
+        const std::size_t parameter = index - 1;
+        const ParameterMode mode = ParameterModeAt(signature, parameter);
+        if (mode != ParameterMode::Out && mode != ParameterMode::InOut) continue;
+        AstNode* expression = parameter < arguments.size() ? arguments[parameter] : nullptr;
+        const auto target = ResolveLValue(expression);
+        if (!target) {
+            Error(expression ? expression : source, "reference argument cannot be written back");
+            Emit(OpCode::Pop, 0, source);
+            continue;
+        }
+        switch (target->kind) {
+        case LValueRef::Kind::Local:
+            Emit(OpCode::StoreLocal, static_cast<std::int32_t>(target->variable.value), source);
+            break;
+        case LValueRef::Kind::Global:
+            Emit(OpCode::StoreGlobal, static_cast<std::int32_t>(target->global.value), source);
+            break;
+        case LValueRef::Kind::Field:
+            if (target->receiver) {
+                const auto receiver = receivers.find(expression);
+                if (receiver == receivers.end()) {
+                    Error(expression, "reference receiver snapshot is missing");
+                    Emit(OpCode::Pop, 0, source);
+                    break;
+                }
+                Emit(OpCode::LoadLocal, static_cast<std::int32_t>(receiver->second.value), source);
+            }
+            else Emit(OpCode::LoadLocal, static_cast<std::int32_t>(implicitThisSlot_), source);
+            Emit(OpCode::Swap, 0, source);
+            Emit(OpCode::StoreField, static_cast<std::int32_t>(target->field), source);
+            Emit(OpCode::Pop, 0, source);
+            break;
+        case LValueRef::Kind::Index:
+            Error(source, "reference index writeback is not implemented");
+            Emit(OpCode::Pop, 0, source);
+            break;
+        }
+    }
+}
+
+void BytecodeCompiler::EmitDefaultValue(const DataType& type, const AstNode* source) {
+    if (type == DataType::Bool()) Emit(OpCode::PushConst, AddConstant(Value(false)), source);
+    else if (type.IsInteger())
+        Emit(OpCode::PushConst, AddConstant(Value::Integer(type, 0)), source);
+    else if (type == DataType::Float()) Emit(OpCode::PushConst, AddConstant(Value(0.0f)), source);
+    else if (type == DataType::Double()) Emit(OpCode::PushConst, AddConstant(Value(0.0)), source);
+    else if (type == DataType::String()) Emit(OpCode::PushConst, AddConstant(Value("")), source);
+    else if (type.kind == TypeKind::Object)
+        Emit(OpCode::PushConst, AddConstant(Value(ObjectHandle{})), source);
+    else Emit(OpCode::PushVoid, 0, source);
 }
 
 void BytecodeCompiler::EmitConversion(const DataType& from, const DataType& to,

@@ -196,3 +196,18 @@ TEST_CASE(parser_wraps_named_arguments_and_rejects_late_positionals) {
     CHECK(badDiagnostics.HasErrors());
 }
 
+TEST_CASE(parser_preserves_in_out_and_inout_parameter_modes) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer lexer("parse",
+        "void update(int &in source, int &out result, int &inout total, int value) {}",
+        diagnostics);
+    mini_as::Parser parser(lexer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    CHECK(!diagnostics.HasErrors());
+    const auto parameters = tree.root->firstChild->Children();
+    CHECK(parameters[0]->parameterMode == mini_as::ParameterMode::In);
+    CHECK(parameters[1]->parameterMode == mini_as::ParameterMode::Out);
+    CHECK(parameters[2]->parameterMode == mini_as::ParameterMode::InOut);
+    CHECK(parameters[3]->parameterMode == mini_as::ParameterMode::Value);
+}
+

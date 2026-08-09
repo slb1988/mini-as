@@ -241,9 +241,17 @@ AstNode* Parser::ParseFunction(DataType returnType, Token name) {
     if (!Check(TokenKind::RightParen)) {
         do {
             DataType type = ParseType(false);
+            ParameterMode mode = ParameterMode::Value;
+            if (Match(TokenKind::Amp)) {
+                if (Match(TokenKind::KwIn)) mode = ParameterMode::In;
+                else if (Match(TokenKind::KwOut)) mode = ParameterMode::Out;
+                else if (Match(TokenKind::KwInOut)) mode = ParameterMode::InOut;
+                else mode = ParameterMode::InOut;
+            }
             Token paramName = Consume(TokenKind::Identifier, "expected parameter name");
             AstNode* parameter = arena_->Make(NodeKind::Parameter, paramName);
             parameter->declaredType = std::move(type);
+            parameter->parameterMode = mode;
             if (Match(TokenKind::Equal)) {
                 sawDefault = true;
                 parameter->AppendChild(ParseAssignment());

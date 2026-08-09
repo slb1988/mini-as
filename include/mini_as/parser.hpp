@@ -9,6 +9,8 @@
 
 namespace mini_as {
 
+enum class ParameterMode { Value, In, Out, InOut };
+
 enum class NodeKind {
     Program, NamespaceDecl, FunctionDecl, Parameter, ClassDecl, InterfaceDecl,
     EnumDecl, EnumValue, TypedefDecl, FieldDecl,
@@ -28,6 +30,7 @@ struct AstNode {
     bool isPostfix = false;
     bool implicitThis = false;
     bool isConstructor = false;
+    ParameterMode parameterMode = ParameterMode::Value;
     AstNode* firstChild = nullptr;
     AstNode* nextSibling = nullptr;
 

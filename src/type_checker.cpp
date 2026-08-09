@@ -702,6 +702,20 @@ DataType TypeChecker::CheckExpression(AstNode* node) {
         if (!result.IsNumeric()) Error(node, "increment operator requires a numeric operand");
         break;
     }
+    case NodeKind::Cast: {
+        const DataType source = CheckExpression(node->firstChild);
+        result = node->declaredType;
+        if (result.kind != TypeKind::Object) {
+            Error(node, "reference cast target must be a class or interface type");
+        } else if (!FindClass(result.objectName)) {
+            Error(node, "unknown reference cast target '" + result.objectName + "'");
+        }
+        if (source.kind != TypeKind::Object || !source.isHandle)
+            Error(node, "reference cast source must be an object handle");
+        else if (source.objectName != "<null>" && !FindClass(source.objectName))
+            Error(node, "reference cast source must be a script object handle");
+        break;
+    }
     case NodeKind::Call: result = CheckCall(node); break;
     case NodeKind::Assign: {
         const auto children = node->Children();

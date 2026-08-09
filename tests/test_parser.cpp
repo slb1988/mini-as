@@ -281,3 +281,17 @@ TEST_CASE(parser_rejects_access_qualifiers_on_interface_members) {
     CHECK(diagnostics.All()[0].message.find("interface members") != std::string::npos);
 }
 
+TEST_CASE(parser_builds_reference_cast_expressions) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer lexer("parse",
+        "class Base {} class Derived : Base {} "
+        "Derived@ convert(Base@ value) { return cast<Derived>(value); }", diagnostics);
+    mini_as::Parser parser(lexer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    CHECK(!diagnostics.HasErrors());
+    auto* cast = tree.root->Children()[2]->Children().back()->firstChild->firstChild;
+    CHECK(cast->kind == mini_as::NodeKind::Cast);
+    CHECK(cast->declaredType == mini_as::DataType::Object("Derived", true));
+    CHECK(cast->firstChild->kind == mini_as::NodeKind::Identifier);
+}
+

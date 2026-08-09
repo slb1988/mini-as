@@ -101,7 +101,7 @@ std::string_view OpCodeName(OpCode opcode) {
         "ADD_D", "SUB_D", "MUL_D", "DIV_D", "POW_D",
         "CONCAT", "NEG_I", "NEG_F", "NEG_D", "BIT_NOT", "NOT",
         "EQ", "NE", "LT", "LE", "GT", "GE", "JMP", "JZ", "CALL", "CALL_HOST",
-        "CALL_VIRTUAL", "NEW_OBJECT", "LOAD_FIELD", "STORE_FIELD",
+        "CALL_VIRTUAL", "CAST_OBJECT", "NEW_OBJECT", "LOAD_FIELD", "STORE_FIELD",
         "MAKE_GLOBAL_REF", "MAKE_FIELD_REF", "LOAD_REF", "STORE_REF", "RET"
     };
     return names[static_cast<std::size_t>(opcode)];
@@ -120,6 +120,7 @@ std::string Disassemble(const BytecodeFunction& function) {
             instruction.opcode == OpCode::ToInteger ||
             instruction.opcode == OpCode::JumpIfFalse || instruction.opcode == OpCode::Call ||
             instruction.opcode == OpCode::CallHost || instruction.opcode == OpCode::CallVirtual ||
+            instruction.opcode == OpCode::CastObject ||
             instruction.opcode == OpCode::NewObject ||
             instruction.opcode == OpCode::LoadField || instruction.opcode == OpCode::StoreField ||
             instruction.opcode == OpCode::MakeGlobalReference ||
@@ -656,6 +657,13 @@ void BytecodeCompiler::CompileExpression(AstNode* node) {
         }
         break;
     case NodeKind::Increment: CompileIncrement(node); break;
+    case NodeKind::Cast: {
+        CompileExpression(node->firstChild);
+        const auto target = classIds_.find(node->inferredType.objectName);
+        if (target == classIds_.end()) Error(node, "reference cast target is unavailable");
+        else Emit(OpCode::CastObject, static_cast<std::int32_t>(target->second.value), node);
+        break;
+    }
     case NodeKind::Call: CompileCall(node); break;
     default: Error(node, "expression cannot be compiled"); break;
     }

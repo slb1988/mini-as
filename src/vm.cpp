@@ -383,6 +383,24 @@ bool VirtualMachine::Step() {
         for (std::size_t i = 0; i < arguments.size(); ++i) locals_[i] = std::move(arguments[i]);
         break;
     }
+    case OpCode::CastObject: {
+        if (!module_ || instruction.operand < 0)
+            throw std::runtime_error("reference cast target is unavailable");
+        const TypeInfo* target = module_->FindType(
+            TypeId{static_cast<std::uint32_t>(instruction.operand)});
+        if (!target) throw std::runtime_error("reference cast target is unavailable");
+        Value source = Pop();
+        const auto& handle = source.As<ObjectHandle>();
+        if (!handle) {
+            Push(Value(ObjectHandle{}));
+            break;
+        }
+        const auto* object = dynamic_cast<const ScriptObject*>(handle.Get());
+        if (!object) throw std::runtime_error("reference cast source is not a script object");
+        if (object->IsA(target->name) || object->Implements(target->name)) Push(std::move(source));
+        else Push(Value(ObjectHandle{}));
+        break;
+    }
     case OpCode::NewObject: {
         if (!module_ || instruction.operand < 0) throw std::runtime_error("object type is unavailable");
         const TypeInfo* type = module_->FindType(TypeId{static_cast<std::uint32_t>(instruction.operand)});

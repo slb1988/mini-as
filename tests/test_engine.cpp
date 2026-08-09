@@ -1296,3 +1296,68 @@ TEST_CASE(private_and_protected_members_reject_unauthorized_access) {
     CHECK(protectedMethod);
 }
 
+TEST_CASE(reference_casts_use_runtime_class_and_interface_identity) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("reference-casts");
+    module->AddScriptSection("reference-casts",
+        "interface IValue { int score(); } "
+        "class Base { int score() { return 1; } } "
+        "class Derived : Base, IValue { int score() { return 42; } } "
+        "int run() { Derived@ original = Derived(); Base@ good = original; "
+        "Base@ bad = Base(); IValue@ iface = original; "
+        "Derived@ fromBase = cast<Derived>(good); "
+        "Derived@ failed = cast<Derived>(bad); "
+        "Derived@ fromInterface = cast<Derived>(iface); "
+        "Derived@ empty = cast<Derived>(null); "
+        "return (fromBase is original ? fromBase.score() : 0) + fromInterface.score() + "
+        "(failed is null ? 0 : 100) + (empty is null ? 0 : 100); }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 84);
+}
+
+TEST_CASE(reference_casts_reject_non_object_targets_sources_and_unknown_types) {
+    auto engine = mini_as::CreateScriptEngine();
+    CHECK(engine->RegisterObjectType("Host") != nullptr);
+    CHECK(engine->RegisterGlobalFunction("Host@ GetHost()", [](mini_as::GenericCall& call) {
+        call.SetReturnObject({});
+    }));
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    auto* module = engine->GetModule("bad-reference-casts");
+    module->AddScriptSection("bad-reference-casts",
+        "class Base {} int run() { cast<int>(42); cast<Base>(42); cast<Base>(GetHost()); "
+        "Base@ value = cast<Missing>(Base()); return 0; }");
+    CHECK(!module->Build());
+    bool target = false, source = false, hostSource = false, unknown = false;
+    for (const auto& diagnostic : diagnostics) {
+        target = target || diagnostic.message.find("target must be a class or interface") != std::string::npos;
+        source = source || diagnostic.message.find("source must be an object handle") != std::string::npos;
+        hostSource = hostSource ||
+            diagnostic.message.find("source must be a script object handle") != std::string::npos;
+        unknown = unknown || diagnostic.message.find("unknown reference cast target 'Missing'") != std::string::npos;
+    }
+    CHECK(target);
+    CHECK(source);
+    CHECK(hostSource);
+    CHECK(unknown);
+}
+
+TEST_CASE(dereferencing_a_failed_reference_cast_reports_the_call_location) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("failed-reference-cast");
+    module->AddScriptSection("failed-reference-cast",
+        "class Base {}\nclass Derived : Base { int score() { return 42; } }\n"
+        "int run() { Base@ item = Base();\n return cast<Derived>(item).score();\n}");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Exception);
+    CHECK(context->GetExceptionString() == "null virtual method receiver");
+    CHECK(context->GetExceptionLocation().row == 4);
+}
+

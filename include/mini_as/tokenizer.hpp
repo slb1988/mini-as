@@ -15,7 +15,7 @@ enum class TokenKind {
     KwFloat, KwDouble, KwString, KwTrue, KwFalse, KwConst, KwAuto,
     KwIf, KwElse, KwWhile, KwDo, KwFor, KwSwitch, KwCase, KwDefault,
     KwReturn, KwBreak, KwContinue, KwClass, KwInterface, KwEnum, KwTypedef, KwNamespace,
-    KwPrivate, KwProtected,
+    KwPrivate, KwProtected, KwCast,
     KwIn, KwOut, KwInOut, KwIs, KwNull,
     LeftParen, RightParen, LeftBrace, RightBrace,
     Comma, Dot, Semicolon, Colon, Scope, Question, At,

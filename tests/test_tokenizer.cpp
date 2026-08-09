@@ -38,6 +38,16 @@ TEST_CASE(tokenizer_recognizes_member_access_qualifiers) {
     CHECK(tokens[1].kind == mini_as::TokenKind::KwProtected);
 }
 
+TEST_CASE(tokenizer_recognizes_reference_cast_keyword) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer lexer("cast", "cast<Derived>(value)", diagnostics);
+    const auto tokens = lexer.ScanAll();
+    CHECK(!diagnostics.HasErrors());
+    CHECK(tokens[0].kind == mini_as::TokenKind::KwCast);
+    CHECK(tokens[1].kind == mini_as::TokenKind::Less);
+    CHECK(tokens[3].kind == mini_as::TokenKind::Greater);
+}
+
 TEST_CASE(tokenizer_recognizes_the_integer_type_family) {
     mini_as::DiagnosticSink diagnostics;
     mini_as::Tokenizer lexer("integers",

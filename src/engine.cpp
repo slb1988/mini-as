@@ -73,15 +73,15 @@ bool ScriptModule::Build() {
     for (auto& type : typedefs) type.id = engine_.GetOrCreateTypeId(type.name);
     BytecodeModule candidate = compiler.Compile(tree.root, functions, classes, globals, enums);
     if (diagnostics.HasErrors()) return false;
-    std::vector<const TypeInfo*> concreteTypes;
+    std::vector<const TypeInfo*> scriptTypes;
     for (const auto& type : classes) {
         const TypeInfo* linked = engine_.RegisterScriptType(type);
-        if (!type.interfaceType) concreteTypes.push_back(linked);
+        scriptTypes.push_back(linked);
     }
     for (const auto& type : classes) engine_.LinkScriptType(type);
     for (const auto& host : engine_.hostFunctions_)
         candidate.hostFunctions.push_back({host.signature.id, &host});
-    for (const auto* type : concreteTypes) candidate.objectTypes.push_back({type->id, type});
+    for (const auto* type : scriptTypes) candidate.objectTypes.push_back({type->id, type});
     auto state = std::make_shared<ModuleState>();
     state->globals.reserve(candidate.globals.size());
     for (const auto& global : candidate.globals)

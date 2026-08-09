@@ -375,3 +375,27 @@ TEST_CASE(type_metadata_preserves_member_access_and_declaring_classes) {
     CHECK(classes[0].methods[0].access == mini_as::MemberAccess::Private);
 }
 
+TEST_CASE(bytecode_emits_stable_type_ids_for_reference_casts) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("reference-cast-bytecode",
+        "class Base {} class Derived : Base {} "
+        "Derived@ convert(Base@ value) { return cast<Derived>(value); }", diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    mini_as::TypeChecker checker(diagnostics);
+    CHECK(checker.Check(tree.root));
+    auto classes = checker.Classes();
+    classes[0].id = mini_as::TypeId{10};
+    classes[1].id = mini_as::TypeId{11};
+    mini_as::BytecodeCompiler compiler(diagnostics);
+    auto module = compiler.Compile(tree.root, checker.Functions(), classes);
+    CHECK(!diagnostics.HasErrors());
+    bool cast = false;
+    for (const auto& instruction : module.functions[0].code) {
+        if (instruction.opcode != mini_as::OpCode::CastObject) continue;
+        cast = true;
+        CHECK(instruction.operand == 11);
+    }
+    CHECK(cast);
+}
+

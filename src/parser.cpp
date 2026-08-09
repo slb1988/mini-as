@@ -555,6 +555,18 @@ AstNode* Parser::ParsePrimary() {
                   TokenKind::KwTrue, TokenKind::KwFalse, TokenKind::KwNull})) {
         return arena_->Make(NodeKind::Literal, Previous());
     }
+    if (Match(TokenKind::KwCast)) {
+        const Token castToken = Previous();
+        AstNode* cast = arena_->Make(NodeKind::Cast, castToken);
+        Consume(TokenKind::Less, "expected '<' after 'cast'");
+        cast->declaredType = ParseType(false);
+        cast->declaredType.isHandle = true;
+        Consume(TokenKind::Greater, "expected '>' after cast target type");
+        Consume(TokenKind::LeftParen, "expected '(' after cast target type");
+        cast->AppendChild(ParseExpression());
+        Consume(TokenKind::RightParen, "expected ')' after cast expression");
+        return cast;
+    }
     if (Check(TokenKind::Identifier))
         return arena_->Make(NodeKind::Identifier, ParseQualifiedIdentifier("expected identifier"));
     if (Match(TokenKind::LeftParen)) {

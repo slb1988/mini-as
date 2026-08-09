@@ -22,7 +22,7 @@ enum class OpCode : std::uint8_t {
     Concat, NegInt, NegFloat, NegDouble, BitNot, LogicalNot,
     Equal, NotEqual, Less, LessEqual, Greater, GreaterEqual,
     Jump, JumpIfFalse,
-    Call, CallHost, CallVirtual, NewObject, LoadField, StoreField,
+    Call, CallHost, CallVirtual, CastObject, NewObject, LoadField, StoreField,
     MakeGlobalReference, MakeFieldReference, LoadReference, StoreReference, Return
 };
 

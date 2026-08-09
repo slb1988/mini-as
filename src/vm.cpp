@@ -442,7 +442,16 @@ bool VirtualMachine::Step() {
         try { target->callback(call); }
         catch (const std::exception& error) { throw std::runtime_error(std::string("host exception: ") + error.what()); }
         if (!call.Exception().empty()) throw std::runtime_error(call.Exception());
-        if (call.ReturnValue().Type() != target->signature.returnType) {
+        if (target->signature.factory) {
+            if (call.ReturnValue().Type().kind == TypeKind::Object &&
+                !call.ReturnValue().As<ObjectHandle>())
+                throw std::runtime_error("object factory returned null without an exception");
+            if (!MatchesDeclaredType(call.ReturnValue(), target->signature.returnType))
+                throw std::runtime_error("object factory returned " +
+                                         call.ReturnValue().Type().Name() +
+                                         " but declared " +
+                                         target->signature.returnType.Name());
+        } else if (call.ReturnValue().Type() != target->signature.returnType) {
             throw std::runtime_error("host function returned " + call.ReturnValue().Type().Name() +
                                      " but declared " + target->signature.returnType.Name());
         }

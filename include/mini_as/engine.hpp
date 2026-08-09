@@ -89,6 +89,8 @@ public:
     bool RegisterGlobalFunction(std::string declaration, GenericFunction callback);
     bool RegisterGlobalProperty(std::string declaration, Value* storage);
     const TypeInfo* RegisterObjectType(std::string name);
+    bool RegisterObjectFactory(std::string typeName, std::string declaration,
+                               GenericFunction callback);
     const TypeInfo* GetTypeInfo(std::string_view name) const;
     std::size_t CollectGarbage();
     std::size_t GetTrackedObjectCount() const;
@@ -102,6 +104,7 @@ private:
     void ForwardDiagnostic(const Diagnostic& diagnostic) const;
     std::vector<FunctionSignature> HostSignatures() const;
     std::vector<GlobalSignature> HostPropertySignatures() const;
+    std::vector<ClassSignature> HostTypeSignatures() const;
     const TypeInfo* RegisterScriptType(const ClassSignature& type);
     void LinkScriptType(const ClassSignature& type);
     FunctionId GetOrCreateFunctionId(std::string key);

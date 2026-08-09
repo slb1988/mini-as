@@ -50,6 +50,8 @@ bool ScriptModule::Build() {
     for (const auto& signature : engine_.HostSignatures()) checker.RegisterFunction(signature);
     for (const auto& signature : engine_.HostPropertySignatures())
         checker.RegisterGlobalProperty(signature);
+    for (const auto& signature : engine_.HostTypeSignatures())
+        checker.RegisterObjectType(signature);
     const bool typed = !diagnostics.HasErrors() && checker.Check(tree.root);
     if (!typed) return false;
     auto functions = checker.Functions();
@@ -60,7 +62,7 @@ bool ScriptModule::Build() {
     }
     auto classes = checker.Classes();
     for (auto& type : classes) {
-        type.id = engine_.GetOrCreateTypeId(type.name);
+        if (!type.id.IsValid()) type.id = engine_.GetOrCreateTypeId(type.name);
         for (auto& method : type.methods) {
             method.objectType = type.name;
             method.method = true;
@@ -82,12 +84,13 @@ bool ScriptModule::Build() {
     for (auto& type : funcdefs) type.id = engine_.GetOrCreateTypeId(type.name);
     BytecodeModule candidate = compiler.Compile(tree.root, functions, classes, globals, enums, funcdefs);
     if (diagnostics.HasErrors()) return false;
-    std::vector<const TypeInfo*> scriptTypes;
+    std::vector<const TypeInfo*> linkedTypes;
     for (const auto& type : classes) {
-        const TypeInfo* linked = engine_.RegisterScriptType(type);
-        scriptTypes.push_back(linked);
+        const TypeInfo* linked = type.host ? engine_.GetTypeInfo(type.name)
+                                          : engine_.RegisterScriptType(type);
+        if (linked) linkedTypes.push_back(linked);
     }
-    for (const auto& type : classes) engine_.LinkScriptType(type);
+    for (const auto& type : classes) if (!type.host) engine_.LinkScriptType(type);
     for (const auto& host : engine_.hostFunctions_)
         candidate.hostFunctions.push_back({host.signature.id, &host});
     for (auto& binding : candidate.globals) {
@@ -104,7 +107,7 @@ bool ScriptModule::Build() {
             return false;
         }
     }
-    for (const auto* type : scriptTypes) candidate.objectTypes.push_back({type->id, type});
+    for (const auto* type : linkedTypes) candidate.objectTypes.push_back({type->id, type});
     auto state = std::make_shared<ModuleState>();
     state->globals.reserve(candidate.globals.size());
     for (const auto& global : candidate.globals) {
@@ -274,6 +277,7 @@ bool ScriptEngine::RegisterGlobalFunction(std::string declaration, GenericFuncti
         return false;
     }
     for (const auto& existing : hostFunctions_) {
+        if (existing.signature.factory) continue;
         if (existing.signature.name == signature->name &&
             existing.signature.parameters == signature->parameters) {
             diagnostics.Report({"registration"}, Severity::Error,
@@ -291,9 +295,48 @@ const TypeInfo* ScriptEngine::RegisterObjectType(std::string name) {
     auto type = std::make_unique<TypeInfo>();
     type->name = name;
     type->id = GetOrCreateTypeId(name);
+    type->host = true;
     const TypeInfo* result = type.get();
     objectTypes_.emplace(std::move(name), std::move(type));
     return result;
+}
+
+bool ScriptEngine::RegisterObjectFactory(std::string typeName, std::string declaration,
+                                         GenericFunction callback) {
+    DiagnosticSink diagnostics([this](const Diagnostic& diagnostic) { ForwardDiagnostic(diagnostic); });
+    const auto type = objectTypes_.find(typeName);
+    if (type == objectTypes_.end() || !type->second->host) {
+        diagnostics.Report({"registration"}, Severity::Error,
+                           "factory type '" + typeName + "' is not a registered reference type");
+        return false;
+    }
+    auto signature = ParseFunctionDeclaration(declaration, diagnostics);
+    if (!signature || !callback) {
+        if (signature && !callback)
+            diagnostics.Report({"registration"}, Severity::Error,
+                               "object factory callback cannot be empty");
+        return false;
+    }
+    const DataType expected = DataType::Object(typeName, true);
+    if (signature->name != "f" || signature->returnType != expected ||
+        signature->returnsReference) {
+        diagnostics.Report({"registration"}, Severity::Error,
+                           "factory declaration must have the form '" + typeName + "@ f(...)'");
+        return false;
+    }
+    for (const auto& existing : hostFunctions_) {
+        if (!existing.signature.factory || existing.signature.objectType != typeName ||
+            existing.signature.parameters != signature->parameters) continue;
+        diagnostics.Report({"registration"}, Severity::Error,
+                           "duplicate object factory '" + declaration + "'");
+        return false;
+    }
+    signature->factory = true;
+    signature->objectType = typeName;
+    signature->id = GetOrCreateFunctionId("$factory\n" + typeName + "\n" +
+                                          signature->Declaration());
+    hostFunctions_.push_back({std::move(*signature), std::move(callback)});
+    return true;
 }
 
 const TypeInfo* ScriptEngine::GetTypeInfo(std::string_view name) const {
@@ -350,6 +393,7 @@ const TypeInfo* ScriptEngine::RegisterScriptType(const ClassSignature& signature
         objectTypes_.emplace(signature.name, std::move(created));
     } else type = found->second.get();
     type->script = !signature.interfaceType;
+    type->host = false;
     type->baseClass = signature.baseClass;
     type->baseType = nullptr;
     type->collector = signature.interfaceType ? nullptr : &garbageCollector_;
@@ -416,6 +460,19 @@ std::vector<GlobalSignature> ScriptEngine::HostPropertySignatures() const {
     std::vector<GlobalSignature> signatures;
     signatures.reserve(hostProperties_.size());
     for (const auto& host : hostProperties_) signatures.push_back(host.signature);
+    return signatures;
+}
+
+std::vector<ClassSignature> ScriptEngine::HostTypeSignatures() const {
+    std::vector<ClassSignature> signatures;
+    for (const auto& entry : objectTypes_) {
+        if (!entry.second->host) continue;
+        ClassSignature signature;
+        signature.name = entry.second->name;
+        signature.id = entry.second->id;
+        signature.host = true;
+        signatures.push_back(std::move(signature));
+    }
     return signatures;
 }
 

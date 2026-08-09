@@ -15,6 +15,8 @@ bool IsReturnTypeOverload(std::string_view name) {
 }
 
 std::string FunctionKey(const FunctionSignature& signature) {
+    if (signature.factory)
+        return "$factory$" + signature.objectType + "::" + signature.Declaration();
     return (signature.method ? signature.objectType + "::" : std::string{}) +
         signature.Declaration();
 }
@@ -1560,9 +1562,48 @@ void BytecodeCompiler::CompileCall(AstNode* node, bool dereferenceResult) {
         if (classFound != classIds_.end()) { resolvedClassName = candidate; break; }
     }
     if (!explicitMethod && classFound != classIds_.end()) {
+        const ClassSignature* constructedType = FindClass(resolvedClassName);
+        if (constructedType && constructedType->host) {
+            const FunctionSignature* factory = nullptr;
+            int bestCost = 1000000;
+            for (const auto& signature : signatures_) {
+                if (!signature.factory || signature.objectType != resolvedClassName) continue;
+                const auto ordered = OrderArguments(signature, arguments);
+                if (!ordered) continue;
+                int cost = 0;
+                bool viable = true;
+                for (std::size_t index = 0; index < ordered->size(); ++index) {
+                    if (!(*ordered)[index]) continue;
+                    const ParameterMode mode = ParameterModeAt(signature, index);
+                    const auto conversion = (mode == ParameterMode::Out || mode == ParameterMode::InOut)
+                        ? ((*ordered)[index]->inferredType == signature.parameters[index]
+                               ? std::optional<int>{0} : std::nullopt)
+                        : ConversionCost((*ordered)[index]->inferredType,
+                                         signature.parameters[index]);
+                    if (!conversion) { viable = false; break; }
+                    cost += *conversion;
+                }
+                if (viable && cost < bestCost) { factory = &signature; bestCost = cost; }
+            }
+            if (!factory) { Error(node, "host object factory target is missing"); return; }
+            const auto ordered = OrderArguments(*factory, arguments);
+            if (!ordered) { Error(node, "factory arguments cannot be ordered"); return; }
+            ReferenceReceiverMap referenceReceivers;
+            for (std::size_t index = 0; index < factory->parameters.size(); ++index) {
+                AstNode* expression = (*ordered)[index];
+                if (!expression) { Error(node, "factory argument is missing"); return; }
+                CompileCallArgument(*factory, index, expression, referenceReceivers);
+            }
+            const auto found = hostIds_.find(FunctionKey(*factory));
+            if (found == hostIds_.end()) { Error(node, "host object factory is not linked"); return; }
+            Emit(OpCode::CallHost,
+                 AddCallable({CallableKind::HostFunction, found->second, constructedType->id, 0,
+                              static_cast<std::uint32_t>(factory->parameters.size())}), node);
+            CompileReferenceWritebacks(*factory, *ordered, referenceReceivers, node);
+            return;
+        }
         ReferenceReceiverMap referenceReceivers;
         Emit(OpCode::NewObject, static_cast<std::int32_t>(classFound->second.value), node);
-        const ClassSignature* constructedType = FindClass(resolvedClassName);
         const bool generatedCopy = constructedType && constructedType->generatedCopyConstructor &&
             arguments.size() == 1 && arguments[0]->kind != NodeKind::NamedArgument &&
             ConversionCost(ArgumentExpression(arguments[0])->inferredType,
@@ -1645,6 +1686,7 @@ void BytecodeCompiler::CompileCall(AstNode* node, bool dereferenceResult) {
         }
     }
     for (const auto& signature : signatures_) {
+        if (signature.factory) continue;
         if (signature.constructor || signature.destructor) continue;
         const auto ordered = OrderArguments(signature, arguments);
         if (!ordered) continue;

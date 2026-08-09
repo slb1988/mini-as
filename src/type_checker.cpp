@@ -160,6 +160,10 @@ void TypeChecker::RegisterGlobalProperty(GlobalSignature signature) {
     registeredGlobals_.push_back(std::move(signature));
 }
 
+void TypeChecker::RegisterObjectType(ClassSignature signature) {
+    registeredClasses_.push_back(std::move(signature));
+}
+
 bool TypeChecker::Check(AstNode* root) {
     scopes_.clear();
     activeLambdas_.clear();
@@ -297,10 +301,17 @@ void TypeChecker::PredeclareEnums(AstNode* root) {
 }
 
 void TypeChecker::Predeclare(AstNode* root) {
+    classes_ = registeredClasses_;
     if (!root) return;
-    classes_.clear();
     for (AstNode* node : TopLevelDeclarations(root)) {
         if (node->kind != NodeKind::ClassDecl && node->kind != NodeKind::InterfaceDecl) continue;
+        const auto duplicateType = std::find_if(classes_.begin(), classes_.end(), [&](const auto& type) {
+            return type.name == node->token.lexeme;
+        });
+        if (duplicateType != classes_.end()) {
+            Error(node, "duplicate type '" + node->token.lexeme + "'");
+            continue;
+        }
         ClassSignature type;
         type.name = node->token.lexeme;
         type.interfaceType = node->kind == NodeKind::InterfaceDecl;
@@ -535,6 +546,7 @@ void TypeChecker::Predeclare(AstNode* root) {
             if (child->firstChild) ++signature.defaultArgumentCount;
         }
         for (const auto& existing : functions_) {
+            if (existing.factory) continue;
             if (existing.name == signature.name && existing.parameters == signature.parameters) {
                 Error(node, "duplicate function '" + signature.Declaration() + "'");
             }
@@ -961,9 +973,12 @@ DataType TypeChecker::CheckExpression(AstNode* node, std::optional<DataType> exp
         }
         if (source.kind != TypeKind::Object || !source.isHandle)
             Error(node, "reference cast source must be an object handle");
-        else if (source.objectName != "<null>" && !FindClass(source.objectName))
-            Error(node, "reference cast source must be a script object handle");
-        else if (source.objectName != "<null>" && result.kind == TypeKind::Object) {
+        else if (source.objectName != "<null>") {
+            const ClassSignature* sourceType = FindClass(source.objectName);
+            if (!sourceType || sourceType->host)
+                Error(node, "reference cast source must be a script object handle");
+        }
+        if (source.objectName != "<null>" && result.kind == TypeKind::Object) {
             const FunctionSignature* method = FindOperatorMethod(source, "opCast", {}, result);
             if (!method) method = FindOperatorMethod(source, "opImplCast", {}, result);
             if (method) {
@@ -1475,6 +1490,21 @@ DataType TypeChecker::CheckCall(AstNode* node) {
                 Error(node, "interface types cannot be constructed");
                 return DataType::Invalid();
             }
+            if (type->host) {
+                const FunctionSignature* factory = nullptr;
+                int bestCost = 1000000;
+                for (const auto& candidate : functions_) {
+                    if (!candidate.factory || candidate.objectType != type->name) continue;
+                    const auto cost = MatchArguments(candidate, arguments, argumentNames);
+                    if (cost && *cost < bestCost) { factory = &candidate; bestCost = *cost; }
+                }
+                if (!factory) {
+                    Error(node, "no matching factory for '" + type->name + "'");
+                    return DataType::Invalid();
+                }
+                ValidateReferenceArguments(*factory, argumentNodes, argumentNames);
+                return DataType::Object(type->name, true);
+            }
             const FunctionSignature* constructor = nullptr;
             int bestCost = 1000000;
             bool hasConstructors = false;
@@ -1590,6 +1620,7 @@ DataType TypeChecker::CheckCall(AstNode* node) {
     const FunctionSignature* best = nullptr;
     int bestCost = 1000000;
     for (const auto& function : functions_) {
+        if (function.factory) continue;
         const auto nameCost = NameMatchCost(function.name, callee->token.lexeme, currentNamespace_);
         const auto argumentCost = MatchArguments(function, arguments, argumentNames);
         if (!nameCost || !argumentCost) continue;
@@ -1915,7 +1946,7 @@ const FunctionSignature* TypeChecker::ResolveFunctionAddress(
     int bestCost = 1000000;
     bool ambiguous = false;
     for (const auto& function : functions_) {
-        if (function.method || function.constructor || function.destructor) continue;
+        if (function.method || function.constructor || function.destructor || function.factory) continue;
         const auto nameCost = NameMatchCost(function.name, node->firstChild->token.lexeme,
                                             currentNamespace_);
         if (!nameCost) continue;

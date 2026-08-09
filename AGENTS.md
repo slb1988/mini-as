@@ -150,11 +150,11 @@ Do not stage generated build directories or unrelated user changes. Inspect
 The completed stage notes are authoritative. At the time this guide was added,
 the latest language stage is:
 
-- Stage 59 registered global properties, the first v0.5 host-embedding feature.
+- Stage 60 registered reference type factories and intrinsic reference-count
+  behaviours.
 
-The next planned feature is registered reference type factories and behaviours.
-Confirm the latest git history and `docs/stages/` before choosing the next stage
-number.
+The next planned feature is registered object methods. Confirm the latest git
+history and `docs/stages/` before choosing the next stage number.
 
 ## Common pitfalls
 
@@ -171,6 +171,9 @@ number.
   global stores. Emit an explicit `Pop` when the expression value is unwanted.
 - VM exceptions must retain the source location of the failing instruction and
   must not publish partial `out`/`inout` updates.
+- Registered reference type factories use `Type@ f(...)` declarations and
+  `GenericCall`; `RefObject` plus `ObjectHandle` remain the mandatory intrinsic
+  add-reference/release behaviours.
 - Preserve the last successful module image on parser, type-check, bytecode, or
   global-initializer failure.
 - Do not edit compatibility expectations merely to make mini and official

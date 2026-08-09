@@ -139,3 +139,138 @@ TEST_CASE(script_class_missing_interface_method_is_compile_error) {
     CHECK(!diagnostics.empty());
 }
 
+TEST_CASE(registered_reference_factories_construct_overloads_and_release_objects) {
+    auto engine = mini_as::CreateScriptEngine();
+    const auto* type = engine->RegisterObjectType("Thing");
+    CHECK(type != nullptr);
+    int destroyed = 0;
+    CHECK(engine->RegisterObjectFactory("Thing", "Thing@ f()",
+        [type, &destroyed](mini_as::GenericCall& call) {
+            call.SetReturnObject(mini_as::ObjectHandle(new HostThing(type, 7, destroyed)));
+        }));
+    CHECK(engine->RegisterObjectFactory("Thing", "Thing@ f(int value)",
+        [type, &destroyed](mini_as::GenericCall& call) {
+            call.SetReturnObject(mini_as::ObjectHandle(
+                new HostThing(type, call.GetArgInt(0), destroyed)));
+        }));
+    CHECK(engine->RegisterGlobalFunction("int Read(Thing@ value)",
+        [](mini_as::GenericCall& call) {
+            const auto* thing = dynamic_cast<HostThing*>(call.GetArgObject(0).Get());
+            call.SetReturnInt(thing ? thing->value : -1);
+        }));
+    auto* module = engine->GetModule("reference-factories");
+    module->AddScriptSection("reference-factories",
+        "int run() { Thing@ first = Thing(); Thing@ second = Thing(35); "
+        "return Read(first) + Read(second); }");
+    CHECK(module->Build());
+    {
+        auto context = engine->CreateContext();
+        CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+        CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+        CHECK(context->GetReturnInt() == 42);
+        CHECK(destroyed == 2);
+    }
+    CHECK(destroyed == 2);
+}
+
+TEST_CASE(reference_factory_registration_rejects_invalid_types_declarations_and_duplicates) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    const auto* type = engine->RegisterObjectType("Thing");
+    CHECK(type != nullptr);
+    auto factory = [type](mini_as::GenericCall& call) {
+        static int destroyed = 0;
+        call.SetReturnObject(mini_as::ObjectHandle(new HostThing(type, 0, destroyed)));
+    };
+    CHECK(!engine->RegisterObjectFactory("Missing", "Missing@ f()", factory));
+    CHECK(!engine->RegisterObjectFactory("Thing", "int f()", factory));
+    CHECK(!engine->RegisterObjectFactory("Thing", "Thing@ create()", factory));
+    CHECK(!engine->RegisterObjectFactory("Thing", "Thing@ f()", {}));
+    CHECK(engine->RegisterObjectFactory("Thing", "Thing@ f()", factory));
+    CHECK(!engine->RegisterObjectFactory("Thing", "Thing@ f()", factory));
+    CHECK(diagnostics.size() >= 5);
+}
+
+TEST_CASE(registered_reference_types_without_factories_are_not_script_constructible) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    CHECK(engine->RegisterObjectType("Singleton") != nullptr);
+    auto* module = engine->GetModule("missing-reference-factory");
+    module->AddScriptSection("missing-reference-factory",
+        "int run() { Singleton@ value = Singleton(); return value is null ? 0 : 1; }");
+    CHECK(!module->Build());
+    bool missing = false;
+    for (const auto& diagnostic : diagnostics)
+        missing = missing || diagnostic.message.find("no matching factory for 'Singleton'") !=
+            std::string::npos;
+    CHECK(missing);
+}
+
+TEST_CASE(reference_factory_failures_report_the_construction_location) {
+    auto engine = mini_as::CreateScriptEngine();
+    CHECK(engine->RegisterObjectType("Thing") != nullptr);
+    CHECK(engine->RegisterObjectFactory("Thing", "Thing@ f(int value)",
+        [](mini_as::GenericCall& call) { call.SetException("factory rejected value"); }));
+    auto* module = engine->GetModule("reference-factory-error");
+    module->AddScriptSection("reference-factory-error",
+        "int run() {\n"
+        "  Thing@ value = Thing(42);\n"
+        "  return 0;\n"
+        "}\n");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Exception);
+    CHECK(context->GetExceptionString() == "factory rejected value");
+    CHECK(context->GetExceptionLocation().section == "reference-factory-error");
+    CHECK(context->GetExceptionLocation().row == 2);
+}
+
+TEST_CASE(reference_factories_reject_null_results_without_exceptions) {
+    auto engine = mini_as::CreateScriptEngine();
+    CHECK(engine->RegisterObjectType("Thing") != nullptr);
+    CHECK(engine->RegisterObjectFactory("Thing", "Thing@ f()",
+        [](mini_as::GenericCall& call) { call.SetReturnObject({}); }));
+    auto* module = engine->GetModule("null-reference-factory");
+    module->AddScriptSection("null-reference-factory", "int run() { Thing(); return 0; }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Exception);
+    CHECK(context->GetExceptionString().find("returned null without an exception") !=
+        std::string::npos);
+}
+
+TEST_CASE(reference_factories_reject_objects_of_the_wrong_registered_type) {
+    auto engine = mini_as::CreateScriptEngine();
+    const auto* expected = engine->RegisterObjectType("Thing");
+    const auto* other = engine->RegisterObjectType("Other");
+    CHECK(expected != nullptr);
+    CHECK(other != nullptr);
+    int destroyed = 0;
+    CHECK(engine->RegisterObjectFactory("Thing", "Thing@ f()",
+        [other, &destroyed](mini_as::GenericCall& call) {
+            call.SetReturnObject(mini_as::ObjectHandle(new HostThing(other, 0, destroyed)));
+        }));
+    auto* module = engine->GetModule("wrong-reference-factory-type");
+    module->AddScriptSection("wrong-reference-factory-type",
+        "int run() {\n"
+        "  Thing();\n"
+        "  return 0;\n"
+        "}\n");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Exception);
+    CHECK(context->GetExceptionString().find("object factory returned Other@ but declared Thing@") !=
+        std::string::npos);
+    CHECK(context->GetExceptionLocation().row == 2);
+    CHECK(destroyed == 1);
+}
+

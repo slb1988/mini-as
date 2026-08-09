@@ -145,6 +145,51 @@ TEST_CASE(bytecode_registered_globals_preserve_host_stable_ids) {
     CHECK(stored);
 }
 
+TEST_CASE(bytecode_lowers_registered_reference_construction_to_host_factory_calls) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("host-factory-bytecode",
+        "HostRef@ make() { return HostRef(42); }", diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    mini_as::TypeChecker checker(diagnostics);
+    mini_as::ClassSignature hostType;
+    hostType.name = "HostRef";
+    hostType.id = mini_as::TypeId{17};
+    hostType.host = true;
+    checker.RegisterObjectType(hostType);
+    mini_as::FunctionSignature factory;
+    factory.name = "f";
+    factory.returnType = mini_as::DataType::Object("HostRef", true);
+    factory.parameters = {mini_as::DataType::Int()};
+    factory.parameterNames = {"value"};
+    factory.parameterModes = {mini_as::ParameterMode::Value};
+    factory.host = true;
+    factory.factory = true;
+    factory.objectType = "HostRef";
+    factory.id = mini_as::FunctionId{23};
+    checker.RegisterFunction(factory);
+    CHECK(checker.Check(tree.root));
+    mini_as::BytecodeCompiler compiler(diagnostics);
+    auto module = compiler.Compile(tree.root, checker.Functions(), checker.Classes());
+    CHECK(!diagnostics.HasErrors());
+    bool hostCall = false;
+    bool allocation = false;
+    for (const auto& instruction : module.functions[0].code) {
+        if (instruction.opcode == mini_as::OpCode::CallHost) {
+            hostCall = true;
+            const auto* callable = module.FindCallable(
+                static_cast<std::size_t>(instruction.operand));
+            CHECK(callable != nullptr);
+            CHECK(callable->kind == mini_as::CallableKind::HostFunction);
+            CHECK(callable->function == mini_as::FunctionId{23});
+            CHECK(callable->objectType == mini_as::TypeId{17});
+        }
+        allocation = allocation || instruction.opcode == mini_as::OpCode::NewObject;
+    }
+    CHECK(hostCall);
+    CHECK(!allocation);
+}
+
 TEST_CASE(bytecode_emits_explicit_integer_width_conversions) {
     mini_as::DiagnosticSink diagnostics;
     mini_as::Tokenizer tokenizer("integer-conversion",

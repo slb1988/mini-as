@@ -8,6 +8,22 @@
 
 namespace {
 
+class CompatReference {
+public:
+    explicit CompatReference(int value) : value(value) {}
+    void AddRef() { ++references_; }
+    void Release() { if (--references_ == 0) delete this; }
+    int value;
+
+private:
+    ~CompatReference() = default;
+    int references_ = 1;
+};
+
+void CompatReferenceFactory(asIScriptGeneric* call) {
+    call->SetReturnAddress(new CompatReference(static_cast<int>(call->GetArgDWord(0))));
+}
+
 std::string ReadFile(const char* path) {
     std::ifstream input(path, std::ios::binary);
     std::ostringstream source;
@@ -33,19 +49,29 @@ int main(int argc, char** argv) {
         engine->ShutDownAndRelease();
         return 4;
     }
+    if (engine->RegisterObjectType("HostRef", 0, asOBJ_REF) < 0 ||
+        engine->RegisterObjectBehaviour("HostRef", asBEHAVE_FACTORY,
+            "HostRef@ f(int value)", asFUNCTION(CompatReferenceFactory), asCALL_GENERIC) < 0 ||
+        engine->RegisterObjectBehaviour("HostRef", asBEHAVE_ADDREF,
+            "void f()", asMETHOD(CompatReference, AddRef), asCALL_THISCALL) < 0 ||
+        engine->RegisterObjectBehaviour("HostRef", asBEHAVE_RELEASE,
+            "void f()", asMETHOD(CompatReference, Release), asCALL_THISCALL) < 0) {
+        engine->ShutDownAndRelease();
+        return 5;
+    }
     asIScriptModule* module = engine->GetModule("compat", asGM_ALWAYS_CREATE);
     const std::string source = ReadFile(argv[1]);
     module->AddScriptSection("compat.as", source.c_str(), source.size());
-    if (module->Build() < 0) { engine->ShutDownAndRelease(); return 5; }
+    if (module->Build() < 0) { engine->ShutDownAndRelease(); return 6; }
     asIScriptFunction* function = module->GetFunctionByDecl("int main()");
-    if (!function) { engine->ShutDownAndRelease(); return 6; }
+    if (!function) { engine->ShutDownAndRelease(); return 7; }
     asIScriptContext* context = engine->CreateContext();
     context->Prepare(function);
     const int state = context->Execute();
     if (state != asEXECUTION_FINISHED) {
         context->Release();
         engine->ShutDownAndRelease();
-        return 7;
+        return 8;
     }
     std::cout << "state=finished\nreturn=int:" << context->GetReturnDWord() << '\n';
     context->Release();

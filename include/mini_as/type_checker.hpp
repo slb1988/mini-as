@@ -26,6 +26,7 @@ struct FunctionSignature {
     bool destructor = false;
     MemberAccess access = MemberAccess::Public;
     bool propertyAccessor = false;
+    bool factory = false;
 
     std::string Declaration() const;
 };
@@ -51,6 +52,7 @@ struct ClassSignature {
     bool defaultCopyAssignmentDeleted = false;
     bool generatedCopyConstructor = false;
     TypeId id;
+    bool host = false;
 };
 
 struct GlobalSignature {
@@ -90,6 +92,7 @@ public:
     explicit TypeChecker(DiagnosticSink& diagnostics);
     void RegisterFunction(FunctionSignature signature);
     void RegisterGlobalProperty(GlobalSignature signature);
+    void RegisterObjectType(ClassSignature signature);
     bool Check(AstNode* root);
     const std::vector<FunctionSignature>& Functions() const;
     const std::vector<ClassSignature>& Classes() const;
@@ -160,6 +163,7 @@ private:
     DiagnosticSink& diagnostics_;
     std::vector<FunctionSignature> functions_;
     std::vector<GlobalSignature> registeredGlobals_;
+    std::vector<ClassSignature> registeredClasses_;
     std::vector<ClassSignature> classes_;
     std::vector<GlobalSignature> globals_;
     std::vector<EnumSignature> enums_;

@@ -27,6 +27,25 @@ TEST_CASE(object_handles_addref_release_deterministically) {
     CHECK(destroyed == 1);
 }
 
+TEST_CASE(weak_object_handles_lock_without_owning_and_expire_after_release) {
+    auto engine = mini_as::CreateScriptEngine();
+    const auto* type = engine->RegisterObjectType("Thing");
+    int destroyed = 0;
+    mini_as::WeakObjectHandle weak("Thing");
+    {
+        mini_as::ObjectHandle owner(new HostThing(type, 7, destroyed));
+        weak = mini_as::WeakObjectHandle(owner, "Thing");
+        CHECK(!weak.Expired());
+        mini_as::ObjectHandle locked = weak.Lock();
+        owner = {};
+        CHECK(destroyed == 0);
+        CHECK(locked.Get() != nullptr);
+    }
+    CHECK(destroyed == 1);
+    CHECK(weak.Expired());
+    CHECK(!weak.Lock());
+}
+
 TEST_CASE(object_handles_round_trip_through_script_and_generic_bridge) {
     auto engine = mini_as::CreateScriptEngine();
     const auto* type = engine->RegisterObjectType("Thing");

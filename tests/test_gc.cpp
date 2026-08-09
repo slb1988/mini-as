@@ -102,3 +102,19 @@ TEST_CASE(gc_collects_cycles_formed_by_captured_object_handles) {
     CHECK(engine->CollectGarbage() == 1);
     CHECK(engine->GetTrackedObjectCount() == 0);
 }
+
+TEST_CASE(weakref_fields_do_not_create_gc_edges_or_keep_objects_alive) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("gc-weakref");
+    module->AddScriptSection("gc-weakref",
+        "class Node { weakref<Node> self; } weakref<Node> observer; "
+        "void make() { Node@ node = Node(); @node.self = node; @observer = node; } "
+        "int run() { make(); return observer.get() is null ? 42 : 0; }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByName("run")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+    CHECK(engine->GetTrackedObjectCount() == 0);
+    CHECK(engine->CollectGarbage() == 0);
+}

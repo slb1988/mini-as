@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -14,6 +15,10 @@
 namespace mini_as {
 
 class RefObject;
+struct WeakRefState {
+    std::mutex mutex;
+    bool alive = true;
+};
 struct CapturedCell;
 using CapturedCellHandle = std::shared_ptr<CapturedCell>;
 
@@ -69,7 +74,7 @@ enum class TypeKind {
     Void, Bool,
     Int8, Int16, Int, Int64,
     UInt8, UInt16, UInt, UInt64,
-    Float, Double, String, Enum, Object, Function, Invalid
+    Float, Double, String, Enum, Object, Function, WeakRef, ConstWeakRef, Invalid
 };
 
 struct DataType {
@@ -95,6 +100,7 @@ struct DataType {
     static DataType Enum(std::string name);
     static DataType Object(std::string name, bool handle = false);
     static DataType Function(std::string name, bool handle = true);
+    static DataType WeakRef(std::string subtype, bool readOnly = false);
     static DataType Invalid();
 
     std::string Name() const;
@@ -130,6 +136,31 @@ struct IntegerStorage {
 
 bool operator==(const IntegerStorage& left, const IntegerStorage& right);
 
+class WeakObjectHandle {
+public:
+    WeakObjectHandle() = default;
+    explicit WeakObjectHandle(std::string typeName, bool readOnly = false);
+    WeakObjectHandle(const ObjectHandle& object, std::string typeName, bool readOnly = false);
+
+    ObjectHandle Lock() const;
+    bool Expired() const;
+    WeakObjectHandle AsReadOnly() const;
+    bool Equals(const ObjectHandle& object) const;
+    bool SameTarget(const WeakObjectHandle& other) const;
+    const std::string& TypeName() const;
+    bool IsReadOnly() const;
+
+private:
+    RefObject* object_ = nullptr;
+    std::shared_ptr<WeakRefState> state_;
+    std::string typeName_;
+    bool readOnly_ = false;
+
+    friend bool operator==(const WeakObjectHandle&, const WeakObjectHandle&);
+};
+
+bool operator==(const WeakObjectHandle& left, const WeakObjectHandle& right);
+
 struct FunctionHandle {
     FunctionHandle(FunctionId function = {}, TypeId signature = {}, std::string typeName = {},
                    bool host = false, ObjectHandle object = {}, TypeId dispatchType = {},
@@ -158,7 +189,7 @@ class Value {
 public:
     using Storage = std::variant<std::monostate, bool, std::int32_t, IntegerStorage,
                                  float, double, std::string, ObjectHandle, FunctionHandle,
-                                 CapturedCellHandle, ReferenceStorage>;
+                                 WeakObjectHandle, CapturedCellHandle, ReferenceStorage>;
 
     Value() = default;
     explicit Value(bool value);
@@ -169,6 +200,7 @@ public:
     explicit Value(const char* value);
     explicit Value(ObjectHandle value);
     explicit Value(FunctionHandle value);
+    explicit Value(WeakObjectHandle value);
     explicit Value(CapturedCellHandle value);
     explicit Value(ReferenceStorage value);
 

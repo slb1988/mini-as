@@ -51,6 +51,9 @@ DataType DataType::Object(std::string name, bool handle) {
 DataType DataType::Function(std::string name, bool handle) {
     return {TypeKind::Function, std::move(name), handle};
 }
+DataType DataType::WeakRef(std::string subtype, bool readOnly) {
+    return {readOnly ? TypeKind::ConstWeakRef : TypeKind::WeakRef, std::move(subtype), false};
+}
 DataType DataType::Invalid() { return {}; }
 
 std::string DataType::Name() const {
@@ -71,6 +74,8 @@ std::string DataType::Name() const {
     case TypeKind::Enum: return objectName;
     case TypeKind::Object: return objectName + (isHandle ? "@" : "");
     case TypeKind::Function: return objectName + (isHandle ? "@" : "");
+    case TypeKind::WeakRef: return "weakref<" + objectName + ">";
+    case TypeKind::ConstWeakRef: return "const_weakref<" + objectName + ">";
     case TypeKind::Invalid: return "<invalid>";
     }
     return "<invalid>";
@@ -145,6 +150,7 @@ Value::Value(std::string value) : storage_(std::move(value)) {}
 Value::Value(const char* value) : storage_(std::string(value)) {}
 Value::Value(ObjectHandle value) : storage_(std::move(value)) {}
 Value::Value(FunctionHandle value) : storage_(std::move(value)) {}
+Value::Value(WeakObjectHandle value) : storage_(std::move(value)) {}
 Value::Value(CapturedCellHandle value) : storage_(std::move(value)) {}
 Value::Value(ReferenceStorage value) : storage_(std::move(value)) {}
 
@@ -180,10 +186,14 @@ DataType Value::Type() const {
         return DataType::Function(handle.typeName, true);
     }
     case 9: {
+        const auto& handle = std::get<WeakObjectHandle>(storage_);
+        return DataType::WeakRef(handle.TypeName(), handle.IsReadOnly());
+    }
+    case 10: {
         const auto& cell = std::get<CapturedCellHandle>(storage_);
         return cell ? cell->value.Type() : DataType::Invalid();
     }
-    case 10: return std::get<ReferenceStorage>(storage_).type;
+    case 11: return std::get<ReferenceStorage>(storage_).type;
     default: return DataType::Invalid();
     }
 }
@@ -227,6 +237,8 @@ std::string Value::ToString() const {
     }
     if (const auto* value = std::get_if<std::string>(&storage_)) return *value;
     if (std::holds_alternative<ReferenceStorage>(storage_)) return "<reference>";
+    if (const auto* weak = std::get_if<WeakObjectHandle>(&storage_))
+        return weak->Expired() ? "null" : "<weakref<" + weak->TypeName() + ">>";
     if (const auto* cell = std::get_if<CapturedCellHandle>(&storage_))
         return *cell ? (*cell)->value.ToString() : "<capture>";
     if (const auto* handle = std::get_if<FunctionHandle>(&storage_))

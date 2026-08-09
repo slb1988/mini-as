@@ -412,3 +412,22 @@ TEST_CASE(parser_resolves_inherited_child_funcdefs_in_derived_class_scope) {
           mini_as::DataType::Function("Base::Callback", true));
 }
 
+TEST_CASE(parser_builds_weakref_template_types_and_direct_initializers) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("weakrefs",
+        "class Payload {} int run() { weakref<Payload> empty; "
+        "const_weakref<Payload> readonly; weakref<Payload> direct(Payload()); return 0; }",
+        diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    CHECK(!diagnostics.HasErrors());
+    auto* statement = tree.root->Children()[1]->firstChild->firstChild;
+    CHECK(statement->declaredType == mini_as::DataType::WeakRef("Payload"));
+    statement = statement->nextSibling;
+    CHECK(statement->declaredType == mini_as::DataType::WeakRef("Payload", true));
+    statement = statement->nextSibling;
+    CHECK(statement->firstChild->kind == mini_as::NodeKind::Call);
+    CHECK(statement->firstChild->firstChild->declaredType ==
+          mini_as::DataType::WeakRef("Payload"));
+}
+

@@ -116,7 +116,8 @@ std::string_view OpCodeName(OpCode opcode) {
         "CONCAT", "NEG_I", "NEG_F", "NEG_D", "BIT_NOT", "NOT",
         "EQ", "NE", "LT", "LE", "GT", "GE", "JMP", "JZ", "CALL", "CALL_HOST",
         "CALL_VIRTUAL", "CALL_HANDLE", "MAKE_DELEGATE", "MAKE_CLOSURE",
-        "CAST_OBJECT", "NEW_OBJECT", "LOAD_FIELD", "STORE_FIELD",
+        "CAST_OBJECT", "NEW_OBJECT", "MAKE_WEAKREF", "LOCK_WEAKREF", "TO_CONST_WEAKREF",
+        "LOAD_FIELD", "STORE_FIELD",
         "MAKE_GLOBAL_REF", "MAKE_FIELD_REF", "LOAD_REF", "STORE_REF", "RET"
     };
     return names[static_cast<std::size_t>(opcode)];
@@ -142,6 +143,7 @@ std::string Disassemble(const BytecodeFunction& function) {
             instruction.opcode == OpCode::MakeClosure ||
             instruction.opcode == OpCode::CastObject ||
             instruction.opcode == OpCode::NewObject ||
+            instruction.opcode == OpCode::MakeWeakRef ||
             instruction.opcode == OpCode::LoadField || instruction.opcode == OpCode::StoreField ||
             instruction.opcode == OpCode::MakeGlobalReference ||
             instruction.opcode == OpCode::MakeFieldReference) out << instruction.operand;
@@ -1392,6 +1394,21 @@ void BytecodeCompiler::CompileImplicitBaseConstructor(std::string_view typeName,
 
 void BytecodeCompiler::CompileCall(AstNode* node, bool dereferenceResult) {
     AstNode* callee = node->firstChild;
+    if (callee && node->operatorMethod == "$weakref.construct") {
+        AstNode* argument = callee->nextSibling;
+        if (!argument) EmitDefaultValue(node->inferredType, node);
+        else {
+            CompileExpression(ArgumentExpression(argument));
+            EmitConversion(ArgumentExpression(argument)->inferredType, node->inferredType, node);
+        }
+        return;
+    }
+    if (callee && node->operatorMethod == "$weakref.get" &&
+        callee->kind == NodeKind::Member && callee->firstChild) {
+        CompileExpression(callee->firstChild);
+        Emit(OpCode::LockWeakRef, 0, node);
+        return;
+    }
     if (callee && (node->operatorMethod == "opConv" ||
                    node->operatorMethod == "opImplConv") &&
         callee->kind == NodeKind::Identifier && callee->nextSibling) {
@@ -1867,13 +1884,29 @@ void BytecodeCompiler::EmitDefaultValue(const DataType& type, const AstNode* sou
         Emit(OpCode::PushConst,
              AddConstant(Value(FunctionHandle{{}, signature, type.objectName, false})), source);
     }
+    else if (type.kind == TypeKind::WeakRef || type.kind == TypeKind::ConstWeakRef) {
+        Emit(OpCode::PushConst,
+             AddConstant(Value(WeakObjectHandle(type.objectName,
+                 type.kind == TypeKind::ConstWeakRef))), source);
+    }
     else Emit(OpCode::PushVoid, 0, source);
 }
 
 void BytecodeCompiler::EmitConversion(const DataType& from, const DataType& to,
                                       const AstNode* source) {
     if (from == to) return;
-    if (from.kind == TypeKind::Object && from.objectName == "<null>" &&
+    if (from.kind == TypeKind::Object &&
+        (to.kind == TypeKind::WeakRef || to.kind == TypeKind::ConstWeakRef)) {
+        Emit(OpCode::MakeWeakRef,
+             AddConstant(Value(WeakObjectHandle(to.objectName,
+                 to.kind == TypeKind::ConstWeakRef))), source);
+    } else if ((from.kind == TypeKind::WeakRef || from.kind == TypeKind::ConstWeakRef) &&
+               to.kind == TypeKind::Object) {
+        Emit(OpCode::LockWeakRef, 0, source);
+    } else if (from.kind == TypeKind::WeakRef && to.kind == TypeKind::ConstWeakRef &&
+               from.objectName == to.objectName) {
+        Emit(OpCode::ToConstWeakRef, 0, source);
+    } else if (from.kind == TypeKind::Object && from.objectName == "<null>" &&
         to.kind == TypeKind::Function) {
         Emit(OpCode::Pop, 0, source);
         EmitDefaultValue(to, source);
@@ -1937,6 +1970,11 @@ std::optional<int> BytecodeCompiler::ConversionCost(const DataType& from,
     if (from.IsInteger() && to == DataType::Double()) return 101;
     if (from == DataType::Float() && to == DataType::Double()) return 1;
     if (from == DataType::Double() && to == DataType::Float()) return 2;
+    if (from.kind == TypeKind::WeakRef && to.kind == TypeKind::ConstWeakRef &&
+        from.objectName == to.objectName) return 1;
+    if ((from.kind == TypeKind::WeakRef || from.kind == TypeKind::ConstWeakRef) &&
+        to.kind == TypeKind::Object && to.isHandle &&
+        (from.objectName == to.objectName || IsBaseOf(to.objectName, from.objectName))) return 1;
     if (from.kind == TypeKind::Object && from.objectName == "<null>" && to.isHandle) return 1;
     if (from.kind == TypeKind::Object && to.kind == TypeKind::Object &&
         from.isHandle && to.isHandle) {

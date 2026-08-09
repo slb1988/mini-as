@@ -24,7 +24,7 @@ enum class OpCode : std::uint8_t {
     Equal, NotEqual, Less, LessEqual, Greater, GreaterEqual,
     Jump, JumpIfFalse,
     Call, CallHost, CallVirtual, CallHandle, MakeDelegate, MakeClosure,
-    CastObject, NewObject, LoadField, StoreField,
+    CastObject, NewObject, MakeWeakRef, LockWeakRef, ToConstWeakRef, LoadField, StoreField,
     MakeGlobalReference, MakeFieldReference, LoadReference, StoreReference, Return
 };
 

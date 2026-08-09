@@ -52,14 +52,70 @@ RefObject* ObjectHandle::Get() const { return object_; }
 ObjectHandle::operator bool() const { return object_ != nullptr; }
 bool operator==(const ObjectHandle& left, const ObjectHandle& right) { return left.Get() == right.Get(); }
 
+WeakObjectHandle::WeakObjectHandle(std::string typeName, bool readOnly)
+    : typeName_(std::move(typeName)), readOnly_(readOnly) {}
+
+WeakObjectHandle::WeakObjectHandle(const ObjectHandle& object, std::string typeName, bool readOnly)
+    : object_(object.Get()), state_(object_ ? object_->GetWeakRefState() : nullptr),
+      typeName_(std::move(typeName)), readOnly_(readOnly) {}
+
+ObjectHandle WeakObjectHandle::Lock() const {
+    if (!object_ || !state_) return {};
+    std::lock_guard<std::mutex> guard(state_->mutex);
+    return state_->alive ? ObjectHandle(object_) : ObjectHandle{};
+}
+
+bool WeakObjectHandle::Expired() const {
+    if (!object_ || !state_) return true;
+    std::lock_guard<std::mutex> guard(state_->mutex);
+    return !state_->alive;
+}
+
+WeakObjectHandle WeakObjectHandle::AsReadOnly() const {
+    WeakObjectHandle result = *this;
+    result.readOnly_ = true;
+    return result;
+}
+
+bool WeakObjectHandle::Equals(const ObjectHandle& object) const {
+    if (!object_) return !object;
+    return object_ == object.Get() && state_ == object_->GetWeakRefState();
+}
+
+bool WeakObjectHandle::SameTarget(const WeakObjectHandle& other) const {
+    return object_ == other.object_ && state_ == other.state_ && typeName_ == other.typeName_;
+}
+
+const std::string& WeakObjectHandle::TypeName() const { return typeName_; }
+bool WeakObjectHandle::IsReadOnly() const { return readOnly_; }
+
+bool operator==(const WeakObjectHandle& left, const WeakObjectHandle& right) {
+    return left.object_ == right.object_ && left.state_ == right.state_ &&
+           left.typeName_ == right.typeName_ && left.readOnly_ == right.readOnly_;
+}
+
 RefObject::RefObject(const TypeInfo* type) : type_(type) {}
-RefObject::~RefObject() { if (type_ && type_->collector) type_->collector->Unregister(this); }
+RefObject::~RefObject() {
+    {
+        std::lock_guard<std::mutex> guard(weakRefState_->mutex);
+        weakRefState_->alive = false;
+    }
+    if (type_ && type_->collector) type_->collector->Unregister(this);
+}
 void RefObject::AddRef() { refCount_.fetch_add(1, std::memory_order_relaxed); }
 void RefObject::Release() {
-    if (refCount_.fetch_sub(1, std::memory_order_acq_rel) == 1) OnZeroReferences();
+    bool destroy = false;
+    {
+        std::lock_guard<std::mutex> guard(weakRefState_->mutex);
+        destroy = refCount_.fetch_sub(1, std::memory_order_acq_rel) == 1;
+        if (destroy)
+            weakRefState_->alive = false;
+    }
+    if (destroy) OnZeroReferences();
 }
 std::size_t RefObject::RefCount() const { return refCount_.load(std::memory_order_relaxed); }
 const TypeInfo* RefObject::GetTypeInfo() const { return type_; }
+std::shared_ptr<WeakRefState> RefObject::GetWeakRefState() const { return weakRefState_; }
 void RefObject::EnumerateReferences(const std::function<void(RefObject*)>&) const {}
 void RefObject::OnZeroReferences() { delete this; }
 
@@ -88,6 +144,9 @@ ScriptObject::ScriptObject(const TypeInfo* type, ObjectFinalizerQueue* finalizer
         case TypeKind::Object: fields_.emplace_back(ObjectHandle{}); break;
         case TypeKind::Function:
             fields_.emplace_back(FunctionHandle{{}, {}, field.second.objectName, false}); break;
+        case TypeKind::WeakRef: case TypeKind::ConstWeakRef:
+            fields_.emplace_back(WeakObjectHandle(field.second.objectName,
+                field.second.kind == TypeKind::ConstWeakRef)); break;
         default: fields_.emplace_back(); break;
         }
     }

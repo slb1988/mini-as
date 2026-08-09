@@ -14,6 +14,8 @@ Value DefaultGlobalValue(const DataType& type) {
     if (type == DataType::String()) return Value(std::string{});
     if (type.kind == TypeKind::Object) return Value(ObjectHandle{});
     if (type.kind == TypeKind::Function) return Value(FunctionHandle{{}, {}, type.objectName, false});
+    if (type.kind == TypeKind::WeakRef || type.kind == TypeKind::ConstWeakRef)
+        return Value(WeakObjectHandle(type.objectName, type.kind == TypeKind::ConstWeakRef));
     return Value{};
 }
 

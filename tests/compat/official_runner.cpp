@@ -1,4 +1,5 @@
 #include <angelscript.h>
+#include <weakref.h>
 
 #include <fstream>
 #include <iostream>
@@ -26,6 +27,7 @@ int main(int argc, char** argv) {
     if (!engine) return 3;
     engine->SetEngineProperty(asEP_ALLOW_UNSAFE_REFERENCES, true);
     engine->SetMessageCallback(asFUNCTION(MessageCallback), nullptr, asCALL_CDECL);
+    RegisterScriptWeakRef(engine);
     asIScriptModule* module = engine->GetModule("compat", asGM_ALWAYS_CREATE);
     const std::string source = ReadFile(argv[1]);
     module->AddScriptSection("compat.as", source.c_str(), source.size());

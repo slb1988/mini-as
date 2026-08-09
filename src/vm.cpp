@@ -30,6 +30,18 @@ bool ValuesEqual(const Value& left, const Value& right) {
         right.Type().objectName == "<null>") return !left.As<FunctionHandle>();
     if (right.Type().kind == TypeKind::Function && left.Type().kind == TypeKind::Object &&
         left.Type().objectName == "<null>") return !right.As<FunctionHandle>();
+    if ((left.Type().kind == TypeKind::WeakRef || left.Type().kind == TypeKind::ConstWeakRef) &&
+        right.Type().kind == TypeKind::Object)
+        return left.As<WeakObjectHandle>().Equals(right.As<ObjectHandle>());
+    if ((right.Type().kind == TypeKind::WeakRef || right.Type().kind == TypeKind::ConstWeakRef) &&
+        left.Type().kind == TypeKind::Object)
+        return right.As<WeakObjectHandle>().Equals(left.As<ObjectHandle>());
+    if ((left.Type().kind == TypeKind::WeakRef || left.Type().kind == TypeKind::ConstWeakRef) &&
+        (right.Type().kind == TypeKind::WeakRef || right.Type().kind == TypeKind::ConstWeakRef)) {
+        const auto& leftWeak = left.As<WeakObjectHandle>();
+        const auto& rightWeak = right.As<WeakObjectHandle>();
+        return leftWeak.SameTarget(rightWeak);
+    }
     if (left.Type().IsInteger() && right.Type().IsInteger()) {
         if (left.Type().IsSignedInteger() && right.Type().IsSignedInteger())
             return left.SignedInteger() == right.SignedInteger();
@@ -561,6 +573,24 @@ bool VirtualMachine::Step() {
         Push(Value(ObjectHandle(new ScriptObject(type, finalizerQueue_, std::move(finalizer)))));
         break;
     }
+    case OpCode::MakeWeakRef: {
+        if (instruction.operand < 0 ||
+            static_cast<std::size_t>(instruction.operand) >= function_->constants.size())
+            throw std::runtime_error("weakref type descriptor is unavailable");
+        const auto& descriptor = function_->constants[static_cast<std::size_t>(instruction.operand)]
+            .As<WeakObjectHandle>();
+        const ObjectHandle object = Pop().As<ObjectHandle>();
+        Push(Value(WeakObjectHandle(object, descriptor.TypeName(), descriptor.IsReadOnly())));
+        break;
+    }
+    case OpCode::LockWeakRef: {
+        const WeakObjectHandle weak = Pop().As<WeakObjectHandle>();
+        Push(Value(weak.Lock()));
+        break;
+    }
+    case OpCode::ToConstWeakRef:
+        Push(Value(Pop().As<WeakObjectHandle>().AsReadOnly()));
+        break;
     case OpCode::LoadField: {
         Value objectValue = Pop();
         const auto& handle = objectValue.As<ObjectHandle>();

@@ -489,6 +489,20 @@ AstNode* Parser::ParseVariableDeclaration() {
         declaration->isConst = isConst;
         declaration->isAuto = isAuto;
         if (Match(TokenKind::Equal)) declaration->AppendChild(ParseAssignment());
+        else if ((type.kind == TypeKind::WeakRef || type.kind == TypeKind::ConstWeakRef) &&
+                 Match(TokenKind::LeftParen)) {
+            Token constructorToken = name;
+            constructorToken.lexeme = type.Name();
+            AstNode* callee = arena_->Make(NodeKind::Identifier, constructorToken);
+            callee->declaredType = type;
+            AstNode* call = arena_->Make(NodeKind::Call, Previous());
+            call->AppendChild(callee);
+            if (!Check(TokenKind::RightParen)) {
+                do { call->AppendChild(ParseExpression()); } while (Match(TokenKind::Comma));
+            }
+            Consume(TokenKind::RightParen, "expected ')' after weakref initializer");
+            declaration->AppendChild(call);
+        }
         return declaration;
     };
     AstNode* first = parseOne();
@@ -714,6 +728,16 @@ AstNode* Parser::ParsePrimary() {
         Consume(TokenKind::RightParen, "expected ')' after cast expression");
         return cast;
     }
+    if (Check(TokenKind::Identifier) &&
+        (Current().lexeme == "weakref" || Current().lexeme == "const_weakref") &&
+        current_ + 1 < tokens_.size() && tokens_[current_ + 1].kind == TokenKind::Less) {
+        Token typeToken = Current();
+        const DataType type = ParseType(false);
+        typeToken.lexeme = type.Name();
+        AstNode* identifier = arena_->Make(NodeKind::Identifier, typeToken);
+        identifier->declaredType = type;
+        return identifier;
+    }
     if (Check(TokenKind::Identifier))
         return arena_->Make(NodeKind::Identifier, ParseQualifiedIdentifier("expected identifier"));
     if (Match(TokenKind::LeftParen)) {
@@ -743,15 +767,33 @@ DataType Parser::ParseType(bool allowVoid) {
     else if (Match(TokenKind::KwString)) type = DataType::String();
     else if (Check(TokenKind::Identifier)) {
         Token identifier = ParseQualifiedIdentifier("expected type");
-        const std::string name = ResolveTypeName(identifier.lexeme);
-        const auto alias = typedefTypes_.find(name);
-        if (alias != typedefTypes_.end()) type = alias->second;
-        else if (enumTypes_.find(name) != enumTypes_.end()) type = DataType::Enum(name);
-        else if (funcdefTypes_.find(name) != funcdefTypes_.end()) type = DataType::Function(name, false);
-        else type = DataType::Object(name);
+        if ((identifier.lexeme == "weakref" || identifier.lexeme == "const_weakref") &&
+            Match(TokenKind::Less)) {
+            const bool readOnly = identifier.lexeme == "const_weakref";
+            DataType subtype = ParseType(false);
+            Consume(TokenKind::Greater, "expected '>' after weakref subtype");
+            if (subtype.kind != TypeKind::Object || subtype.isHandle) {
+                Error(identifier, "weakref subtype must be a script class without '@'");
+                type = DataType::Invalid();
+            } else {
+                type = DataType::WeakRef(subtype.objectName, readOnly);
+            }
+        } else {
+            const std::string name = ResolveTypeName(identifier.lexeme);
+            const auto alias = typedefTypes_.find(name);
+            if (alias != typedefTypes_.end()) type = alias->second;
+            else if (enumTypes_.find(name) != enumTypes_.end()) type = DataType::Enum(name);
+            else if (funcdefTypes_.find(name) != funcdefTypes_.end())
+                type = DataType::Function(name, false);
+            else type = DataType::Object(name);
+        }
     }
     else { Error(Current(), "expected type"); return DataType::Invalid(); }
-    if (Match(TokenKind::At)) type.isHandle = true;
+    if (Match(TokenKind::At)) {
+        if (type.kind == TypeKind::WeakRef || type.kind == TypeKind::ConstWeakRef)
+            Error(Previous(), "weakref values do not use an '@' suffix");
+        else type.isHandle = true;
+    }
     return type;
 }
 
@@ -776,11 +818,19 @@ AstNode* Parser::ParseAnonymousFunction() {
                 Current().kind <= TokenKind::KwString;
             bool namedType = false;
             if (Check(TokenKind::Identifier) && current_ + 1 < tokens_.size()) {
-                std::size_t cursor = current_ + 1;
-                while (cursor + 1 < tokens_.size() && tokens_[cursor].kind == TokenKind::Scope &&
-                       tokens_[cursor + 1].kind == TokenKind::Identifier) cursor += 2;
-                if (cursor < tokens_.size() && tokens_[cursor].kind == TokenKind::At) ++cursor;
-                namedType = cursor < tokens_.size() && tokens_[cursor].kind == TokenKind::Identifier;
+                const bool weakType =
+                    (Current().lexeme == "weakref" || Current().lexeme == "const_weakref") &&
+                    tokens_[current_ + 1].kind == TokenKind::Less;
+                if (weakType) namedType = true;
+                else {
+                    std::size_t cursor = current_ + 1;
+                    while (cursor + 1 < tokens_.size() &&
+                           tokens_[cursor].kind == TokenKind::Scope &&
+                           tokens_[cursor + 1].kind == TokenKind::Identifier) cursor += 2;
+                    if (cursor < tokens_.size() && tokens_[cursor].kind == TokenKind::At) ++cursor;
+                    namedType = cursor < tokens_.size() &&
+                        tokens_[cursor].kind == TokenKind::Identifier;
+                }
             }
             if (builtInType || namedType) {
                 parameter->declaredType = ParseType(false);
@@ -884,6 +934,16 @@ bool Parser::IsVariableDeclarationStart() const {
     if (!IsTypeStart()) return false;
     if (Current().kind != TokenKind::Identifier) return true;
     std::size_t cursor = current_ + 1;
+    if ((Current().lexeme == "weakref" || Current().lexeme == "const_weakref") &&
+        cursor < tokens_.size() && tokens_[cursor].kind == TokenKind::Less) {
+        int depth = 0;
+        do {
+            if (tokens_[cursor].kind == TokenKind::Less) ++depth;
+            else if (tokens_[cursor].kind == TokenKind::Greater) --depth;
+            ++cursor;
+        } while (cursor < tokens_.size() && depth > 0);
+        return cursor < tokens_.size() && tokens_[cursor].kind == TokenKind::Identifier;
+    }
     while (cursor + 1 < tokens_.size() && tokens_[cursor].kind == TokenKind::Scope &&
            tokens_[cursor + 1].kind == TokenKind::Identifier) cursor += 2;
     if (cursor < tokens_.size() && tokens_[cursor].kind == TokenKind::At) ++cursor;

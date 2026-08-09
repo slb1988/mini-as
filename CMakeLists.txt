@@ -70,7 +70,11 @@ if(MINI_AS_BUILD_COMPAT_TESTS)
   add_executable(mini_as_compat_runner tests/compat/mini_runner.cpp)
   target_link_libraries(mini_as_compat_runner PRIVATE mini_angelscript)
 
-  add_executable(angelscript_compat_runner tests/compat/official_runner.cpp)
+  add_executable(angelscript_compat_runner
+    tests/compat/official_runner.cpp
+    ${angelscript_238_SOURCE_DIR}/add_on/weakref/weakref.cpp)
+  target_include_directories(angelscript_compat_runner PRIVATE
+    ${angelscript_238_SOURCE_DIR}/add_on/weakref)
   target_link_libraries(angelscript_compat_runner PRIVATE angelscript)
 
   add_test(NAME compat_arithmetic
@@ -365,5 +369,12 @@ if(MINI_AS_BUILD_COMPAT_TESTS)
       -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
       -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
       -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/child_funcdefs.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_weak_references
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/weak_references.as
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
 endif()

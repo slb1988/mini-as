@@ -16,6 +16,10 @@ bool IsReturnTypeOverload(std::string_view name) {
            name == "opCast" || name == "opImplCast";
 }
 
+bool IsWeakRef(const DataType& type) {
+    return type.kind == TypeKind::WeakRef || type.kind == TypeKind::ConstWeakRef;
+}
+
 bool SameCallableSignature(const FunctionSignature& function,
                            const FunctionSignature& funcdef) {
     return function.returnType == funcdef.returnType &&
@@ -549,6 +553,9 @@ void TypeChecker::CheckNode(AstNode* node) {
         if (!node->isAuto && node->declaredType.kind == TypeKind::Function &&
             !node->declaredType.isHandle)
             Error(node, "funcdef variables must be declared as handles");
+        if (!node->isAuto && IsWeakRef(node->declaredType) &&
+            !FindClass(node->declaredType.objectName))
+            Error(node, "weakref subtype must name a script class");
         if (node->firstChild) {
             DataType value = CheckExpression(node->firstChild,
                                              node->isAuto ? std::nullopt
@@ -676,6 +683,9 @@ void TypeChecker::CheckNode(AstNode* node) {
                                   " with " + value.Name());
                 }
             }
+            if (member->kind == NodeKind::FieldDecl && IsWeakRef(member->declaredType) &&
+                !FindClass(member->declaredType.objectName))
+                Error(member, "weakref subtype must name a script class");
             if (member->kind == NodeKind::FunctionDecl && member->firstChild) {
                 hasConstructor = hasConstructor || member->isConstructor;
                 CheckFunction(member);
@@ -720,6 +730,8 @@ void TypeChecker::CheckFunction(AstNode* node) {
     currentNamespace_ = currentClass_ ? NamespaceOf(currentClass_->name)
                                       : NamespaceOf(node->token.lexeme);
     currentReturn_ = node->declaredType;
+    if (IsWeakRef(currentReturn_) && !FindClass(currentReturn_.objectName))
+        Error(node, "weakref subtype must name a script class");
     currentReturnsReference_ = node->returnsReference;
     currentConstructor_ = node->isConstructor;
     superCallCount_ = 0;
@@ -728,6 +740,8 @@ void TypeChecker::CheckFunction(AstNode* node) {
     while (child && child->kind == NodeKind::Parameter) {
         if (child->declaredType.kind == TypeKind::Function && !child->declaredType.isHandle)
             Error(child, "funcdef parameters must be declared as handles");
+        if (IsWeakRef(child->declaredType) && !FindClass(child->declaredType.objectName))
+            Error(child, "weakref subtype must name a script class");
         if (child->firstChild) {
             if (child->parameterMode == ParameterMode::Out ||
                 child->parameterMode == ParameterMode::InOut) {
@@ -941,6 +955,10 @@ DataType TypeChecker::CheckExpression(AstNode* node, std::optional<DataType> exp
             Error(children[0], "cannot assign to const variable '" + children[0]->token.lexeme + "'");
         }
         DataType value = CheckExpression(children[1], target);
+        const bool weakHandleAssignment = explicitHandleTarget && IsWeakRef(target) &&
+            value.kind == TypeKind::Object && value.isHandle &&
+            (value.objectName == "<null>" ||
+             CanConvert(value, DataType::Object(target.objectName, true)));
         if (!children[0]->propertySetter.empty() && node->token.kind != TokenKind::Equal &&
             !target.IsNumeric() && target != DataType::String()) {
             Error(node, "compound property assignment currently requires a numeric or string property");
@@ -963,7 +981,7 @@ DataType TypeChecker::CheckExpression(AstNode* node, std::optional<DataType> exp
             }
         }
         if (node->token.kind == TokenKind::Equal) {
-            if (!CanConvert(value, target))
+            if (!weakHandleAssignment && !CanConvert(value, target))
                 Error(node, "cannot assign " + value.Name() + " to " + target.Name());
         } else {
             DataType operationType = DataType::Invalid();
@@ -1125,6 +1143,20 @@ DataType TypeChecker::CheckBinary(AstNode* node) {
     };
     const bool equality = op == TokenKind::EqualEqual || op == TokenKind::BangEqual ||
                           op == TokenKind::KwIs;
+    if (equality && (IsWeakRef(left) || IsWeakRef(right))) {
+        bool comparable = false;
+        if (IsWeakRef(left) && IsWeakRef(right))
+            comparable = left.objectName == right.objectName;
+        else {
+            const DataType& weak = IsWeakRef(left) ? left : right;
+            const DataType& object = IsWeakRef(left) ? right : left;
+            comparable = object.kind == TypeKind::Object && object.isHandle &&
+                (object.objectName == "<null>" ||
+                 CanConvert(object, DataType::Object(weak.objectName, true)));
+        }
+        if (!comparable) Error(node, "incomparable weakref operand types");
+        return DataType::Bool();
+    }
     if (op != TokenKind::KwIs && equality &&
         (left.kind == TypeKind::Object || right.kind == TypeKind::Object)) {
         if (selectOperator("opEquals", "opEquals", DataType::Bool()))
@@ -1212,6 +1244,37 @@ DataType TypeChecker::CheckUnary(AstNode* node, std::optional<DataType> expected
 DataType TypeChecker::CheckCall(AstNode* node) {
     AstNode* callee = node->firstChild;
     if (!callee) return DataType::Invalid();
+    if (callee->kind == NodeKind::Identifier && IsWeakRef(callee->declaredType)) {
+        const DataType weakType = callee->declaredType;
+        if (!FindClass(weakType.objectName))
+            Error(callee, "weakref subtype must name a script class");
+        AstNode* argument = callee->nextSibling;
+        if (argument && argument->nextSibling)
+            Error(node, "weakref construction accepts zero or one object handle");
+        if (argument) {
+            const DataType value = CheckExpression(argument,
+                DataType::Object(weakType.objectName, true));
+            if (value.kind != TypeKind::Object || !value.isHandle ||
+                (value.objectName != "<null>" &&
+                 !CanConvert(value, DataType::Object(weakType.objectName, true)))) {
+                Error(argument, "weakref constructor requires a compatible object handle");
+            }
+        }
+        node->operatorMethod = "$weakref.construct";
+        callee->inferredType = weakType;
+        return weakType;
+    }
+    if (callee->kind == NodeKind::Member && callee->token.lexeme == "get" &&
+        callee->firstChild) {
+        const DataType weakType = CheckExpression(callee->firstChild);
+        if (IsWeakRef(weakType)) {
+            if (callee->nextSibling)
+                Error(node, "weakref.get() does not accept arguments");
+            node->operatorMethod = "$weakref.get";
+            callee->inferredType = weakType;
+            return DataType::Object(weakType.objectName, true);
+        }
+    }
     if (callee->kind == NodeKind::Identifier) {
         if (const FuncdefSignature* delegateType = FindFuncdef(callee->token.lexeme)) {
             AstNode* argument = callee->nextSibling;
@@ -1834,6 +1897,11 @@ void TypeChecker::Declare(const Token& name, const DataType& type, bool isConst,
 
 bool TypeChecker::CanConvert(const DataType& from, const DataType& to) const {
     if (from == to) return true;
+    if (from.kind == TypeKind::WeakRef && to.kind == TypeKind::ConstWeakRef &&
+        from.objectName == to.objectName) return true;
+    if (IsWeakRef(from) && to.kind == TypeKind::Object && to.isHandle &&
+        (from.objectName == to.objectName || IsDerivedFrom(from.objectName, to.objectName)))
+        return true;
     if (to.kind == TypeKind::Enum) return false;
     if (from.IsInteger() && (to.IsInteger() || to == DataType::Float() || to == DataType::Double()))
         return true;

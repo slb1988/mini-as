@@ -53,6 +53,7 @@ public:
     void Release();
     std::size_t RefCount() const;
     const TypeInfo* GetTypeInfo() const;
+    std::shared_ptr<WeakRefState> GetWeakRefState() const;
     virtual void EnumerateReferences(const std::function<void(RefObject*)>& visitor) const;
 
 protected:
@@ -62,6 +63,7 @@ protected:
 private:
     std::atomic<std::size_t> refCount_{0};
     const TypeInfo* type_;
+    std::shared_ptr<WeakRefState> weakRefState_ = std::make_shared<WeakRefState>();
 };
 
 class ScriptObject final : public RefObject {

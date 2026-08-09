@@ -2016,3 +2016,59 @@ TEST_CASE(null_child_funcdef_handles_report_the_call_location) {
     CHECK(context->GetExceptionLocation().row == 4);
 }
 
+TEST_CASE(weak_references_lock_live_objects_and_expire_without_owning_them) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("weak-references");
+    module->AddScriptSection("weak-references",
+        "class Payload { int value; Payload(int input) { value = input; } } "
+        "weakref<Payload> reference; "
+        "int run() { Payload@ object = Payload(40); @reference = object; "
+        "const_weakref<Payload> readonly = reference; Payload@ locked = readonly; "
+        "int result = locked.value; "
+        "@object = null; if (reference.get() is null) return 0; "
+        "@locked = null; return reference.get() is null ? result + 2 : 0; }");
+    CHECK(module->Build());
+    bool madeWeak = false, lockedWeak = false, madeConst = false;
+    for (const auto& function : module->Bytecode().functions) {
+        for (const auto& instruction : function.code) {
+            madeWeak = madeWeak || instruction.opcode == mini_as::OpCode::MakeWeakRef;
+            lockedWeak = lockedWeak || instruction.opcode == mini_as::OpCode::LockWeakRef;
+            madeConst = madeConst || instruction.opcode == mini_as::OpCode::ToConstWeakRef;
+        }
+    }
+    CHECK(madeWeak);
+    CHECK(lockedWeak);
+    CHECK(madeConst);
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+    CHECK(engine->GetTrackedObjectCount() == 0);
+}
+
+TEST_CASE(weak_references_reject_invalid_subtypes_and_cross_type_assignment) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    auto* invalid = engine->GetModule("invalid-weakref");
+    invalid->AddScriptSection("invalid-weakref",
+        "class Payload {} weakref<Payload@> badHandle; weakref<int> badValue;");
+    CHECK(!invalid->Build());
+    auto* mismatch = engine->GetModule("mismatched-weakref");
+    mismatch->AddScriptSection("mismatched-weakref",
+        "class First {} class Second {} int run() { First@ first = First(); "
+        "weakref<Second> reference; @reference = first; return 0; }");
+    CHECK(!mismatch->Build());
+    bool subtype = false, assignment = false;
+    for (const auto& diagnostic : diagnostics) {
+        subtype = subtype || diagnostic.message.find("weakref subtype must be a script class") !=
+            std::string::npos || diagnostic.message.find("without '@'") != std::string::npos;
+        assignment = assignment || diagnostic.message.find("cannot assign First@") !=
+            std::string::npos;
+    }
+    CHECK(subtype);
+    CHECK(assignment);
+}
+

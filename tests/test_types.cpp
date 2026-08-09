@@ -149,6 +149,24 @@ TEST_CASE(type_checker_publishes_child_funcdef_parent_metadata) {
     CHECK(checker.Funcdefs()[0].signature.parameters[0] == mini_as::DataType::Int());
 }
 
+TEST_CASE(type_checker_resolves_weakref_construction_get_and_implicit_lock) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("weakref-types",
+        "class Payload { int value; } int run() { Payload@ object = Payload(); "
+        "weakref<Payload> reference(object); Payload@ first = reference.get(); "
+        "Payload@ second = reference; return first is second ? 42 : 0; }", diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    mini_as::TypeChecker checker(diagnostics);
+    CHECK(checker.Check(tree.root));
+    auto* statement = tree.root->Children()[1]->firstChild->firstChild->nextSibling;
+    CHECK(statement->declaredType == mini_as::DataType::WeakRef("Payload"));
+    statement = statement->nextSibling;
+    CHECK(statement->firstChild->inferredType == mini_as::DataType::Object("Payload", true));
+    statement = statement->nextSibling;
+    CHECK(statement->firstChild->inferredType == mini_as::DataType::WeakRef("Payload"));
+}
+
 TEST_CASE(type_checker_resolves_current_parent_and_explicit_namespaces) {
     mini_as::DiagnosticSink diagnostics;
     mini_as::Tokenizer tokenizer("types",

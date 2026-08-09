@@ -1142,3 +1142,103 @@ TEST_CASE(script_destructors_keep_the_creating_module_bytecode_after_rebuild) {
     CHECK(finalizedVersion == 1);
 }
 
+TEST_CASE(single_inheritance_supports_construction_fields_base_calls_and_polymorphism) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<int> destructionOrder;
+    CHECK(engine->RegisterGlobalFunction("void Record(int value)",
+        [&](mini_as::GenericCall& call) { destructionOrder.push_back(call.GetArgInt(0)); }));
+    auto* module = engine->GetModule("inheritance");
+    module->AddScriptSection("inheritance",
+        "class Base { int value = 1; Base(int input) { value = input; } "
+        "int score() { return value; } ~Base() { Record(1); } } "
+        "class Derived : Base { int bonus = 2; Derived() { super(40); } "
+        "int score() { return value + bonus; } int baseScore() { return Base::score(); } "
+        "~Derived() { Record(2); } } "
+        "int evaluate(Base@ item) { return item.score(); } "
+        "int run() { Derived@ item = Derived(); return evaluate(item) + item.baseScore() - 40; }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+    CHECK(destructionOrder.size() == 2);
+    CHECK(destructionOrder[0] == 2);
+    CHECK(destructionOrder[1] == 1);
+}
+
+TEST_CASE(single_inheritance_implicitly_calls_default_base_constructor) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("implicit-base-constructor");
+    module->AddScriptSection("implicit-base-constructor",
+        "class Base { int value; Base() { value = 40; } int score() { return value; } } "
+        "class Derived : Base { int score() { return value + 2; } } "
+        "int run() { Base@ item = Derived(); return item.score(); }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+}
+
+TEST_CASE(single_inheritance_reuses_base_implementations_for_interfaces) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("inherited-interface-implementation");
+    module->AddScriptSection("inherited-interface-implementation",
+        "interface IValue { int get(); } "
+        "class Base { int get() { return 42; } } "
+        "class Derived : Base, IValue {} "
+        "int read(IValue@ value) { return value.get(); } "
+        "int run() { return read(Derived()); }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+}
+
+TEST_CASE(single_inheritance_rejects_invalid_hierarchies_overrides_and_downcasts) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    auto* module = engine->GetModule("bad-inheritance");
+    module->AddScriptSection("bad-inheritance",
+        "class First {} class Second {} class Multiple : First, Second {} "
+        "class CycleA : CycleB {} class CycleB : CycleA {} "
+        "class Base { Base(int value) {} int get() { return 1; } } "
+        "class BadOverride : Base { float get() { return 1.0f; } } "
+        "int run() { Base@ base; BadOverride@ derived = base; return 0; }");
+    CHECK(!module->Build());
+    bool multiple = false, cycle = false, overrideMismatch = false;
+    bool missingDefault = false, downcast = false;
+    for (const auto& diagnostic : diagnostics) {
+        multiple = multiple || diagnostic.message.find("multiple classes") != std::string::npos;
+        cycle = cycle || diagnostic.message.find("cyclic class inheritance") != std::string::npos;
+        overrideMismatch = overrideMismatch ||
+            diagnostic.message.find("overriding method must preserve") != std::string::npos;
+        missingDefault = missingDefault || diagnostic.message.find("has no default constructor") != std::string::npos;
+        downcast = downcast || diagnostic.message.find("cannot initialize BadOverride@ with Base@") != std::string::npos;
+    }
+    CHECK(multiple);
+    CHECK(cycle);
+    CHECK(overrideMismatch);
+    CHECK(missingDefault);
+    CHECK(downcast);
+}
+
+TEST_CASE(null_base_class_virtual_dispatch_reports_the_call_location) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("base-virtual-null");
+    module->AddScriptSection("base-virtual-null",
+        "class Base { int score() { return 1; } }\n"
+        "int read(Base@ item) {\n return item.score();\n}");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int read(Base@)")));
+    CHECK(context->SetArgObject(0, mini_as::ObjectHandle{}));
+    CHECK(context->Execute() == mini_as::ExecutionState::Exception);
+    CHECK(context->GetExceptionString() == "null virtual method receiver");
+    CHECK(context->GetExceptionLocation().row == 3);
+}
+

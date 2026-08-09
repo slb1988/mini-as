@@ -31,8 +31,11 @@ struct FunctionSignature {
 struct ClassSignature {
     std::string name;
     bool interfaceType = false;
+    std::vector<std::string> inheritedTypes;
+    std::string baseClass;
     std::vector<std::string> interfaces;
     std::vector<std::pair<std::string, DataType>> fields;
+    std::size_t inheritedFieldCount = 0;
     std::vector<FunctionSignature> methods;
     TypeId id;
 };
@@ -96,6 +99,12 @@ private:
     const FunctionSignature* FindMethod(const DataType& object, std::string_view name,
                                         const std::vector<DataType>& arguments,
                                         const std::vector<std::string>& argumentNames) const;
+    const FunctionSignature* FindMethodInClass(const ClassSignature* type, std::string_view name,
+                                               const std::vector<DataType>& arguments,
+                                               const std::vector<std::string>& argumentNames) const;
+    const FunctionSignature* FindExactMethod(const ClassSignature* type, std::string_view name,
+                                             const std::vector<DataType>& parameters,
+                                             const std::vector<ParameterMode>& modes) const;
     std::optional<int> MatchArguments(const FunctionSignature& signature,
                                       const std::vector<DataType>& arguments,
                                       const std::vector<std::string>& argumentNames) const;
@@ -103,6 +112,7 @@ private:
                                     const std::vector<AstNode*>& arguments,
                                     const std::vector<std::string>& argumentNames);
     const ClassSignature* FindClass(std::string_view name) const;
+    bool IsDerivedFrom(std::string_view derived, std::string_view base) const;
     void Declare(const Token& name, const DataType& type, bool isConst = false,
                  bool returnableReference = false);
     bool CanReturnReference(const AstNode* node) const;
@@ -123,6 +133,8 @@ private:
     int breakableDepth_ = 0;
     int loopDepth_ = 0;
     const ClassSignature* currentClass_ = nullptr;
+    bool currentConstructor_ = false;
+    int superCallCount_ = 0;
     std::string currentNamespace_;
 };
 

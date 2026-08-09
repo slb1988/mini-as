@@ -84,6 +84,7 @@ struct BytecodeModule {
     const RegisteredHostFunction* FindHostFunction(FunctionId id) const;
     const TypeInfo* FindType(TypeId id) const;
     FunctionId FindDestructor(TypeId id) const;
+    std::vector<FunctionId> FindDestructors(TypeId id) const;
     const CallableRef* FindCallable(std::size_t index) const;
     std::optional<std::size_t> FindGlobalIndex(GlobalId id) const;
     const BytecodeFunction* ResolveVirtual(TypeId concreteType, TypeId interfaceType,
@@ -124,6 +125,7 @@ private:
                          std::string objectType = {});
     void CompileGlobalInitializer(AstNode* root);
     void CompileFieldInitializers(std::string_view typeName, const AstNode* source);
+    void CompileImplicitBaseConstructor(std::string_view typeName, const AstNode* source);
     void CompileBlock(AstNode* node, bool createScope = true);
     void CompileStatement(AstNode* node);
     void CompileExpression(AstNode* node);
@@ -148,6 +150,11 @@ private:
     std::optional<int> ConversionCost(const DataType& from, const DataType& to) const;
     std::int32_t AddCallable(CallableRef callable);
     std::optional<std::pair<std::size_t, DataType>> FindField(const AstNode* member) const;
+    const ClassSignature* FindClass(std::string_view name) const;
+    bool IsBaseOf(std::string_view base, std::string_view derived) const;
+    const FunctionSignature* FindClassMethod(const ClassSignature& type,
+                                             const FunctionSignature& signature) const;
+    std::vector<const FunctionSignature*> VirtualLayout(const ClassSignature& type) const;
     std::size_t Emit(OpCode opcode, std::int32_t operand, const AstNode* node);
     void PatchJump(std::size_t instruction, std::size_t target);
     std::int32_t AddConstant(Value value);

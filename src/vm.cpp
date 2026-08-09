@@ -52,7 +52,7 @@ bool MatchesDeclaredType(const Value& value, const DataType& expected) {
     const auto& handle = value.As<ObjectHandle>();
     if (!handle) return expected.isHandle;
     const auto* object = dynamic_cast<const ScriptObject*>(handle.Get());
-    return object && object->Implements(expected.objectName);
+    return object && (object->Implements(expected.objectName) || object->IsA(expected.objectName));
 }
 
 bool CheckedMultiply(std::int64_t left, std::int64_t right, std::int64_t& result) {
@@ -389,7 +389,7 @@ bool VirtualMachine::Step() {
         if (!type) throw std::runtime_error("object type is unavailable");
         ScriptFinalizerBinding finalizer;
         if (finalizerQueue_ && finalizerModule_) {
-            finalizer.function = module_->FindDestructor(type->id);
+            finalizer.functions = module_->FindDestructors(type->id);
             finalizer.module = finalizerModule_;
             finalizer.state = finalizerState_;
         }

@@ -149,6 +149,12 @@ FunctionId BytecodeModule::FindDestructor(TypeId id) const {
     return {};
 }
 
+std::vector<FunctionId> BytecodeModule::FindDestructors(TypeId id) const {
+    std::vector<FunctionId> result;
+    for (const auto& target : destructors) if (target.first == id) result.push_back(target.second);
+    return result;
+}
+
 const CallableRef* BytecodeModule::FindCallable(std::size_t index) const {
     return index < callables.size() ? &callables[index] : nullptr;
 }
@@ -216,12 +222,16 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
     for (auto& type : classes_) {
         if (!type.id.IsValid()) type.id = TypeId{nextTypeId++};
         classIds_[type.name] = type.id;
-        for (const auto& method : type.methods) {
-            if (!method.destructor) continue;
-            for (const auto& signature : signatures_) {
-                if (FunctionKey(signature) == FunctionKey(method))
-                    module_.destructors.push_back({type.id, signature.id});
+        const ClassSignature* owner = &type;
+        while (owner) {
+            for (const auto& method : owner->methods) {
+                if (!method.destructor) continue;
+                for (const auto& signature : signatures_) {
+                    if (FunctionKey(signature) == FunctionKey(method))
+                        module_.destructors.push_back({type.id, signature.id});
+                }
             }
+            owner = owner->baseClass.empty() ? nullptr : FindClass(owner->baseClass);
         }
     }
     if (!root) return module_;
@@ -285,19 +295,27 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
             if (!interfaceType) continue;
             for (std::size_t slot = 0; slot < interfaceType->methods.size(); ++slot) {
                 const auto& required = interfaceType->methods[slot];
-                for (const auto& implementation : concrete.methods) {
-                    if (implementation.constructor || implementation.destructor ||
-                        implementation.name != required.name ||
-                        implementation.returnType != required.returnType ||
-                        implementation.parameters != required.parameters ||
-                        implementation.parameterModes != required.parameterModes ||
-                        implementation.returnsReference != required.returnsReference ||
-                        implementation.returnReferenceConst != required.returnReferenceConst) continue;
-                    const auto found = functionIds_.find(FunctionKey(implementation));
-                    if (found != functionIds_.end())
-                        module_.virtualDispatch.push_back({concrete.id, interfaceType->id,
-                                                           static_cast<std::uint32_t>(slot), found->second});
-                }
+                const FunctionSignature* implementation = FindClassMethod(concrete, required);
+                if (!implementation) continue;
+                const auto found = functionIds_.find(FunctionKey(*implementation));
+                if (found != functionIds_.end())
+                    module_.virtualDispatch.push_back({concrete.id, interfaceType->id,
+                                                       static_cast<std::uint32_t>(slot), found->second});
+            }
+        }
+    }
+    for (const auto& concrete : classes_) {
+        if (concrete.interfaceType) continue;
+        const auto concreteLayout = VirtualLayout(concrete);
+        for (const ClassSignature* staticType = &concrete; staticType;
+             staticType = staticType->baseClass.empty() ? nullptr : FindClass(staticType->baseClass)) {
+            const auto staticLayout = VirtualLayout(*staticType);
+            for (std::size_t slot = 0; slot < staticLayout.size() && slot < concreteLayout.size(); ++slot) {
+                const FunctionSignature* implementation = concreteLayout[slot];
+                const auto found = functionIds_.find(FunctionKey(*implementation));
+                if (found != functionIds_.end())
+                    module_.virtualDispatch.push_back({concrete.id, staticType->id,
+                                                       static_cast<std::uint32_t>(slot), found->second});
             }
         }
     }
@@ -364,7 +382,7 @@ void BytecodeCompiler::CompileGlobalInitializer(AstNode* root) {
     }
     Emit(OpCode::PushVoid, 0, root);
     Emit(OpCode::Return, 0, root);
-    function_->localCount = 0;
+    function_->localCount = static_cast<std::size_t>(nextLocal_);
     currentNamespace_.clear();
     function_ = nullptr;
 }
@@ -391,6 +409,8 @@ void BytecodeCompiler::CompileFunction(AstNode* node, std::size_t functionIndex,
         DeclareLocal(child->token);
         child = child->nextSibling;
     }
+    if (function_->signature.constructor && !node->hasExplicitSuper)
+        CompileImplicitBaseConstructor(currentObjectType_, node);
     if (child && child->kind == NodeKind::Block) CompileBlock(child, false);
     if (function_->code.empty() || function_->code.back().opcode != OpCode::Return) {
         Emit(OpCode::PushVoid, 0, node);
@@ -965,6 +985,8 @@ void BytecodeCompiler::CompileLogical(AstNode* node) {
 }
 
 void BytecodeCompiler::CompileFieldInitializers(std::string_view typeName, const AstNode* source) {
+    const ClassSignature* type = FindClass(typeName);
+    if (type && !type->baseClass.empty()) CompileFieldInitializers(type->baseClass, source);
     const auto found = classNodes_.find(std::string(typeName));
     if (found == classNodes_.end()) return;
     bool hasInitializers = false;
@@ -982,7 +1004,7 @@ void BytecodeCompiler::CompileFieldInitializers(std::string_view typeName, const
     currentObjectType_ = std::string(typeName);
     currentNamespace_ = NamespaceOf(typeName);
     implicitThisSlot_ = receiver.value;
-    std::uint32_t fieldIndex = 0;
+    std::uint32_t fieldIndex = type ? static_cast<std::uint32_t>(type->inheritedFieldCount) : 0;
     for (AstNode* member = found->second->firstChild; member; member = member->nextSibling) {
         if (member->kind != NodeKind::FieldDecl) continue;
         if (member->firstChild) {
@@ -999,6 +1021,43 @@ void BytecodeCompiler::CompileFieldInitializers(std::string_view typeName, const
     implicitThisSlot_ = previousThisSlot;
 }
 
+void BytecodeCompiler::CompileImplicitBaseConstructor(std::string_view typeName,
+                                                      const AstNode* source) {
+    const ClassSignature* type = FindClass(typeName);
+    const ClassSignature* base = type && !type->baseClass.empty() ? FindClass(type->baseClass) : nullptr;
+    if (!base) return;
+    const FunctionSignature* constructor = nullptr;
+    for (const auto& candidate : base->methods) {
+        if (candidate.constructor && OrderArguments(candidate, {}).has_value()) {
+            constructor = &candidate;
+            break;
+        }
+    }
+    if (!constructor) {
+        CompileImplicitBaseConstructor(base->name, source);
+        return;
+    }
+    Emit(OpCode::LoadLocal, static_cast<std::int32_t>(implicitThisSlot_), source);
+    const auto definition = functionNodes_.find(FunctionKey(*constructor));
+    AstNode* parameter = definition == functionNodes_.end() ? nullptr : definition->second->firstChild;
+    for (std::size_t index = 0; index < constructor->parameters.size(); ++index) {
+        while (parameter && parameter->kind != NodeKind::Parameter) parameter = parameter->nextSibling;
+        AstNode* expression = parameter ? parameter->firstChild : nullptr;
+        if (!expression) { Error(source, "default base constructor argument is missing"); return; }
+        const std::string previousNamespace = currentNamespace_;
+        currentNamespace_ = NamespaceOf(constructor->objectType);
+        ReferenceReceiverMap receivers;
+        CompileCallArgument(*constructor, index, expression, receivers);
+        currentNamespace_ = previousNamespace;
+        parameter = parameter->nextSibling;
+    }
+    const auto target = functionIds_.find(FunctionKey(*constructor));
+    if (target == functionIds_.end()) { Error(source, "base constructor target is missing"); return; }
+    Emit(OpCode::Call, AddCallable({CallableKind::ScriptMethod, target->second, base->id, 0,
+                                    static_cast<std::uint32_t>(constructor->parameters.size())}), source);
+    Emit(OpCode::Pop, 0, source);
+}
+
 void BytecodeCompiler::CompileCall(AstNode* node, bool dereferenceResult) {
     AstNode* callee = node->firstChild;
     if (!callee || (callee->kind != NodeKind::Identifier && callee->kind != NodeKind::Member)) {
@@ -1009,6 +1068,54 @@ void BytecodeCompiler::CompileCall(AstNode* node, bool dereferenceResult) {
     std::vector<AstNode*> arguments;
     for (AstNode* argument = callee->nextSibling; argument; argument = argument->nextSibling)
         arguments.push_back(argument);
+    if (!explicitMethod && callName == "super" && !currentObjectType_.empty()) {
+        const ClassSignature* type = FindClass(currentObjectType_);
+        const ClassSignature* base = type && !type->baseClass.empty() ? FindClass(type->baseClass) : nullptr;
+        if (!base) { Error(node, "base constructor target is missing"); return; }
+        const FunctionSignature* constructor = nullptr;
+        int bestCost = 1000000;
+        for (const auto& candidate : base->methods) {
+            if (!candidate.constructor) continue;
+            const auto ordered = OrderArguments(candidate, arguments);
+            if (!ordered) continue;
+            int cost = 0;
+            bool viable = true;
+            for (std::size_t index = 0; index < ordered->size(); ++index) {
+                if (!(*ordered)[index]) continue;
+                const auto conversion = ConversionCost(
+                    (*ordered)[index]->inferredType, candidate.parameters[index]);
+                if (!conversion) { viable = false; break; }
+                cost += *conversion;
+            }
+            if (viable && cost < bestCost) { constructor = &candidate; bestCost = cost; }
+        }
+        if (!constructor) {
+            if (!arguments.empty()) { Error(node, "base constructor target is missing"); return; }
+            CompileImplicitBaseConstructor(currentObjectType_, node);
+            Emit(OpCode::PushVoid, 0, node);
+            return;
+        }
+        Emit(OpCode::LoadLocal, static_cast<std::int32_t>(implicitThisSlot_), node);
+        const auto ordered = OrderArguments(*constructor, arguments);
+        if (!ordered) { Error(node, "base constructor arguments cannot be ordered"); return; }
+        ReferenceReceiverMap referenceReceivers;
+        const auto definition = functionNodes_.find(FunctionKey(*constructor));
+        AstNode* parameter = definition == functionNodes_.end() ? nullptr : definition->second->firstChild;
+        for (std::size_t index = 0; index < constructor->parameters.size(); ++index) {
+            while (parameter && parameter->kind != NodeKind::Parameter) parameter = parameter->nextSibling;
+            AstNode* expression = (*ordered)[index] ? (*ordered)[index]
+                : (parameter ? parameter->firstChild : nullptr);
+            if (!expression) { Error(node, "default base constructor argument is missing"); return; }
+            CompileCallArgument(*constructor, index, expression, referenceReceivers);
+            if (parameter) parameter = parameter->nextSibling;
+        }
+        const auto target = functionIds_.find(FunctionKey(*constructor));
+        if (target == functionIds_.end()) { Error(node, "base constructor target is missing"); return; }
+        Emit(OpCode::Call, AddCallable({CallableKind::ScriptMethod, target->second, base->id, 0,
+                                        static_cast<std::uint32_t>(constructor->parameters.size())}), node);
+        CompileReferenceWritebacks(*constructor, *ordered, referenceReceivers, node);
+        return;
+    }
     auto classFound = classIds_.end();
     std::string resolvedClassName;
     for (const auto& candidate : NameCandidates(currentNamespace_, callName)) {
@@ -1065,6 +1172,15 @@ void BytecodeCompiler::CompileCall(AstNode* node, bool dereferenceResult) {
             Emit(OpCode::Pop, 0, node);
         } else if (!arguments.empty()) {
             Error(node, "constructor target is missing");
+        } else {
+            Token temporary{TokenKind::Identifier, "$construction", node->token.location};
+            const VariableId receiver = DeclareLocal(temporary);
+            Emit(OpCode::Dup, 0, node);
+            Emit(OpCode::StoreLocal, static_cast<std::int32_t>(receiver.value), node);
+            const std::uint32_t previousThisSlot = implicitThisSlot_;
+            implicitThisSlot_ = receiver.value;
+            CompileImplicitBaseConstructor(resolvedClassName, node);
+            implicitThisSlot_ = previousThisSlot;
         }
         return;
     }
@@ -1072,17 +1188,36 @@ void BytecodeCompiler::CompileCall(AstNode* node, bool dereferenceResult) {
     int bestCost = 1000000;
     const std::string receiverType = explicitMethod
         ? callee->firstChild->inferredType.objectName : currentObjectType_;
+    std::string requestedName = callName;
+    std::string lookupType = receiverType;
+    if (node->nonVirtualCall) {
+        const auto separator = callName.rfind("::");
+        if (separator != std::string::npos) {
+            lookupType = callName.substr(0, separator);
+            requestedName = callName.substr(separator + 2);
+        }
+    }
     for (const auto& signature : signatures_) {
         if (signature.constructor || signature.destructor) continue;
         const auto ordered = OrderArguments(signature, arguments);
         if (!ordered) continue;
         std::optional<int> nameCost;
         if (signature.method) {
-            if (signature.name == callName) nameCost = 0;
-        } else nameCost = NameMatchCost(signature.name, callName, currentNamespace_);
+            if (signature.name == requestedName && IsBaseOf(signature.objectType, lookupType)) {
+                int distance = 0;
+                const ClassSignature* owner = FindClass(lookupType);
+                while (owner && owner->name != signature.objectType) {
+                    ++distance;
+                    owner = owner->baseClass.empty() ? nullptr : FindClass(owner->baseClass);
+                }
+                nameCost = distance;
+            }
+        } else if (!node->nonVirtualCall) {
+            nameCost = NameMatchCost(signature.name, callName, currentNamespace_);
+        }
         if (!nameCost) continue;
-        if (explicitMethod && (!signature.method || signature.objectType != receiverType)) continue;
-        if (!explicitMethod && signature.method && signature.objectType != currentObjectType_) continue;
+        if (explicitMethod && !signature.method) continue;
+        if (!explicitMethod && signature.method && currentObjectType_.empty()) continue;
         if (!explicitMethod && currentObjectType_.empty() && signature.method) continue;
         int cost = *nameCost +
             ((!explicitMethod && !currentObjectType_.empty() && !signature.method) ? 1000 : 0);
@@ -1124,6 +1259,7 @@ void BytecodeCompiler::CompileCall(AstNode* node, bool dereferenceResult) {
     if (target->method) {
         const ClassSignature* ownerType = nullptr;
         for (const auto& type : classes_) if (type.name == target->objectType) ownerType = &type;
+        const ClassSignature* staticType = FindClass(receiverType);
         if (ownerType && ownerType->interfaceType) {
             std::uint32_t slot = 0;
             bool foundSlot = false;
@@ -1142,6 +1278,27 @@ void BytecodeCompiler::CompileCall(AstNode* node, bool dereferenceResult) {
             if (!foundSlot) { Error(node, "virtual method slot is missing"); return; }
             Emit(OpCode::CallVirtual,
                  AddCallable({CallableKind::VirtualMethod, {}, ownerType->id, slot,
+                              static_cast<std::uint32_t>(target->parameters.size())}), node);
+            CompileReferenceWritebacks(*target, *ordered, referenceReceivers, node);
+            if (target->returnsReference && dereferenceResult) Emit(OpCode::LoadReference, 0, node);
+            return;
+        }
+        if (staticType && !node->nonVirtualCall) {
+            const auto layout = VirtualLayout(*staticType);
+            std::uint32_t slot = 0;
+            bool foundSlot = false;
+            for (std::size_t index = 0; index < layout.size(); ++index) {
+                const auto* method = layout[index];
+                if (method->name == target->name && method->parameters == target->parameters &&
+                    method->parameterModes == target->parameterModes) {
+                    slot = static_cast<std::uint32_t>(index);
+                    foundSlot = true;
+                    break;
+                }
+            }
+            if (!foundSlot) { Error(node, "class virtual method slot is missing"); return; }
+            Emit(OpCode::CallVirtual,
+                 AddCallable({CallableKind::VirtualMethod, {}, staticType->id, slot,
                               static_cast<std::uint32_t>(target->parameters.size())}), node);
             CompileReferenceWritebacks(*target, *ordered, referenceReceivers, node);
             if (target->returnsReference && dereferenceResult) Emit(OpCode::LoadReference, 0, node);
@@ -1308,6 +1465,14 @@ std::optional<int> BytecodeCompiler::ConversionCost(const DataType& from,
     if (from.IsInteger() && to == DataType::Double()) return 101;
     if (from == DataType::Float() && to == DataType::Double()) return 1;
     if (from == DataType::Double() && to == DataType::Float()) return 2;
+    if (from.kind == TypeKind::Object && from.objectName == "<null>" && to.isHandle) return 1;
+    if (from.kind == TypeKind::Object && to.kind == TypeKind::Object &&
+        from.isHandle && to.isHandle) {
+        if (IsBaseOf(to.objectName, from.objectName)) return 1;
+        const ClassSignature* type = FindClass(from.objectName);
+        if (type && std::find(type->interfaces.begin(), type->interfaces.end(), to.objectName) !=
+                    type->interfaces.end()) return 1;
+    }
     return std::nullopt;
 }
 
@@ -1333,6 +1498,51 @@ std::optional<std::pair<std::size_t, DataType>> BytecodeCompiler::FindField(cons
         }
     }
     return std::nullopt;
+}
+
+const ClassSignature* BytecodeCompiler::FindClass(std::string_view name) const {
+    for (const auto& type : classes_) if (type.name == name) return &type;
+    return nullptr;
+}
+
+bool BytecodeCompiler::IsBaseOf(std::string_view base, std::string_view derived) const {
+    const ClassSignature* type = FindClass(derived);
+    while (type) {
+        if (type->name == base) return true;
+        type = type->baseClass.empty() ? nullptr : FindClass(type->baseClass);
+    }
+    return false;
+}
+
+const FunctionSignature* BytecodeCompiler::FindClassMethod(
+    const ClassSignature& type, const FunctionSignature& signature) const {
+    for (const auto& method : type.methods) {
+        if (method.constructor || method.destructor) continue;
+        if (method.name == signature.name && method.returnType == signature.returnType &&
+            method.parameters == signature.parameters &&
+            method.parameterModes == signature.parameterModes &&
+            method.returnsReference == signature.returnsReference &&
+            method.returnReferenceConst == signature.returnReferenceConst) return &method;
+    }
+    const ClassSignature* base = type.baseClass.empty() ? nullptr : FindClass(type.baseClass);
+    return base ? FindClassMethod(*base, signature) : nullptr;
+}
+
+std::vector<const FunctionSignature*> BytecodeCompiler::VirtualLayout(
+    const ClassSignature& type) const {
+    std::vector<const FunctionSignature*> layout;
+    if (const ClassSignature* base = type.baseClass.empty() ? nullptr : FindClass(type.baseClass))
+        layout = VirtualLayout(*base);
+    for (const auto& method : type.methods) {
+        if (method.constructor || method.destructor) continue;
+        auto overridden = std::find_if(layout.begin(), layout.end(), [&](const auto* baseMethod) {
+            return baseMethod->name == method.name && baseMethod->parameters == method.parameters &&
+                   baseMethod->parameterModes == method.parameterModes;
+        });
+        if (overridden == layout.end()) layout.push_back(&method);
+        else *overridden = &method;
+    }
+    return layout;
 }
 
 std::size_t BytecodeCompiler::Emit(OpCode opcode, std::int32_t operand, const AstNode* node) {

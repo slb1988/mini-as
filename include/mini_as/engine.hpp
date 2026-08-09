@@ -101,6 +101,7 @@ private:
     void ForwardDiagnostic(const Diagnostic& diagnostic) const;
     std::vector<FunctionSignature> HostSignatures() const;
     const TypeInfo* RegisterScriptType(const ClassSignature& type);
+    void LinkScriptType(const ClassSignature& type);
     FunctionId GetOrCreateFunctionId(std::string key);
     TypeId GetOrCreateTypeId(std::string_view name);
     GlobalId GetOrCreateGlobalId(std::string key);

@@ -78,6 +78,7 @@ bool ScriptModule::Build() {
         const TypeInfo* linked = engine_.RegisterScriptType(type);
         if (!type.interfaceType) concreteTypes.push_back(linked);
     }
+    for (const auto& type : classes) engine_.LinkScriptType(type);
     for (const auto& host : engine_.hostFunctions_)
         candidate.hostFunctions.push_back({host.signature.id, &host});
     for (const auto* type : concreteTypes) candidate.objectTypes.push_back({type->id, type});
@@ -217,7 +218,8 @@ bool ScriptContext::SetArgument(std::size_t index, Value value) {
         if (value.Type().kind != TypeKind::Object || expected.kind != TypeKind::Object ||
             !value.As<ObjectHandle>()) return false;
         const auto* scriptObject = dynamic_cast<ScriptObject*>(value.As<ObjectHandle>().Get());
-        if (!scriptObject || !scriptObject->Implements(expected.objectName)) return false;
+        if (!scriptObject || (!scriptObject->Implements(expected.objectName) &&
+                              !scriptObject->IsA(expected.objectName))) return false;
     }
     arguments_[index] = std::move(value);
     return true;
@@ -292,6 +294,8 @@ const TypeInfo* ScriptEngine::RegisterScriptType(const ClassSignature& signature
         objectTypes_.emplace(signature.name, std::move(created));
     } else type = found->second.get();
     type->script = !signature.interfaceType;
+    type->baseClass = signature.baseClass;
+    type->baseType = nullptr;
     type->collector = signature.interfaceType ? nullptr : &garbageCollector_;
     type->fields = signature.fields;
     type->interfaces = signature.interfaces;
@@ -307,6 +311,15 @@ const TypeInfo* ScriptEngine::RegisterScriptType(const ClassSignature& signature
         }
     }
     return type;
+}
+
+void ScriptEngine::LinkScriptType(const ClassSignature& signature) {
+    const auto found = objectTypes_.find(signature.name);
+    if (found == objectTypes_.end()) return;
+    TypeInfo* type = found->second.get();
+    if (signature.baseClass.empty()) { type->baseType = nullptr; return; }
+    const auto base = objectTypes_.find(signature.baseClass);
+    type->baseType = base == objectTypes_.end() ? nullptr : base->second.get();
 }
 
 ScriptModule* ScriptEngine::GetModule(std::string name, ModulePolicy policy) {
@@ -387,24 +400,25 @@ void ScriptEngine::DrainFinalizers() {
         ScriptObject* object = finalizerQueue_.front();
         finalizerQueue_.pop_front();
         const ScriptFinalizerBinding binding = object->Finalizer();
-        const BytecodeFunction* function = binding.module
-            ? binding.module->FindFunction(binding.function) : nullptr;
-        if (!function) {
-            ForwardDiagnostic({{"finalizer"}, Severity::Error,
-                               "script destructor target is unavailable"});
-            object->Release();
-            continue;
-        }
         auto state = binding.state.lock();
-        VirtualMachine finalizer;
-        finalizer.SetFinalizerContext(this, binding.module, binding.state,
-                                      [this] { DrainFinalizers(); });
-        const ExecutionResult result = finalizer.Execute(
-            *function, {Value(ObjectHandle(object))}, binding.module.get(), state.get());
-        if (result.state != ExecutionState::Finished) {
-            ForwardDiagnostic({result.location, Severity::Error,
-                               "script destructor '" + function->signature.name +
-                               "' failed: " + result.exception});
+        for (const FunctionId functionId : binding.functions) {
+            const BytecodeFunction* function = binding.module
+                ? binding.module->FindFunction(functionId) : nullptr;
+            if (!function) {
+                ForwardDiagnostic({{"finalizer"}, Severity::Error,
+                                   "script destructor target is unavailable"});
+                continue;
+            }
+            VirtualMachine finalizer;
+            finalizer.SetFinalizerContext(this, binding.module, binding.state,
+                                          [this] { DrainFinalizers(); });
+            const ExecutionResult result = finalizer.Execute(
+                *function, {Value(ObjectHandle(object))}, binding.module.get(), state.get());
+            if (result.state != ExecutionState::Finished) {
+                ForwardDiagnostic({result.location, Severity::Error,
+                                   "script destructor '" + function->signature.name +
+                                   "' failed: " + result.exception});
+            }
         }
         object->Release();
     }

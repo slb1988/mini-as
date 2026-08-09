@@ -320,3 +320,40 @@ TEST_CASE(bytecode_links_script_destructors_by_stable_type_and_function_ids) {
     CHECK(destructor->signature.Declaration() == "~Resource()");
 }
 
+TEST_CASE(bytecode_builds_class_virtual_slots_and_derived_field_layouts) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("inheritance-bytecode",
+        "class Base { int first = 40; int value() { return first; } } "
+        "class Derived : Base { int second = 2; int value() { return first + second; } } "
+        "int read(Base@ item) { return item.value(); } "
+        "int main() { Derived@ item = Derived(); return read(item); }", diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    mini_as::TypeChecker checker(diagnostics);
+    CHECK(checker.Check(tree.root));
+    auto classes = checker.Classes();
+    classes[0].id = mini_as::TypeId{10};
+    classes[1].id = mini_as::TypeId{11};
+    std::uint32_t functionId = 20;
+    for (auto& type : classes) {
+        for (auto& method : type.methods) {
+            method.objectType = type.name;
+            method.method = true;
+            method.id = mini_as::FunctionId{functionId++};
+        }
+    }
+    mini_as::BytecodeCompiler compiler(diagnostics);
+    auto module = compiler.Compile(tree.root, checker.Functions(), classes);
+    CHECK(!diagnostics.HasErrors());
+    CHECK(classes[1].fields.size() == 2);
+    CHECK(classes[1].fields[0].first == "first");
+    CHECK(classes[1].fields[1].first == "second");
+    CHECK(!module.virtualDispatch.empty());
+    bool virtualCall = false;
+    for (const auto& function : module.functions)
+        if (function.signature.name == "read")
+            for (const auto& instruction : function.code)
+                virtualCall = virtualCall || instruction.opcode == mini_as::OpCode::CallVirtual;
+    CHECK(virtualCall);
+}
+

@@ -204,9 +204,11 @@ AstNode* Parser::ParseClass(bool isInterface) {
     name.lexeme = QualifyDeclaration(name.lexeme);
     AstNode* node = arena_->Make(isInterface ? NodeKind::InterfaceDecl : NodeKind::ClassDecl, name);
     if (Match(TokenKind::Colon)) {
-        Token interfaceName = ParseQualifiedIdentifier("expected interface name");
-        interfaceName.lexeme = ResolveTypeName(interfaceName.lexeme);
-        node->AppendChild(arena_->Make(NodeKind::Identifier, interfaceName));
+        do {
+            Token inheritedName = ParseQualifiedIdentifier("expected inherited type name");
+            inheritedName.lexeme = ResolveTypeName(inheritedName.lexeme);
+            node->AppendChild(arena_->Make(NodeKind::Identifier, inheritedName));
+        } while (Match(TokenKind::Comma));
     }
     Consume(TokenKind::LeftBrace, "expected '{' before type body");
     while (!Check(TokenKind::RightBrace) && !Check(TokenKind::End)) {

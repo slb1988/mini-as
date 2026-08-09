@@ -239,3 +239,18 @@ TEST_CASE(parser_marks_script_destructors) {
     CHECK(destructor->declaredType == mini_as::DataType::Void());
 }
 
+TEST_CASE(parser_preserves_class_and_interface_inheritance_lists) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer lexer("parse",
+        "class Base {} interface IValue { int get(); } class Derived : Base, IValue {}",
+        diagnostics);
+    mini_as::Parser parser(lexer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    CHECK(!diagnostics.HasErrors());
+    const auto declarations = tree.root->Children();
+    const auto inherited = declarations[2]->Children();
+    CHECK(inherited[0]->kind == mini_as::NodeKind::Identifier);
+    CHECK(inherited[0]->token.lexeme == "Base");
+    CHECK(inherited[1]->token.lexeme == "IValue");
+}
+

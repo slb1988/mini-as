@@ -42,6 +42,12 @@ const TypeInfo* RefObject::GetTypeInfo() const { return type_; }
 void RefObject::EnumerateReferences(const std::function<void(RefObject*)>&) const {}
 void RefObject::OnZeroReferences() { delete this; }
 
+bool TypeInfo::IsA(std::string_view typeName) const {
+    for (const TypeInfo* type = this; type; type = type->baseType)
+        if (type->name == typeName) return true;
+    return false;
+}
+
 ScriptObject::ScriptObject(const TypeInfo* type, ObjectFinalizerQueue* finalizerQueue,
                            ScriptFinalizerBinding finalizer)
     : RefObject(type), finalizerQueue_(finalizerQueue), finalizer_(std::move(finalizer)) {
@@ -95,10 +101,15 @@ void ScriptObject::ClearReferences() {
     }
 }
 
+bool ScriptObject::IsA(std::string_view typeName) const {
+    const auto* type = GetTypeInfo();
+    return type && type->IsA(typeName);
+}
+
 const ScriptFinalizerBinding& ScriptObject::Finalizer() const { return finalizer_; }
 
 void ScriptObject::OnZeroReferences() {
-    if (finalizerQueue_ && finalizer_.function.IsValid() && finalizer_.module &&
+    if (finalizerQueue_ && !finalizer_.functions.empty() && finalizer_.module &&
         !finalizerQueued_) {
         finalizerQueued_ = true;
         AddRef();

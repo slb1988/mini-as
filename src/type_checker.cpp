@@ -2,6 +2,7 @@
 #include "mini_as/constant_evaluator.hpp"
 
 #include <limits>
+#include <functional>
 #include <sstream>
 #include <unordered_set>
 #include <utility>
@@ -185,8 +186,8 @@ void TypeChecker::Predeclare(AstNode* root) {
         type.name = node->token.lexeme;
         type.interfaceType = node->kind == NodeKind::InterfaceDecl;
         AstNode* child = node->firstChild;
-        if (node->kind == NodeKind::ClassDecl && child && child->kind == NodeKind::Identifier) {
-            type.interfaces.push_back(child->token.lexeme);
+        while (child && child->kind == NodeKind::Identifier) {
+            type.inheritedTypes.push_back(child->token.lexeme);
             child = child->nextSibling;
         }
         for (; child; child = child->nextSibling) {
@@ -221,6 +222,78 @@ void TypeChecker::Predeclare(AstNode* root) {
         }
         classes_.push_back(std::move(type));
     }
+
+    std::unordered_map<std::string, int> inheritanceState;
+    std::function<void(ClassSignature&)> resolveInheritance = [&](ClassSignature& type) {
+        int& state = inheritanceState[type.name];
+        if (state == 2) return;
+        if (state == 1) {
+            Error(root, "cyclic class inheritance involving '" + type.name + "'");
+            type.baseClass.clear();
+            state = 2;
+            return;
+        }
+        state = 1;
+        for (const auto& inheritedName : type.inheritedTypes) {
+            ClassSignature* inherited = nullptr;
+            for (auto& candidate : classes_)
+                if (candidate.name == inheritedName) inherited = &candidate;
+            if (!inherited) {
+                Error(root, "unknown inherited type '" + inheritedName + "'");
+                continue;
+            }
+            if (inherited == &type) {
+                Error(root, "class '" + type.name + "' cannot inherit from itself");
+                continue;
+            }
+            if (inherited->interfaceType) {
+                if (std::find(type.interfaces.begin(), type.interfaces.end(), inheritedName) ==
+                    type.interfaces.end()) type.interfaces.push_back(inheritedName);
+                continue;
+            }
+            if (type.interfaceType) {
+                Error(root, "interface '" + type.name + "' cannot inherit from class '" + inheritedName + "'");
+                continue;
+            }
+            if (!type.baseClass.empty()) {
+                Error(root, "class '" + type.name + "' cannot inherit from multiple classes");
+                continue;
+            }
+            type.baseClass = inheritedName;
+            resolveInheritance(*inherited);
+            if (inheritanceState[inherited->name] == 1) continue;
+            type.inheritedFieldCount = inherited->fields.size();
+            std::vector<std::pair<std::string, DataType>> fields = inherited->fields;
+            for (const auto& field : type.fields) {
+                const auto duplicate = std::find_if(fields.begin(), fields.end(), [&](const auto& existing) {
+                    return existing.first == field.first;
+                });
+                if (duplicate != fields.end())
+                    Error(root, "field '" + field.first + "' conflicts with an inherited field");
+                fields.push_back(field);
+            }
+            type.fields = std::move(fields);
+            for (const auto& interfaceName : inherited->interfaces) {
+                if (std::find(type.interfaces.begin(), type.interfaces.end(), interfaceName) ==
+                    type.interfaces.end()) type.interfaces.push_back(interfaceName);
+            }
+            for (const auto& method : type.methods) {
+                if (method.constructor || method.destructor) continue;
+                const FunctionSignature* baseMethod = FindExactMethod(
+                    inherited, method.name, method.parameters, method.parameterModes);
+                if (baseMethod && (baseMethod->returnType != method.returnType ||
+                    baseMethod->parameterModes != method.parameterModes ||
+                    baseMethod->returnsReference != method.returnsReference ||
+                    baseMethod->returnReferenceConst != method.returnReferenceConst)) {
+                    Error(root, "overriding method must preserve the base signature for '" +
+                                method.name + "'");
+                }
+            }
+        }
+        state = 2;
+    };
+    for (auto& type : classes_) resolveInheritance(type);
+
     for (const auto& type : classes_) {
         if (type.interfaceType) continue;
         for (const auto& interfaceName : type.interfaces) {
@@ -228,13 +301,12 @@ void TypeChecker::Predeclare(AstNode* root) {
             if (!interfaceType || !interfaceType->interfaceType) continue;
             for (const auto& required : interfaceType->methods) {
                 bool found = false;
-                for (const auto& method : type.methods) {
-                    if (method.name == required.name && method.returnType == required.returnType &&
-                        method.parameters == required.parameters &&
-                        method.parameterModes == required.parameterModes &&
-                        method.returnsReference == required.returnsReference &&
-                        method.returnReferenceConst == required.returnReferenceConst) found = true;
-                }
+                const FunctionSignature* method = FindExactMethod(
+                    &type, required.name, required.parameters, required.parameterModes);
+                if (method && method->returnType == required.returnType &&
+                    method->parameterModes == required.parameterModes &&
+                    method->returnsReference == required.returnsReference &&
+                    method->returnReferenceConst == required.returnReferenceConst) found = true;
                 if (!found) Error(root, "class '" + type.name + "' does not implement " +
                                         interfaceName + "::" + required.Declaration());
             }
@@ -438,6 +510,7 @@ void TypeChecker::CheckNode(AstNode* node) {
         const std::string previousNamespace = currentNamespace_;
         currentNamespace_ = NamespaceOf(node->token.lexeme);
         currentClass_ = FindClass(node->token.lexeme);
+        bool hasConstructor = false;
         for (AstNode* member = node->firstChild; member; member = member->nextSibling) {
             if (member->kind == NodeKind::FieldDecl && member->firstChild) {
                 const DataType value = CheckExpression(member->firstChild);
@@ -446,7 +519,26 @@ void TypeChecker::CheckNode(AstNode* node) {
                                   " with " + value.Name());
                 }
             }
-            if (member->kind == NodeKind::FunctionDecl && member->firstChild) CheckFunction(member);
+            if (member->kind == NodeKind::FunctionDecl && member->firstChild) {
+                hasConstructor = hasConstructor || member->isConstructor;
+                CheckFunction(member);
+            }
+        }
+        if (currentClass_ && !currentClass_->baseClass.empty() && !hasConstructor) {
+            const ClassSignature* base = FindClass(currentClass_->baseClass);
+            bool hasDeclaredConstructors = false;
+            bool hasDefaultConstructor = false;
+            if (base) {
+                for (const auto& method : base->methods) {
+                    if (!method.constructor) continue;
+                    hasDeclaredConstructors = true;
+                    hasDefaultConstructor = hasDefaultConstructor ||
+                        MatchArguments(method, {}, {}).has_value();
+                }
+            }
+            if (hasDeclaredConstructors && !hasDefaultConstructor)
+                Error(node, "base class '" + currentClass_->baseClass +
+                            "' has no default constructor");
         }
         currentClass_ = previousClass;
         currentNamespace_ = previousNamespace;
@@ -464,10 +556,14 @@ void TypeChecker::CheckFunction(AstNode* node) {
     const DataType previousReturn = currentReturn_;
     const bool previousReturnsReference = currentReturnsReference_;
     const std::string previousNamespace = currentNamespace_;
+    const bool previousConstructor = currentConstructor_;
+    const int previousSuperCallCount = superCallCount_;
     currentNamespace_ = currentClass_ ? NamespaceOf(currentClass_->name)
                                       : NamespaceOf(node->token.lexeme);
     currentReturn_ = node->declaredType;
     currentReturnsReference_ = node->returnsReference;
+    currentConstructor_ = node->isConstructor;
+    superCallCount_ = 0;
     scopes_.emplace_back();
     AstNode* child = node->firstChild;
     while (child && child->kind == NodeKind::Parameter) {
@@ -486,9 +582,30 @@ void TypeChecker::CheckFunction(AstNode* node) {
         child = child->nextSibling;
     }
     if (child && child->kind == NodeKind::Block) CheckBlock(child, false);
+    if (node->isConstructor) {
+        node->hasExplicitSuper = superCallCount_ != 0;
+        if (currentClass_ && !currentClass_->baseClass.empty() && superCallCount_ == 0) {
+            const ClassSignature* base = FindClass(currentClass_->baseClass);
+            bool hasDeclaredConstructors = false;
+            bool hasDefaultConstructor = false;
+            if (base) {
+                for (const auto& method : base->methods) {
+                    if (!method.constructor) continue;
+                    hasDeclaredConstructors = true;
+                    hasDefaultConstructor = hasDefaultConstructor ||
+                        MatchArguments(method, {}, {}).has_value();
+                }
+            }
+            if (hasDeclaredConstructors && !hasDefaultConstructor)
+                Error(node, "base class '" + currentClass_->baseClass +
+                            "' has no default constructor; call super(...) explicitly");
+        }
+    }
     scopes_.pop_back();
     currentReturn_ = previousReturn;
     currentReturnsReference_ = previousReturnsReference;
+    currentConstructor_ = previousConstructor;
+    superCallCount_ = previousSuperCallCount;
     currentNamespace_ = previousNamespace;
 }
 
@@ -642,7 +759,10 @@ DataType TypeChecker::CheckBinary(AstNode* node) {
         return left.IsInteger() ? left : DataType::Invalid();
     }
     if (op == TokenKind::EqualEqual || op == TokenKind::BangEqual || op == TokenKind::KwIs) {
-        if (left != right && !(left.IsNumeric() && right.IsNumeric())) Error(node, "incomparable operand types");
+        const bool relatedObjects = left.kind == TypeKind::Object && right.kind == TypeKind::Object &&
+            (CanConvert(left, right) || CanConvert(right, left));
+        if (left != right && !(left.IsNumeric() && right.IsNumeric()) && !relatedObjects)
+            Error(node, "incomparable operand types");
         return DataType::Bool();
     }
     if (!left.IsNumeric() || !right.IsNumeric()) {
@@ -683,6 +803,32 @@ DataType TypeChecker::CheckCall(AstNode* node) {
         argumentNames.push_back(argument->kind == NodeKind::NamedArgument ? argument->token.lexeme
                                                                           : std::string{});
     }
+    if (callee->kind == NodeKind::Identifier && callee->token.lexeme == "super") {
+        if (!currentClass_ || !currentConstructor_ || currentClass_->baseClass.empty()) {
+            Error(node, "super(...) is only valid in a derived class constructor");
+            return DataType::Invalid();
+        }
+        ++superCallCount_;
+        if (superCallCount_ > 1) Error(node, "base constructor can only be called once");
+        const ClassSignature* base = FindClass(currentClass_->baseClass);
+        const FunctionSignature* constructor = nullptr;
+        bool hasConstructors = false;
+        int bestCost = 1000000;
+        if (base) {
+            for (const auto& candidate : base->methods) {
+                if (!candidate.constructor) continue;
+                hasConstructors = true;
+                const auto cost = MatchArguments(candidate, arguments, argumentNames);
+                if (cost && *cost < bestCost) { constructor = &candidate; bestCost = *cost; }
+            }
+        }
+        if ((hasConstructors && !constructor) || (!hasConstructors && !arguments.empty()))
+            Error(node, "no matching base constructor for '" + currentClass_->baseClass + "'");
+        else if (constructor)
+            ValidateReferenceArguments(*constructor, argumentNodes, argumentNames);
+        node->nonVirtualCall = true;
+        return DataType::Void();
+    }
     if (callee->kind == NodeKind::Identifier) {
         if (const ClassSignature* type = FindClass(callee->token.lexeme)) {
             if (type->interfaceType) {
@@ -720,6 +866,23 @@ DataType TypeChecker::CheckCall(AstNode* node) {
     }
     if (callee->kind != NodeKind::Identifier) {
         Error(node, "callee is not callable"); return DataType::Invalid();
+    }
+    const auto scope = callee->token.lexeme.rfind("::");
+    if (currentClass_ && scope != std::string::npos) {
+        const std::string ownerName = callee->token.lexeme.substr(0, scope);
+        const std::string methodName = callee->token.lexeme.substr(scope + 2);
+        const ClassSignature* owner = FindClass(ownerName);
+        if (owner && !owner->interfaceType && IsDerivedFrom(currentClass_->name, owner->name)) {
+            const FunctionSignature* method = FindMethodInClass(owner, methodName, arguments, argumentNames);
+            if (!method) Error(node, "no matching base method for '" + callee->token.lexeme + "'");
+            else {
+                ValidateReferenceArguments(*method, argumentNodes, argumentNames);
+                node->returnsReference = method->returnsReference;
+                node->returnReferenceConst = method->returnReferenceConst;
+                node->nonVirtualCall = true;
+            }
+            return method ? method->returnType : DataType::Invalid();
+        }
     }
     if (currentClass_) {
         const FunctionSignature* method = FindMethod(
@@ -772,6 +935,12 @@ const FunctionSignature* TypeChecker::FindMethod(
     const DataType& object, std::string_view name, const std::vector<DataType>& arguments,
     const std::vector<std::string>& argumentNames) const {
     const ClassSignature* type = FindClass(object.objectName);
+    return FindMethodInClass(type, name, arguments, argumentNames);
+}
+
+const FunctionSignature* TypeChecker::FindMethodInClass(
+    const ClassSignature* type, std::string_view name, const std::vector<DataType>& arguments,
+    const std::vector<std::string>& argumentNames) const {
     if (!type) return nullptr;
     const FunctionSignature* best = nullptr;
     int bestCost = 1000000;
@@ -780,7 +949,20 @@ const FunctionSignature* TypeChecker::FindMethod(
         const auto cost = MatchArguments(method, arguments, argumentNames);
         if (cost && *cost < bestCost) { best = &method; bestCost = *cost; }
     }
-    return best;
+    if (best || type->baseClass.empty()) return best;
+    return FindMethodInClass(FindClass(type->baseClass), name, arguments, argumentNames);
+}
+
+const FunctionSignature* TypeChecker::FindExactMethod(
+    const ClassSignature* type, std::string_view name, const std::vector<DataType>& parameters,
+    const std::vector<ParameterMode>& modes) const {
+    if (!type) return nullptr;
+    for (const auto& method : type->methods) {
+        if (!method.constructor && !method.destructor && method.name == name &&
+            method.parameters == parameters && method.parameterModes == modes) return &method;
+    }
+    return type->baseClass.empty() ? nullptr
+        : FindExactMethod(FindClass(type->baseClass), name, parameters, modes);
 }
 
 std::optional<int> TypeChecker::MatchArguments(
@@ -889,6 +1071,15 @@ const ClassSignature* TypeChecker::FindClass(std::string_view name) const {
     return nullptr;
 }
 
+bool TypeChecker::IsDerivedFrom(std::string_view derived, std::string_view base) const {
+    const ClassSignature* type = FindClass(derived);
+    while (type) {
+        if (type->name == base) return true;
+        type = type->baseClass.empty() ? nullptr : FindClass(type->baseClass);
+    }
+    return false;
+}
+
 void TypeChecker::Declare(const Token& name, const DataType& type, bool isConst,
                           bool returnableReference) {
     auto& scope = scopes_.back();
@@ -908,6 +1099,7 @@ bool TypeChecker::CanConvert(const DataType& from, const DataType& to) const {
     if (from.kind == TypeKind::Object && to.kind == TypeKind::Object && from.isHandle && to.isHandle) {
         if (const auto* type = FindClass(from.objectName)) {
             for (const auto& interfaceName : type->interfaces) if (interfaceName == to.objectName) return true;
+            if (IsDerivedFrom(type->name, to.objectName)) return true;
         }
     }
     return false;

@@ -21,7 +21,7 @@ struct ModuleState;
 class ScriptObject;
 
 struct ScriptFinalizerBinding {
-    FunctionId function;
+    std::vector<FunctionId> functions;
     std::shared_ptr<const BytecodeModule> module;
     std::weak_ptr<ModuleState> state;
 };
@@ -36,10 +36,14 @@ struct TypeInfo {
     std::string name;
     TypeId id;
     bool script = false;
+    std::string baseClass;
+    const TypeInfo* baseType = nullptr;
     std::vector<std::pair<std::string, DataType>> fields;
     std::vector<std::string> interfaces;
     std::unordered_map<std::string, std::string> interfaceMethodTable;
     GarbageCollector* collector = nullptr;
+
+    bool IsA(std::string_view typeName) const;
 };
 
 class RefObject {
@@ -68,6 +72,7 @@ public:
     void SetField(std::size_t index, Value value);
     std::size_t FieldCount() const;
     bool Implements(std::string_view interfaceName) const;
+    bool IsA(std::string_view typeName) const;
     std::string ResolveInterfaceMethod(std::string_view interfaceName,
                                        std::string_view declaration) const;
     void EnumerateReferences(const std::function<void(RefObject*)>& visitor) const override;

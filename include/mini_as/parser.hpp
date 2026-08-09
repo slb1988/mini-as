@@ -31,6 +31,8 @@ struct AstNode {
     bool implicitThis = false;
     bool isConstructor = false;
     bool isDestructor = false;
+    bool hasExplicitSuper = false;
+    bool nonVirtualCall = false;
     bool returnsReference = false;
     bool returnReferenceConst = false;
     ParameterMode parameterMode = ParameterMode::Value;

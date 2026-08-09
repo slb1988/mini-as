@@ -96,6 +96,16 @@ TEST_CASE(global_property_declaration_parser_preserves_type_name_and_constness) 
     CHECK(!mini_as::ParseGlobalPropertyDeclaration("int value = 1", diagnostics).has_value());
 }
 
+TEST_CASE(function_declaration_parser_preserves_registered_method_constness) {
+    mini_as::DiagnosticSink diagnostics;
+    const auto method = mini_as::ParseFunctionDeclaration("int get() const", diagnostics);
+    CHECK(method.has_value());
+    CHECK(method->name == "get");
+    CHECK(method->returnType == mini_as::DataType::Int());
+    CHECK(method->readOnlyMethod);
+    CHECK(method->Declaration() == "int get() const");
+}
+
 TEST_CASE(registered_global_properties_are_live_and_support_reference_writeback) {
     auto engine = mini_as::CreateScriptEngine();
     mini_as::Value counter(std::int32_t{40});

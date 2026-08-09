@@ -190,6 +190,44 @@ TEST_CASE(bytecode_lowers_registered_reference_construction_to_host_factory_call
     CHECK(!allocation);
 }
 
+TEST_CASE(bytecode_lowers_registered_object_methods_to_host_method_descriptors) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("host-method-bytecode",
+        "int read(HostRef@ value) { return value.get(); }", diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    mini_as::FunctionSignature method;
+    method.name = "get";
+    method.returnType = mini_as::DataType::Int();
+    method.host = true;
+    method.method = true;
+    method.objectType = "HostRef";
+    method.id = mini_as::FunctionId{31};
+    method.readOnlyMethod = true;
+    mini_as::ClassSignature hostType;
+    hostType.name = "HostRef";
+    hostType.id = mini_as::TypeId{17};
+    hostType.host = true;
+    hostType.methods.push_back(method);
+    mini_as::TypeChecker checker(diagnostics);
+    checker.RegisterObjectType(hostType);
+    CHECK(checker.Check(tree.root));
+    mini_as::BytecodeCompiler compiler(diagnostics);
+    auto module = compiler.Compile(tree.root, checker.Functions(), checker.Classes());
+    CHECK(!diagnostics.HasErrors());
+    bool hostMethod = false;
+    for (const auto& instruction : module.functions[0].code) {
+        if (instruction.opcode != mini_as::OpCode::CallHost) continue;
+        hostMethod = true;
+        const auto* callable = module.FindCallable(static_cast<std::size_t>(instruction.operand));
+        CHECK(callable != nullptr);
+        CHECK(callable->kind == mini_as::CallableKind::HostMethod);
+        CHECK(callable->function == mini_as::FunctionId{31});
+        CHECK(callable->objectType == mini_as::TypeId{17});
+    }
+    CHECK(hostMethod);
+}
+
 TEST_CASE(bytecode_emits_explicit_integer_width_conversions) {
     mini_as::DiagnosticSink diagnostics;
     mini_as::Tokenizer tokenizer("integer-conversion",

@@ -13,6 +13,7 @@ public:
     explicit CompatReference(int value) : value(value) {}
     void AddRef() { ++references_; }
     void Release() { if (--references_ == 0) delete this; }
+    int Get() const { return value; }
     int value;
 
 private:
@@ -55,7 +56,9 @@ int main(int argc, char** argv) {
         engine->RegisterObjectBehaviour("HostRef", asBEHAVE_ADDREF,
             "void f()", asMETHOD(CompatReference, AddRef), asCALL_THISCALL) < 0 ||
         engine->RegisterObjectBehaviour("HostRef", asBEHAVE_RELEASE,
-            "void f()", asMETHOD(CompatReference, Release), asCALL_THISCALL) < 0) {
+            "void f()", asMETHOD(CompatReference, Release), asCALL_THISCALL) < 0 ||
+        engine->RegisterObjectMethod("HostRef", "int get() const",
+            asMETHOD(CompatReference, Get), asCALL_THISCALL) < 0) {
         engine->ShutDownAndRelease();
         return 5;
     }

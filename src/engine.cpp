@@ -66,8 +66,9 @@ bool ScriptModule::Build() {
         for (auto& method : type.methods) {
             method.objectType = type.name;
             method.method = true;
-            method.id = engine_.GetOrCreateFunctionId(
-                name_ + "\n" + type.name + "::" + method.Declaration());
+            if (!method.id.IsValid())
+                method.id = engine_.GetOrCreateFunctionId(
+                    name_ + "\n" + type.name + "::" + method.Declaration());
         }
     }
     auto globals = checker.Globals();
@@ -271,13 +272,18 @@ bool ScriptEngine::RegisterGlobalFunction(std::string declaration, GenericFuncti
     DiagnosticSink diagnostics([this](const Diagnostic& diagnostic) { ForwardDiagnostic(diagnostic); });
     auto signature = ParseFunctionDeclaration(declaration, diagnostics);
     if (!signature || !callback) return false;
+    if (signature->readOnlyMethod) {
+        diagnostics.Report({"registration"}, Severity::Error,
+                           "global functions cannot use the method const qualifier");
+        return false;
+    }
     if (signature->returnsReference) {
         diagnostics.Report({"registration"}, Severity::Error,
                            "host return references require registered property storage");
         return false;
     }
     for (const auto& existing : hostFunctions_) {
-        if (existing.signature.factory) continue;
+        if (existing.signature.factory || existing.signature.method) continue;
         if (existing.signature.name == signature->name &&
             existing.signature.parameters == signature->parameters) {
             diagnostics.Report({"registration"}, Severity::Error,
@@ -319,7 +325,7 @@ bool ScriptEngine::RegisterObjectFactory(std::string typeName, std::string decla
     }
     const DataType expected = DataType::Object(typeName, true);
     if (signature->name != "f" || signature->returnType != expected ||
-        signature->returnsReference) {
+        signature->returnsReference || signature->readOnlyMethod) {
         diagnostics.Report({"registration"}, Severity::Error,
                            "factory declaration must have the form '" + typeName + "@ f(...)'");
         return false;
@@ -334,6 +340,43 @@ bool ScriptEngine::RegisterObjectFactory(std::string typeName, std::string decla
     signature->factory = true;
     signature->objectType = typeName;
     signature->id = GetOrCreateFunctionId("$factory\n" + typeName + "\n" +
+                                          signature->Declaration());
+    hostFunctions_.push_back({std::move(*signature), std::move(callback)});
+    return true;
+}
+
+bool ScriptEngine::RegisterObjectMethod(std::string typeName, std::string declaration,
+                                        GenericFunction callback) {
+    DiagnosticSink diagnostics([this](const Diagnostic& diagnostic) { ForwardDiagnostic(diagnostic); });
+    const auto type = objectTypes_.find(typeName);
+    if (type == objectTypes_.end() || !type->second->host) {
+        diagnostics.Report({"registration"}, Severity::Error,
+                           "method type '" + typeName + "' is not a registered reference type");
+        return false;
+    }
+    auto signature = ParseFunctionDeclaration(declaration, diagnostics);
+    if (!signature || !callback) {
+        if (signature && !callback)
+            diagnostics.Report({"registration"}, Severity::Error,
+                               "object method callback cannot be empty");
+        return false;
+    }
+    if (signature->returnsReference) {
+        diagnostics.Report({"registration"}, Severity::Error,
+                           "registered object method return references are not supported yet");
+        return false;
+    }
+    for (const auto& existing : hostFunctions_) {
+        if (!existing.signature.method || existing.signature.objectType != typeName ||
+            existing.signature.name != signature->name ||
+            existing.signature.parameters != signature->parameters) continue;
+        diagnostics.Report({"registration"}, Severity::Error,
+                           "duplicate object method '" + typeName + "::" + declaration + "'");
+        return false;
+    }
+    signature->method = true;
+    signature->objectType = typeName;
+    signature->id = GetOrCreateFunctionId("$host-method\n" + typeName + "\n" +
                                           signature->Declaration());
     hostFunctions_.push_back({std::move(*signature), std::move(callback)});
     return true;
@@ -452,7 +495,8 @@ void ScriptEngine::ForwardDiagnostic(const Diagnostic& diagnostic) const {
 std::vector<FunctionSignature> ScriptEngine::HostSignatures() const {
     std::vector<FunctionSignature> signatures;
     signatures.reserve(hostFunctions_.size());
-    for (const auto& host : hostFunctions_) signatures.push_back(host.signature);
+    for (const auto& host : hostFunctions_)
+        if (!host.signature.method) signatures.push_back(host.signature);
     return signatures;
 }
 
@@ -471,6 +515,9 @@ std::vector<ClassSignature> ScriptEngine::HostTypeSignatures() const {
         signature.name = entry.second->name;
         signature.id = entry.second->id;
         signature.host = true;
+        for (const auto& function : hostFunctions_)
+            if (function.signature.method && function.signature.objectType == signature.name)
+                signature.methods.push_back(function.signature);
         signatures.push_back(std::move(signature));
     }
     return signatures;

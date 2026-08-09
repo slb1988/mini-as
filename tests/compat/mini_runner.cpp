@@ -43,12 +43,18 @@ int main(int argc, char** argv) {
             call.SetReturnObject(mini_as::ObjectHandle(
                 new CompatReference(hostRefType, call.GetArgInt(0))));
         })) return 5;
+    if (!engine->RegisterObjectMethod("HostRef", "int get() const",
+        [](mini_as::GenericCall& call) {
+            const auto* value = dynamic_cast<const CompatReference*>(call.GetObject().Get());
+            if (!value) { call.SetException("invalid HostRef receiver"); return; }
+            call.SetReturnInt(value->value);
+        })) return 6;
     auto* module = engine->GetModule("compat", mini_as::ModulePolicy::AlwaysCreate);
     module->AddScriptSection("compat.as", ReadFile(argv[1]));
-    if (!module->Build()) return 6;
+    if (!module->Build()) return 7;
     auto context = engine->CreateContext();
-    if (!context->Prepare(module->GetFunctionByDecl("int main()"))) return 7;
-    if (context->Execute() != mini_as::ExecutionState::Finished) return 8;
+    if (!context->Prepare(module->GetFunctionByDecl("int main()"))) return 8;
+    if (context->Execute() != mini_as::ExecutionState::Finished) return 9;
     std::cout << "state=finished\nreturn=int:" << context->GetReturnInt() << '\n';
     return 0;
 }

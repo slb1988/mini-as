@@ -9,8 +9,9 @@ namespace mini_as {
 
 class GenericCall {
 public:
-    explicit GenericCall(std::vector<Value>& arguments);
+    explicit GenericCall(std::vector<Value>& arguments, ObjectHandle object = {});
     std::size_t GetArgCount() const;
+    const ObjectHandle& GetObject() const;
     const Value& GetArg(std::size_t index) const;
     std::int32_t GetArgInt(std::size_t index) const;
     float GetArgFloat(std::size_t index) const;
@@ -38,6 +39,7 @@ public:
 
 private:
     std::vector<Value>& arguments_;
+    ObjectHandle object_;
     Value returnValue_;
     std::string exception_;
 };

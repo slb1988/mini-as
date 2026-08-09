@@ -1747,7 +1747,7 @@ void BytecodeCompiler::CompileCall(AstNode* node, bool dereferenceResult) {
         currentNamespace_ = previousNamespace;
         if (parameter) parameter = parameter->nextSibling;
     }
-    if (target->method) {
+    if (target->method && !target->host) {
         const ClassSignature* ownerType = nullptr;
         for (const auto& type : classes_) if (type.name == target->objectType) ownerType = &type;
         const ClassSignature* staticType = FindClass(receiverType);
@@ -1801,8 +1801,15 @@ void BytecodeCompiler::CompileCall(AstNode* node, bool dereferenceResult) {
     if (target->host) {
         const auto found = hostIds_.find(FunctionKey(*target));
         if (found == hostIds_.end()) { Error(node, "host call target is missing"); return; }
+        TypeId owner;
+        if (target->method) {
+            const auto type = classIds_.find(target->objectType);
+            if (type == classIds_.end()) { Error(node, "host method type is missing"); return; }
+            owner = type->second;
+        }
         Emit(OpCode::CallHost,
-             AddCallable({CallableKind::HostFunction, found->second, {}, 0,
+             AddCallable({target->method ? CallableKind::HostMethod : CallableKind::HostFunction,
+                          found->second, owner, 0,
                           static_cast<std::uint32_t>(target->parameters.size())}), node);
     } else {
         const auto found = functionIds_.find(FunctionKey(*target));

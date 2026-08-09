@@ -91,6 +91,8 @@ public:
     const TypeInfo* RegisterObjectType(std::string name);
     bool RegisterObjectFactory(std::string typeName, std::string declaration,
                                GenericFunction callback);
+    bool RegisterObjectMethod(std::string typeName, std::string declaration,
+                              GenericFunction callback);
     const TypeInfo* GetTypeInfo(std::string_view name) const;
     std::size_t CollectGarbage();
     std::size_t GetTrackedObjectCount() const;

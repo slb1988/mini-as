@@ -35,8 +35,10 @@ DataType ReadType(const std::vector<Token>& tokens, std::size_t& index) {
 
 } // namespace
 
-GenericCall::GenericCall(std::vector<Value>& arguments) : arguments_(arguments) {}
+GenericCall::GenericCall(std::vector<Value>& arguments, ObjectHandle object)
+    : arguments_(arguments), object_(std::move(object)) {}
 std::size_t GenericCall::GetArgCount() const { return arguments_.size(); }
+const ObjectHandle& GenericCall::GetObject() const { return object_; }
 const Value& GenericCall::GetArg(std::size_t index) const { return arguments_.at(index); }
 std::int32_t GenericCall::GetArgInt(std::size_t index) const { return GetArg(index).As<std::int32_t>(); }
 float GenericCall::GetArgFloat(std::size_t index) const { return GetArg(index).As<float>(); }
@@ -128,6 +130,10 @@ std::optional<FunctionSignature> ParseFunctionDeclaration(
         return std::nullopt;
     }
     ++index;
+    if (index < tokens.size() && tokens[index].kind == TokenKind::KwConst) {
+        signature.readOnlyMethod = true;
+        ++index;
+    }
     if (index < tokens.size() && tokens[index].kind != TokenKind::End) {
         diagnostics.Report(tokens[index].location, Severity::Error, "unexpected text after declaration");
         return std::nullopt;

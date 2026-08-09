@@ -274,3 +274,121 @@ TEST_CASE(reference_factories_reject_objects_of_the_wrong_registered_type) {
     CHECK(destroyed == 1);
 }
 
+TEST_CASE(registered_object_methods_receive_this_and_support_reference_writeback) {
+    auto engine = mini_as::CreateScriptEngine();
+    const auto* type = engine->RegisterObjectType("Thing");
+    CHECK(type != nullptr);
+    int destroyed = 0;
+    CHECK(engine->RegisterObjectFactory("Thing", "Thing@ f(int value)",
+        [type, &destroyed](mini_as::GenericCall& call) {
+            call.SetReturnObject(mini_as::ObjectHandle(new HostThing(
+                type, call.GetArgInt(0), destroyed)));
+        }));
+    CHECK(engine->RegisterObjectMethod("Thing", "void add(int value)",
+        [](mini_as::GenericCall& call) {
+            auto* thing = dynamic_cast<HostThing*>(call.GetObject().Get());
+            CHECK(thing != nullptr);
+            thing->value += call.GetArgInt(0);
+        }));
+    CHECK(engine->RegisterObjectMethod("Thing", "int get() const",
+        [](mini_as::GenericCall& call) {
+            const auto* thing = dynamic_cast<const HostThing*>(call.GetObject().Get());
+            CHECK(thing != nullptr);
+            call.SetReturnInt(thing->value);
+        }));
+    CHECK(engine->RegisterObjectMethod("Thing", "void answer(int &out value)",
+        [](mini_as::GenericCall& call) {
+            CHECK(call.GetObject());
+            call.SetArgInt(0, 42);
+        }));
+    auto* module = engine->GetModule("registered-object-methods");
+    module->AddScriptSection("registered-object-methods",
+        "int run() { Thing@ value = Thing(40); value.add(2); int output; "
+        "value.answer(output); return value.get() + output - 42; }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+}
+
+TEST_CASE(object_method_registration_rejects_invalid_owners_callbacks_and_duplicates) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    CHECK(engine->RegisterObjectType("Thing") != nullptr);
+    auto method = [](mini_as::GenericCall& call) { call.SetReturnInt(42); };
+    CHECK(!engine->RegisterObjectMethod("Missing", "int get() const", method));
+    CHECK(!engine->RegisterObjectMethod("Thing", "int get() const", {}));
+    CHECK(!engine->RegisterObjectMethod("Thing", "int &get()", method));
+    CHECK(engine->RegisterObjectMethod("Thing", "int get() const", method));
+    CHECK(!engine->RegisterObjectMethod("Thing", "int get() const", method));
+    CHECK(diagnostics.size() >= 4);
+}
+
+TEST_CASE(registered_object_methods_are_not_published_as_global_functions) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    CHECK(engine->RegisterObjectType("Thing") != nullptr);
+    CHECK(engine->RegisterObjectMethod("Thing", "int get() const",
+        [](mini_as::GenericCall& call) { call.SetReturnInt(42); }));
+    auto* module = engine->GetModule("method-global-visibility");
+    module->AddScriptSection("method-global-visibility", "int run() { return get(); }");
+    CHECK(!module->Build());
+    bool hidden = false;
+    for (const auto& diagnostic : diagnostics)
+        hidden = hidden || diagnostic.message.find("no matching function for 'get'") !=
+            std::string::npos;
+    CHECK(hidden);
+}
+
+TEST_CASE(null_registered_object_method_receivers_report_the_call_location) {
+    auto engine = mini_as::CreateScriptEngine();
+    CHECK(engine->RegisterObjectType("Thing") != nullptr);
+    CHECK(engine->RegisterObjectMethod("Thing", "int get() const",
+        [](mini_as::GenericCall& call) { call.SetReturnInt(42); }));
+    auto* module = engine->GetModule("null-host-method");
+    module->AddScriptSection("null-host-method",
+        "int run() {\n"
+        "  Thing@ value;\n"
+        "  return value.get();\n"
+        "}\n");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Exception);
+    CHECK(context->GetExceptionString() == "null host method receiver");
+    CHECK(context->GetExceptionLocation().row == 3);
+}
+
+TEST_CASE(registered_object_method_exceptions_report_the_call_location) {
+    auto engine = mini_as::CreateScriptEngine();
+    const auto* type = engine->RegisterObjectType("Thing");
+    CHECK(type != nullptr);
+    int destroyed = 0;
+    CHECK(engine->RegisterObjectFactory("Thing", "Thing@ f()",
+        [type, &destroyed](mini_as::GenericCall& call) {
+            call.SetReturnObject(mini_as::ObjectHandle(new HostThing(type, 0, destroyed)));
+        }));
+    CHECK(engine->RegisterObjectMethod("Thing", "void fail()",
+        [](mini_as::GenericCall& call) { call.SetException("method failed"); }));
+    auto* module = engine->GetModule("host-method-error");
+    module->AddScriptSection("host-method-error",
+        "int run() {\n"
+        "  Thing@ value = Thing();\n"
+        "  value.fail();\n"
+        "  return 0;\n"
+        "}\n");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Exception);
+    CHECK(context->GetExceptionString() == "method failed");
+    CHECK(context->GetExceptionLocation().row == 3);
+}
+

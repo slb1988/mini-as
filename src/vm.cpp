@@ -438,7 +438,16 @@ bool VirtualMachine::Step() {
         if (!target) throw std::runtime_error("host call target is unavailable");
         std::vector<Value> arguments(target->signature.parameters.size());
         for (std::size_t i = arguments.size(); i > 0; --i) arguments[i - 1] = Pop();
-        GenericCall call(arguments);
+        ObjectHandle receiver;
+        if (callable->kind == CallableKind::HostMethod) {
+            receiver = Pop().As<ObjectHandle>();
+            if (!receiver || !receiver.Get()->GetTypeInfo())
+                throw std::runtime_error("null host method receiver");
+            const TypeInfo* expected = module_->FindType(callable->objectType);
+            if (!expected || !receiver.Get()->GetTypeInfo()->IsA(expected->name))
+                throw std::runtime_error("host method receiver type mismatch");
+        }
+        GenericCall call(arguments, receiver);
         try { target->callback(call); }
         catch (const std::exception& error) { throw std::runtime_error(std::string("host exception: ") + error.what()); }
         if (!call.Exception().empty()) throw std::runtime_error(call.Exception());

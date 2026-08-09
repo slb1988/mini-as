@@ -150,11 +150,11 @@ Do not stage generated build directories or unrelated user changes. Inspect
 The completed stage notes are authoritative. At the time this guide was added,
 the latest language stage is:
 
-- Stage 60 registered reference type factories and intrinsic reference-count
-  behaviours.
+- Stage 61 registered object methods through `GenericCall` receivers and stable
+  `HostMethod` descriptors.
 
-The next planned feature is registered object methods. Confirm the latest git
-history and `docs/stages/` before choosing the next stage number.
+The next planned feature is registered object properties. Confirm the latest
+git history and `docs/stages/` before choosing the next stage number.
 
 ## Common pitfalls
 
@@ -174,6 +174,8 @@ history and `docs/stages/` before choosing the next stage number.
 - Registered reference type factories use `Type@ f(...)` declarations and
   `GenericCall`; `RefObject` plus `ObjectHandle` remain the mandatory intrinsic
   add-reference/release behaviours.
+- Registered object method callbacks receive `this` through
+  `GenericCall::GetObject()`; keep it separate from explicit script arguments.
 - Preserve the last successful module image on parser, type-check, bytecode, or
   global-initializer failure.
 - Do not edit compatibility expectations merely to make mini and official

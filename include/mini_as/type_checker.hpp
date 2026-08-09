@@ -27,6 +27,7 @@ struct FunctionSignature {
     MemberAccess access = MemberAccess::Public;
     bool propertyAccessor = false;
     bool factory = false;
+    bool readOnlyMethod = false;
 
     std::string Declaration() const;
 };

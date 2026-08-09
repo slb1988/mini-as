@@ -147,7 +147,9 @@ std::string FunctionSignature::Declaration() const {
         else if (mode == ParameterMode::Out) out << " &out";
         else if (mode == ParameterMode::InOut) out << " &inout";
     }
-    return out.str() + ')';
+    out << ')';
+    if (readOnlyMethod) out << " const";
+    return out.str();
 }
 
 TypeChecker::TypeChecker(DiagnosticSink& diagnostics) : diagnostics_(diagnostics) {}
@@ -1382,6 +1384,10 @@ DataType TypeChecker::CheckCall(AstNode* node) {
                 : nullptr;
             if (!method || !SameCallableSignature(*method, delegateType->signature)) {
                 Error(argument, "no method matching funcdef '" + delegateType->name + "'");
+                return DataType::Invalid();
+            }
+            if (method->host) {
+                Error(argument, "delegates to registered object methods are not supported yet");
                 return DataType::Invalid();
             }
             CheckAccess(argument, method->access, method->objectType, "method", method->name);

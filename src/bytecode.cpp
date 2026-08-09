@@ -1563,6 +1563,14 @@ void BytecodeCompiler::CompileCall(AstNode* node, bool dereferenceResult) {
     }
     if (!explicitMethod && classFound != classIds_.end()) {
         const ClassSignature* constructedType = FindClass(resolvedClassName);
+        if (constructedType && constructedType->host && constructedType->valueType) {
+            if (arguments.empty())
+                Emit(OpCode::PushConst, AddConstant(constructedType->defaultValue), node);
+            else if (arguments.size() == 1)
+                CompileExpression(ArgumentExpression(arguments[0]));
+            else Error(node, "host value construction target is missing");
+            return;
+        }
         if (constructedType && constructedType->host) {
             const FunctionSignature* factory = nullptr;
             int bestCost = 1000000;
@@ -1936,8 +1944,12 @@ void BytecodeCompiler::EmitDefaultValue(const DataType& type, const AstNode* sou
     else if (type == DataType::Float()) Emit(OpCode::PushConst, AddConstant(Value(0.0f)), source);
     else if (type == DataType::Double()) Emit(OpCode::PushConst, AddConstant(Value(0.0)), source);
     else if (type == DataType::String()) Emit(OpCode::PushConst, AddConstant(Value("")), source);
-    else if (type.kind == TypeKind::Object)
-        Emit(OpCode::PushConst, AddConstant(Value(ObjectHandle{})), source);
+    else if (type.kind == TypeKind::Object) {
+        const ClassSignature* objectType = FindClass(type.objectName);
+        if (objectType && objectType->host && objectType->valueType && !type.isHandle)
+            Emit(OpCode::PushConst, AddConstant(objectType->defaultValue), source);
+        else Emit(OpCode::PushConst, AddConstant(Value(ObjectHandle{})), source);
+    }
     else if (type.kind == TypeKind::Function) {
         TypeId signature;
         for (const auto& funcdef : module_.funcdefs)

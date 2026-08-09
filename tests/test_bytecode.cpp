@@ -255,6 +255,38 @@ TEST_CASE(bytecode_registered_object_properties_reuse_field_lvalue_opcodes) {
     CHECK(stored);
 }
 
+TEST_CASE(bytecode_registered_value_types_emit_deep_copyable_default_constants) {
+    struct Number { int value = 42; };
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("host-value-bytecode",
+        "HostNumber make() { HostNumber value; return HostNumber(value); }", diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    mini_as::ClassSignature hostType;
+    hostType.name = "HostNumber";
+    hostType.id = mini_as::TypeId{17};
+    hostType.host = true;
+    hostType.valueType = true;
+    hostType.defaultValue = mini_as::Value::HostValue("HostNumber", Number{});
+    mini_as::TypeChecker checker(diagnostics);
+    checker.RegisterObjectType(hostType);
+    CHECK(checker.Check(tree.root));
+    mini_as::BytecodeCompiler compiler(diagnostics);
+    auto module = compiler.Compile(tree.root, checker.Functions(), checker.Classes());
+    CHECK(!diagnostics.HasErrors());
+    bool defaultValue = false, allocation = false;
+    for (const auto& instruction : module.functions[0].code) {
+        if (instruction.opcode == mini_as::OpCode::PushConst && instruction.operand >= 0) {
+            const auto& value = module.functions[0].constants[
+                static_cast<std::size_t>(instruction.operand)];
+            defaultValue = defaultValue || value.Type() == mini_as::DataType::Object("HostNumber");
+        }
+        allocation = allocation || instruction.opcode == mini_as::OpCode::NewObject;
+    }
+    CHECK(defaultValue);
+    CHECK(!allocation);
+}
+
 TEST_CASE(bytecode_emits_explicit_integer_width_conversions) {
     mini_as::DiagnosticSink diagnostics;
     mini_as::Tokenizer tokenizer("integer-conversion",

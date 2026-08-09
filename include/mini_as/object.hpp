@@ -38,6 +38,8 @@ struct TypeInfo {
     TypeId id;
     bool script = false;
     bool host = false;
+    bool valueType = false;
+    Value defaultValue;
     std::string baseClass;
     const TypeInfo* baseType = nullptr;
     std::vector<std::pair<std::string, DataType>> fields;

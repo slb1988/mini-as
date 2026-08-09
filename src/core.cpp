@@ -129,6 +129,11 @@ bool operator==(const IntegerStorage& left, const IntegerStorage& right) {
     return left.kind == right.kind && left.bits == right.bits && left.typeName == right.typeName;
 }
 
+bool operator==(const HostValueStorage& left, const HostValueStorage& right) {
+    return left.typeName == right.typeName && left.value.type() == right.value.type() &&
+           !left.value.has_value() && !right.value.has_value();
+}
+
 bool operator==(const ReferenceStorage& left, const ReferenceStorage& right) {
     return left.kind == right.kind && left.type == right.type && left.slot == right.slot &&
            left.object == right.object;
@@ -193,7 +198,8 @@ DataType Value::Type() const {
         const auto& cell = std::get<CapturedCellHandle>(storage_);
         return cell ? cell->value.Type() : DataType::Invalid();
     }
-    case 11: return std::get<ReferenceStorage>(storage_).type;
+    case 11: return DataType::Object(std::get<HostValueStorage>(storage_).typeName, false);
+    case 12: return std::get<ReferenceStorage>(storage_).type;
     default: return DataType::Invalid();
     }
 }
@@ -243,6 +249,8 @@ std::string Value::ToString() const {
         return *cell ? (*cell)->value.ToString() : "<capture>";
     if (const auto* handle = std::get_if<FunctionHandle>(&storage_))
         return *handle ? "<" + handle->typeName + "@>" : "null";
+    if (const auto* value = std::get_if<HostValueStorage>(&storage_))
+        return "<" + value->typeName + ">";
     const auto& handle = std::get<ObjectHandle>(storage_);
     return handle ? "<" + handle.Get()->GetTypeInfo()->name + "@>" : "null";
 }

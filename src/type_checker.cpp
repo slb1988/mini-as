@@ -1499,6 +1499,14 @@ DataType TypeChecker::CheckCall(AstNode* node) {
                 return DataType::Invalid();
             }
             if (type->host) {
+                if (type->valueType) {
+                    if (arguments.empty()) return DataType::Object(type->name, false);
+                    if (arguments.size() == 1 && argumentNames[0].empty() &&
+                        arguments[0] == DataType::Object(type->name, false))
+                        return DataType::Object(type->name, false);
+                    Error(node, "no matching value constructor for '" + type->name + "'");
+                    return DataType::Invalid();
+                }
                 const FunctionSignature* factory = nullptr;
                 int bestCost = 1000000;
                 for (const auto& candidate : functions_) {

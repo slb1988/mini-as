@@ -2,6 +2,7 @@
 
 #include "mini_as/symbols.hpp"
 
+#include <any>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -136,6 +137,13 @@ struct IntegerStorage {
 
 bool operator==(const IntegerStorage& left, const IntegerStorage& right);
 
+struct HostValueStorage {
+    std::string typeName;
+    std::any value;
+};
+
+bool operator==(const HostValueStorage& left, const HostValueStorage& right);
+
 class WeakObjectHandle {
 public:
     WeakObjectHandle() = default;
@@ -189,7 +197,8 @@ class Value {
 public:
     using Storage = std::variant<std::monostate, bool, std::int32_t, IntegerStorage,
                                  float, double, std::string, ObjectHandle, FunctionHandle,
-                                 WeakObjectHandle, CapturedCellHandle, ReferenceStorage>;
+                                 WeakObjectHandle, CapturedCellHandle, HostValueStorage,
+                                 ReferenceStorage>;
 
     Value() = default;
     explicit Value(bool value);
@@ -206,6 +215,13 @@ public:
 
     static Value Integer(const DataType& type, std::uint64_t bits);
 
+    template <typename T>
+    static Value HostValue(std::string typeName, T value) {
+        Value result;
+        result.storage_ = HostValueStorage{std::move(typeName), std::any(std::move(value))};
+        return result;
+    }
+
     DataType Type() const;
     bool IsVoid() const;
     bool IsReference() const;
@@ -219,6 +235,16 @@ public:
             return *value;
         }
         throw std::runtime_error("value has unexpected type");
+    }
+
+    template <typename T>
+    T& AsHostValue() {
+        return std::any_cast<T&>(std::get<HostValueStorage>(storage_).value);
+    }
+
+    template <typename T>
+    const T& AsHostValue() const {
+        return std::any_cast<const T&>(std::get<HostValueStorage>(storage_).value);
     }
 
     std::string ToString() const;

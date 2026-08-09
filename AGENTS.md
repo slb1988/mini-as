@@ -150,11 +150,12 @@ Do not stage generated build directories or unrelated user changes. Inspect
 The completed stage notes are authoritative. At the time this guide was added,
 the latest language stage is:
 
-- Stage 62 registered object properties through portable getter/setter callbacks
-  and the common field lvalue bytecode path.
+- Stage 63 registered value types with `std::any`-backed deep copies, default and
+  copy construction, value argument/return/write-back support, and const generic
+  methods.
 
-The next planned feature is registered value types. Confirm the latest git
-history and `docs/stages/` before choosing the next stage number.
+The next planned feature is registered enums, typedefs, and funcdefs. Confirm the
+latest git history and `docs/stages/` before choosing the next stage number.
 
 ## Common pitfalls
 
@@ -178,6 +179,9 @@ history and `docs/stages/` before choosing the next stage number.
   `GenericCall::GetObject()`; keep it separate from explicit script arguments.
 - Registered object properties reuse field opcodes and carry stable callback
   pointers in `TypeInfo`; preserve getter/setter type validation and constness.
+- Registered value types live in `HostValueStorage` and copy through `std::any`.
+  Const callbacks receive the value through `GenericCall::GetObjectValue()`;
+  reject mutable methods until receiver writeback is implemented.
 - Preserve the last successful module image on parser, type-check, bytecode, or
   global-initializer failure.
 - Do not edit compatibility expectations merely to make mini and official

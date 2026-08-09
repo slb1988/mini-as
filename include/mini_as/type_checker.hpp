@@ -56,6 +56,8 @@ struct ClassSignature {
     bool generatedCopyConstructor = false;
     TypeId id;
     bool host = false;
+    bool valueType = false;
+    Value defaultValue;
 };
 
 struct GlobalSignature {

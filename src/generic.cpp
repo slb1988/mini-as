@@ -35,10 +35,11 @@ DataType ReadType(const std::vector<Token>& tokens, std::size_t& index) {
 
 } // namespace
 
-GenericCall::GenericCall(std::vector<Value>& arguments, ObjectHandle object)
+GenericCall::GenericCall(std::vector<Value>& arguments, Value object)
     : arguments_(arguments), object_(std::move(object)) {}
 std::size_t GenericCall::GetArgCount() const { return arguments_.size(); }
-const ObjectHandle& GenericCall::GetObject() const { return object_; }
+const ObjectHandle& GenericCall::GetObject() const { return object_.As<ObjectHandle>(); }
+const Value& GenericCall::GetObjectValue() const { return object_; }
 const Value& GenericCall::GetArg(std::size_t index) const { return arguments_.at(index); }
 std::int32_t GenericCall::GetArgInt(std::size_t index) const { return GetArg(index).As<std::int32_t>(); }
 float GenericCall::GetArgFloat(std::size_t index) const { return GetArg(index).As<float>(); }

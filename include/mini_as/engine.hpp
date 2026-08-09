@@ -55,6 +55,7 @@ public:
     bool SetArgBool(std::size_t index, bool value);
     bool SetArgString(std::size_t index, std::string value);
     bool SetArgObject(std::size_t index, ObjectHandle value);
+    bool SetArgValue(std::size_t index, Value value);
     ExecutionState Execute();
     void Suspend();
     void Abort();
@@ -89,6 +90,7 @@ public:
     bool RegisterGlobalFunction(std::string declaration, GenericFunction callback);
     bool RegisterGlobalProperty(std::string declaration, Value* storage);
     const TypeInfo* RegisterObjectType(std::string name);
+    const TypeInfo* RegisterValueType(std::string name, Value defaultValue);
     bool RegisterObjectFactory(std::string typeName, std::string declaration,
                                GenericFunction callback);
     bool RegisterObjectMethod(std::string typeName, std::string declaration,

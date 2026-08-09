@@ -6,13 +6,17 @@
 namespace mini_as {
 namespace {
 
-Value DefaultGlobalValue(const DataType& type) {
+Value DefaultGlobalValue(const DataType& type, const ScriptEngine& engine) {
     if (type == DataType::Bool()) return Value(false);
     if (type.IsInteger()) return Value::Integer(type, 0);
     if (type == DataType::Float()) return Value(0.0f);
     if (type == DataType::Double()) return Value(0.0);
     if (type == DataType::String()) return Value(std::string{});
-    if (type.kind == TypeKind::Object) return Value(ObjectHandle{});
+    if (type.kind == TypeKind::Object) {
+        const TypeInfo* registered = engine.GetTypeInfo(type.objectName);
+        if (registered && registered->valueType) return registered->defaultValue;
+        return Value(ObjectHandle{});
+    }
     if (type.kind == TypeKind::Function) return Value(FunctionHandle{{}, {}, type.objectName, false});
     if (type.kind == TypeKind::WeakRef || type.kind == TypeKind::ConstWeakRef)
         return Value(WeakObjectHandle(type.objectName, type.kind == TypeKind::ConstWeakRef));
@@ -113,7 +117,7 @@ bool ScriptModule::Build() {
     state->globals.reserve(candidate.globals.size());
     for (const auto& global : candidate.globals) {
         state->globals.push_back(global.host && global.host->storage
-            ? *global.host->storage : DefaultGlobalValue(global.signature.type));
+            ? *global.host->storage : DefaultGlobalValue(global.signature.type, engine_));
     }
     VirtualMachine initializer;
     auto finalizerModule = std::make_shared<BytecodeModule>(candidate);
@@ -185,6 +189,9 @@ bool ScriptContext::SetArgDouble(std::size_t index, double value) { return SetAr
 bool ScriptContext::SetArgBool(std::size_t index, bool value) { return SetArgument(index, Value(value)); }
 bool ScriptContext::SetArgString(std::size_t index, std::string value) { return SetArgument(index, Value(std::move(value))); }
 bool ScriptContext::SetArgObject(std::size_t index, ObjectHandle value) { return SetArgument(index, Value(std::move(value))); }
+bool ScriptContext::SetArgValue(std::size_t index, Value value) {
+    return SetArgument(index, std::move(value));
+}
 
 ExecutionState ScriptContext::Execute() {
     if (!function_) {
@@ -307,11 +314,25 @@ const TypeInfo* ScriptEngine::RegisterObjectType(std::string name) {
     return result;
 }
 
+const TypeInfo* ScriptEngine::RegisterValueType(std::string name, Value defaultValue) {
+    if (name.empty() || objectTypes_.find(name) != objectTypes_.end() ||
+        defaultValue.Type() != DataType::Object(name, false)) return nullptr;
+    auto type = std::make_unique<TypeInfo>();
+    type->name = name;
+    type->id = GetOrCreateTypeId(name);
+    type->host = true;
+    type->valueType = true;
+    type->defaultValue = std::move(defaultValue);
+    const TypeInfo* result = type.get();
+    objectTypes_.emplace(std::move(name), std::move(type));
+    return result;
+}
+
 bool ScriptEngine::RegisterObjectFactory(std::string typeName, std::string declaration,
                                          GenericFunction callback) {
     DiagnosticSink diagnostics([this](const Diagnostic& diagnostic) { ForwardDiagnostic(diagnostic); });
     const auto type = objectTypes_.find(typeName);
-    if (type == objectTypes_.end() || !type->second->host) {
+    if (type == objectTypes_.end() || !type->second->host || type->second->valueType) {
         diagnostics.Report({"registration"}, Severity::Error,
                            "factory type '" + typeName + "' is not a registered reference type");
         return false;
@@ -351,7 +372,7 @@ bool ScriptEngine::RegisterObjectMethod(std::string typeName, std::string declar
     const auto type = objectTypes_.find(typeName);
     if (type == objectTypes_.end() || !type->second->host) {
         diagnostics.Report({"registration"}, Severity::Error,
-                           "method type '" + typeName + "' is not a registered reference type");
+                           "method type '" + typeName + "' is not a registered host type");
         return false;
     }
     auto signature = ParseFunctionDeclaration(declaration, diagnostics);
@@ -364,6 +385,11 @@ bool ScriptEngine::RegisterObjectMethod(std::string typeName, std::string declar
     if (signature->returnsReference) {
         diagnostics.Report({"registration"}, Severity::Error,
                            "registered object method return references are not supported yet");
+        return false;
+    }
+    if (type->second->valueType && !signature->readOnlyMethod) {
+        diagnostics.Report({"registration"}, Severity::Error,
+                           "registered value type methods must be const until receiver writeback is supported");
         return false;
     }
     for (const auto& existing : hostFunctions_) {
@@ -387,7 +413,7 @@ bool ScriptEngine::RegisterObjectProperty(std::string typeName, std::string decl
                                           GenericPropertySetter setter) {
     DiagnosticSink diagnostics([this](const Diagnostic& diagnostic) { ForwardDiagnostic(diagnostic); });
     const auto type = objectTypes_.find(typeName);
-    if (type == objectTypes_.end() || !type->second->host) {
+    if (type == objectTypes_.end() || !type->second->host || type->second->valueType) {
         diagnostics.Report({"registration"}, Severity::Error,
                            "property type '" + typeName + "' is not a registered reference type");
         return false;
@@ -495,6 +521,8 @@ const TypeInfo* ScriptEngine::RegisterScriptType(const ClassSignature& signature
     } else type = found->second.get();
     type->script = !signature.interfaceType;
     type->host = false;
+    type->valueType = false;
+    type->defaultValue = Value{};
     type->baseClass = signature.baseClass;
     type->baseType = nullptr;
     type->collector = signature.interfaceType ? nullptr : &garbageCollector_;
@@ -574,6 +602,8 @@ std::vector<ClassSignature> ScriptEngine::HostTypeSignatures() const {
         signature.name = entry.second->name;
         signature.id = entry.second->id;
         signature.host = true;
+        signature.valueType = entry.second->valueType;
+        signature.defaultValue = entry.second->defaultValue;
         for (const auto* property : entry.second->hostProperties)
             if (property) signature.fields.push_back(property->signature);
         for (const auto& function : hostFunctions_)

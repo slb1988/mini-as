@@ -11,6 +11,10 @@ private:
     ~HostThing() override { ++destroyed_; }
     int& destroyed_;
 };
+
+struct HostNumber {
+    int value = 42;
+};
 }
 
 TEST_CASE(object_handles_addref_release_deterministically) {
@@ -525,5 +529,114 @@ TEST_CASE(registered_object_property_setter_exceptions_report_the_assignment_loc
     CHECK(context->GetExceptionString().find("host property exception: setter refused value") !=
         std::string::npos);
     CHECK(context->GetExceptionLocation().row == 3);
+}
+
+TEST_CASE(registered_value_types_default_copy_pass_return_and_write_back_by_value) {
+    auto engine = mini_as::CreateScriptEngine();
+    CHECK(engine->RegisterValueType("HostNumber",
+        mini_as::Value::HostValue("HostNumber", HostNumber{})) != nullptr);
+    CHECK(engine->RegisterObjectMethod("HostNumber", "int get() const",
+        [](mini_as::GenericCall& call) {
+            call.SetReturnInt(call.GetObjectValue().AsHostValue<HostNumber>().value);
+        }));
+    CHECK(engine->RegisterGlobalFunction("int ReadNumber(HostNumber value)",
+        [](mini_as::GenericCall& call) {
+            call.SetReturnInt(call.GetArg(0).AsHostValue<HostNumber>().value);
+        }));
+    CHECK(engine->RegisterGlobalFunction("void IncrementNumber(HostNumber &inout value)",
+        [](mini_as::GenericCall& call) {
+            mini_as::Value updated = call.GetArg(0);
+            ++updated.AsHostValue<HostNumber>().value;
+            call.SetArg(0, std::move(updated));
+        }));
+    auto* module = engine->GetModule("registered-value-types");
+    module->AddScriptSection("registered-value-types",
+        "HostNumber global; HostNumber identity(HostNumber value) { return value; } "
+        "int run() { HostNumber original; HostNumber copied = HostNumber(original); "
+        "IncrementNumber(copied); HostNumber returned = identity(copied); "
+        "return global.get() * 10000 + original.get() * 100 + returned.get(); }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    const auto state = context->Execute();
+    if (state != mini_as::ExecutionState::Finished)
+        throw std::runtime_error(context->GetExceptionString());
+    CHECK(context->GetReturnInt() == 424243);
+}
+
+TEST_CASE(contexts_accept_registered_value_type_arguments) {
+    auto engine = mini_as::CreateScriptEngine();
+    CHECK(engine->RegisterValueType("HostNumber",
+        mini_as::Value::HostValue("HostNumber", HostNumber{})) != nullptr);
+    CHECK(engine->RegisterGlobalFunction("int ReadNumber(HostNumber value)",
+        [](mini_as::GenericCall& call) {
+            call.SetReturnInt(call.GetArg(0).AsHostValue<HostNumber>().value);
+        }));
+    auto* module = engine->GetModule("value-context-arguments");
+    module->AddScriptSection("value-context-arguments",
+        "int read(HostNumber value) { return ReadNumber(value); }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int read(HostNumber)")));
+    HostNumber number;
+    number.value = 77;
+    CHECK(context->SetArgValue(0, mini_as::Value::HostValue("HostNumber", number)));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 77);
+}
+
+TEST_CASE(value_type_registration_and_construction_reject_invalid_uses) {
+    auto engine = mini_as::CreateScriptEngine();
+    CHECK(engine->RegisterValueType("HostNumber",
+        mini_as::Value::HostValue("WrongName", HostNumber{})) == nullptr);
+    CHECK(engine->RegisterValueType("HostNumber",
+        mini_as::Value::HostValue("HostNumber", HostNumber{})) != nullptr);
+    CHECK(engine->RegisterValueType("HostNumber",
+        mini_as::Value::HostValue("HostNumber", HostNumber{})) == nullptr);
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    CHECK(!engine->RegisterObjectMethod("HostNumber", "void mutate()",
+        [](mini_as::GenericCall&) {}));
+    auto* module = engine->GetModule("invalid-value-construction");
+    module->AddScriptSection("invalid-value-construction",
+        "int run() { HostNumber value = HostNumber(42); return 0; }");
+    CHECK(!module->Build());
+    bool invalid = false;
+    bool mutableMethod = false;
+    for (const auto& diagnostic : diagnostics)
+        invalid = invalid || diagnostic.message.find("no matching value constructor for 'HostNumber'") !=
+            std::string::npos;
+    for (const auto& diagnostic : diagnostics)
+        mutableMethod = mutableMethod || diagnostic.message.find("value type methods must be const") !=
+            std::string::npos;
+    CHECK(invalid);
+    CHECK(mutableMethod);
+}
+
+TEST_CASE(registered_value_type_return_mismatches_report_the_call_location) {
+    auto engine = mini_as::CreateScriptEngine();
+    CHECK(engine->RegisterValueType("HostNumber",
+        mini_as::Value::HostValue("HostNumber", HostNumber{})) != nullptr);
+    CHECK(engine->RegisterValueType("OtherNumber",
+        mini_as::Value::HostValue("OtherNumber", HostNumber{})) != nullptr);
+    CHECK(engine->RegisterGlobalFunction("HostNumber WrongNumber()",
+        [](mini_as::GenericCall& call) {
+            call.SetReturn(mini_as::Value::HostValue("OtherNumber", HostNumber{}));
+        }));
+    auto* module = engine->GetModule("wrong-value-return");
+    module->AddScriptSection("wrong-value-return",
+        "int run() {\n"
+        "  HostNumber value = WrongNumber();\n"
+        "  return 0;\n"
+        "}\n");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Exception);
+    CHECK(context->GetExceptionString().find("returned OtherNumber but declared HostNumber") !=
+        std::string::npos);
+    CHECK(context->GetExceptionLocation().row == 2);
 }
 

@@ -3,6 +3,7 @@
 
 #include <fstream>
 #include <iostream>
+#include <new>
 #include <sstream>
 #include <string>
 
@@ -20,6 +21,40 @@ private:
     ~CompatReference() = default;
     int references_ = 1;
 };
+
+struct CompatValue {
+    int value = 42;
+};
+
+void CompatValueConstruct(asIScriptGeneric* call) {
+    new(call->GetObject()) CompatValue();
+}
+
+void CompatValueDestruct(asIScriptGeneric* call) {
+    static_cast<CompatValue*>(call->GetObject())->~CompatValue();
+}
+
+void CompatValueCopyConstruct(asIScriptGeneric* call) {
+    const auto* source = static_cast<const CompatValue*>(call->GetArgObject(0));
+    new(call->GetObject()) CompatValue(*source);
+}
+
+void CompatValueAssign(asIScriptGeneric* call) {
+    auto* destination = static_cast<CompatValue*>(call->GetObject());
+    const auto* source = static_cast<const CompatValue*>(call->GetArgObject(0));
+    *destination = *source;
+    call->SetReturnAddress(destination);
+}
+
+void ReadHostValue(asIScriptGeneric* call) {
+    const auto* value = static_cast<const CompatValue*>(call->GetArgObject(0));
+    call->SetReturnDWord(static_cast<asDWORD>(value ? value->value : 0));
+}
+
+void GetHostValue(asIScriptGeneric* call) {
+    const auto* value = static_cast<const CompatValue*>(call->GetObject());
+    call->SetReturnDWord(static_cast<asDWORD>(value ? value->value : 0));
+}
 
 void CompatReferenceFactory(asIScriptGeneric* call) {
     call->SetReturnAddress(new CompatReference(static_cast<int>(call->GetArgDWord(0))));
@@ -50,6 +85,25 @@ int main(int argc, char** argv) {
         engine->ShutDownAndRelease();
         return 4;
     }
+    if (engine->RegisterObjectType("HostValue", sizeof(CompatValue),
+            asOBJ_VALUE | asGetTypeTraits<CompatValue>()) < 0 ||
+        engine->RegisterObjectBehaviour("HostValue", asBEHAVE_CONSTRUCT, "void f()",
+            asFUNCTION(CompatValueConstruct), asCALL_GENERIC) < 0 ||
+        engine->RegisterObjectBehaviour("HostValue", asBEHAVE_DESTRUCT, "void f()",
+            asFUNCTION(CompatValueDestruct), asCALL_GENERIC) < 0 ||
+        engine->RegisterObjectBehaviour("HostValue", asBEHAVE_CONSTRUCT,
+            "void f(const HostValue &in)", asFUNCTION(CompatValueCopyConstruct),
+            asCALL_GENERIC) < 0 ||
+        engine->RegisterObjectMethod("HostValue",
+            "HostValue &opAssign(const HostValue &in)",
+            asFUNCTION(CompatValueAssign), asCALL_GENERIC) < 0 ||
+        engine->RegisterObjectMethod("HostValue", "int get() const",
+            asFUNCTION(GetHostValue), asCALL_GENERIC) < 0 ||
+        engine->RegisterGlobalFunction("int ReadHostValue(HostValue value)",
+            asFUNCTION(ReadHostValue), asCALL_GENERIC) < 0) {
+        engine->ShutDownAndRelease();
+        return 5;
+    }
     if (engine->RegisterObjectType("HostRef", 0, asOBJ_REF) < 0 ||
         engine->RegisterObjectProperty("HostRef", "int value",
             asOFFSET(CompatReference, value)) < 0 ||
@@ -62,21 +116,21 @@ int main(int argc, char** argv) {
         engine->RegisterObjectMethod("HostRef", "int get() const",
             asMETHOD(CompatReference, Get), asCALL_THISCALL) < 0) {
         engine->ShutDownAndRelease();
-        return 5;
+        return 6;
     }
     asIScriptModule* module = engine->GetModule("compat", asGM_ALWAYS_CREATE);
     const std::string source = ReadFile(argv[1]);
     module->AddScriptSection("compat.as", source.c_str(), source.size());
-    if (module->Build() < 0) { engine->ShutDownAndRelease(); return 6; }
+    if (module->Build() < 0) { engine->ShutDownAndRelease(); return 7; }
     asIScriptFunction* function = module->GetFunctionByDecl("int main()");
-    if (!function) { engine->ShutDownAndRelease(); return 7; }
+    if (!function) { engine->ShutDownAndRelease(); return 8; }
     asIScriptContext* context = engine->CreateContext();
     context->Prepare(function);
     const int state = context->Execute();
     if (state != asEXECUTION_FINISHED) {
         context->Release();
         engine->ShutDownAndRelease();
-        return 8;
+        return 9;
     }
     std::cout << "state=finished\nreturn=int:" << context->GetReturnDWord() << '\n';
     context->Release();

@@ -379,3 +379,36 @@ TEST_CASE(parser_builds_anonymous_function_parameters_and_body) {
     CHECK(children[2]->kind == mini_as::NodeKind::Block);
 }
 
+TEST_CASE(parser_qualifies_child_funcdefs_inside_and_outside_the_parent_class) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("child-funcdefs",
+        "namespace Events { Dispatcher::Callback@ external; class Dispatcher { "
+        "funcdef int Callback(int); Callback@ callback; } }", diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    CHECK(!diagnostics.HasErrors());
+    auto* external = tree.root->firstChild->firstChild;
+    auto* type = external->nextSibling;
+    const auto members = type->Children();
+    CHECK(members[0]->kind == mini_as::NodeKind::FuncdefDecl);
+    CHECK(members[0]->token.lexeme == "Events::Dispatcher::Callback");
+    CHECK(members[1]->declaredType ==
+          mini_as::DataType::Function("Events::Dispatcher::Callback", true));
+    CHECK(external->declaredType ==
+          mini_as::DataType::Function("Events::Dispatcher::Callback", true));
+}
+
+TEST_CASE(parser_resolves_inherited_child_funcdefs_in_derived_class_scope) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("inherited-child-funcdefs",
+        "class Base { funcdef int Callback(int); } "
+        "class Derived : Base { Callback@ callback; }", diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    CHECK(!diagnostics.HasErrors());
+    const auto derivedChildren = tree.root->Children()[1]->Children();
+    CHECK(derivedChildren[1]->kind == mini_as::NodeKind::FieldDecl);
+    CHECK(derivedChildren[1]->declaredType ==
+          mini_as::DataType::Function("Base::Callback", true));
+}
+

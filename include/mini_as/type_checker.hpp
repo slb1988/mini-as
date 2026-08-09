@@ -77,6 +77,7 @@ struct FuncdefSignature {
     std::string name;
     FunctionSignature signature;
     TypeId id;
+    std::string parentType;
 };
 
 class TypeChecker {

@@ -1,5 +1,6 @@
 #include "mini_as/parser.hpp"
 
+#include <functional>
 #include <optional>
 #include <utility>
 
@@ -89,7 +90,42 @@ Parser::Parser(std::vector<Token> tokens, DiagnosticSink& diagnostics)
         if ((tokens_[index].kind == TokenKind::KwClass ||
              tokens_[index].kind == TokenKind::KwInterface) && index + 1 < tokens_.size() &&
             tokens_[index + 1].kind == TokenKind::Identifier) {
-            objectTypes_.insert(JoinName(active, tokens_[index + 1].lexeme));
+            const std::string owner = JoinName(active, tokens_[index + 1].lexeme);
+            objectTypes_.insert(owner);
+            std::size_t body = index + 2;
+            while (body < tokens_.size() && tokens_[body].kind != TokenKind::LeftBrace &&
+                   tokens_[body].kind != TokenKind::Semicolon) ++body;
+            if (index + 2 < body && tokens_[index + 2].kind == TokenKind::Colon) {
+                std::size_t cursor = index + 3;
+                while (cursor < body) {
+                    if (tokens_[cursor].kind != TokenKind::Identifier) { ++cursor; continue; }
+                    std::string base = tokens_[cursor++].lexeme;
+                    while (cursor + 1 < body && tokens_[cursor].kind == TokenKind::Scope &&
+                           tokens_[cursor + 1].kind == TokenKind::Identifier) {
+                        base += "::" + tokens_[cursor + 1].lexeme;
+                        cursor += 2;
+                    }
+                    objectBases_[owner].push_back(std::move(base));
+                    if (cursor < body && tokens_[cursor].kind == TokenKind::Comma) ++cursor;
+                }
+            }
+            if (body < tokens_.size() && tokens_[body].kind == TokenKind::LeftBrace) {
+                int typeDepth = 1;
+                for (std::size_t cursor = body + 1; cursor < tokens_.size() && typeDepth > 0;
+                     ++cursor) {
+                    if (tokens_[cursor].kind == TokenKind::LeftBrace) { ++typeDepth; continue; }
+                    if (tokens_[cursor].kind == TokenKind::RightBrace) { --typeDepth; continue; }
+                    if (typeDepth != 1 || tokens_[cursor].kind != TokenKind::KwFuncdef) continue;
+                    for (std::size_t part = cursor + 1; part < tokens_.size() &&
+                         tokens_[part].kind != TokenKind::Semicolon; ++part) {
+                        if (tokens_[part].kind == TokenKind::LeftParen && part > cursor + 1 &&
+                            tokens_[part - 1].kind == TokenKind::Identifier) {
+                            funcdefTypes_.insert(owner + "::" + tokens_[part - 1].lexeme);
+                            break;
+                        }
+                    }
+                }
+            }
         }
         if (tokens_[index].kind == TokenKind::KwEnum && index + 1 < tokens_.size() &&
             tokens_[index + 1].kind == TokenKind::Identifier) {
@@ -209,12 +245,13 @@ AstNode* Parser::ParseTypedef() {
     return declaration;
 }
 
-AstNode* Parser::ParseFuncdef() {
+AstNode* Parser::ParseFuncdef(std::string_view parentType) {
     const bool returnConst = Match(TokenKind::KwConst);
     DataType returnType = ParseType(true);
     const bool returnsReference = Match(TokenKind::Amp);
     Token name = Consume(TokenKind::Identifier, "expected funcdef name");
-    name.lexeme = QualifyDeclaration(name.lexeme);
+    name.lexeme = parentType.empty() ? QualifyDeclaration(name.lexeme)
+                                     : std::string(parentType) + "::" + name.lexeme;
     AstNode* declaration = arena_->Make(NodeKind::FuncdefDecl, name);
     declaration->declaredType = std::move(returnType);
     declaration->returnsReference = returnsReference;
@@ -249,6 +286,8 @@ AstNode* Parser::ParseClass(bool isInterface) {
     const std::string simpleName = name.lexeme;
     name.lexeme = QualifyDeclaration(name.lexeme);
     AstNode* node = arena_->Make(isInterface ? NodeKind::InterfaceDecl : NodeKind::ClassDecl, name);
+    const std::string previousTypeName = currentTypeName_;
+    currentTypeName_ = name.lexeme;
     if (Match(TokenKind::Colon)) {
         do {
             Token inheritedName = ParseQualifiedIdentifier("expected inherited type name");
@@ -269,6 +308,13 @@ AstNode* Parser::ParseClass(bool isInterface) {
         }
         if (isInterface && access != MemberAccess::Public)
             Error(accessToken, "interface members cannot be private or protected");
+        if (Match(TokenKind::KwFuncdef)) {
+            if (isInterface) Error(Previous(), "interfaces cannot declare child funcdefs");
+            AstNode* funcdef = ParseFuncdef(node->token.lexeme);
+            funcdef->memberAccess = access;
+            node->AppendChild(funcdef);
+            continue;
+        }
         if (Check(TokenKind::Tilde)) {
             const Token tilde = Advance();
             Token destructorName = Consume(TokenKind::Identifier, "expected destructor name after '~'");
@@ -339,6 +385,7 @@ AstNode* Parser::ParseClass(bool isInterface) {
     }
     Consume(TokenKind::RightBrace, "expected '}' after type body");
     Match(TokenKind::Semicolon);
+    currentTypeName_ = previousTypeName;
     return node;
 }
 
@@ -769,14 +816,51 @@ std::string Parser::QualifyDeclaration(std::string_view name) const {
 }
 
 std::string Parser::ResolveTypeName(std::string_view name) const {
-    if (name.find("::") != std::string_view::npos) return std::string(name);
+    const auto knownType = [this](const std::string& candidate) {
+        return enumTypes_.find(candidate) != enumTypes_.end() ||
+               objectTypes_.find(candidate) != objectTypes_.end() ||
+               funcdefTypes_.find(candidate) != funcdefTypes_.end() ||
+               typedefTypes_.find(candidate) != typedefTypes_.end();
+    };
+    if (!currentTypeName_.empty()) {
+        const std::string child = currentTypeName_ + "::" + std::string(name);
+        if (funcdefTypes_.find(child) != funcdefTypes_.end()) return child;
+        std::unordered_set<std::string> visited;
+        std::function<std::string(const std::string&)> findInherited =
+            [&](const std::string& owner) -> std::string {
+                if (!visited.insert(owner).second) return {};
+                const auto bases = objectBases_.find(owner);
+                if (bases == objectBases_.end()) return {};
+                const auto separator = owner.rfind("::");
+                const std::string ownerNamespace = separator == std::string::npos
+                    ? std::string{} : owner.substr(0, separator);
+                for (const auto& rawBase : bases->second) {
+                    std::string base = rawBase;
+                    std::string scope = ownerNamespace;
+                    for (;;) {
+                        const std::string candidate = JoinName(scope, rawBase);
+                        if (objectTypes_.find(candidate) != objectTypes_.end()) {
+                            base = candidate;
+                            break;
+                        }
+                        if (scope.empty()) break;
+                        const auto parent = scope.rfind("::");
+                        scope = parent == std::string::npos ? std::string{} : scope.substr(0, parent);
+                    }
+                    const std::string inheritedChild = base + "::" + std::string(name);
+                    if (funcdefTypes_.find(inheritedChild) != funcdefTypes_.end())
+                        return inheritedChild;
+                    if (const std::string nested = findInherited(base); !nested.empty()) return nested;
+                }
+                return {};
+            };
+        if (const std::string inherited = findInherited(currentTypeName_); !inherited.empty())
+            return inherited;
+    }
     std::string scope = currentNamespace_;
     for (;;) {
         const std::string candidate = JoinName(scope, name);
-        if (enumTypes_.find(candidate) != enumTypes_.end() ||
-            objectTypes_.find(candidate) != objectTypes_.end() ||
-            funcdefTypes_.find(candidate) != funcdefTypes_.end() ||
-            typedefTypes_.find(candidate) != typedefTypes_.end()) return candidate;
+        if (knownType(candidate)) return candidate;
         if (scope.empty()) break;
         const auto separator = scope.rfind("::");
         scope = separator == std::string::npos ? std::string{} : scope.substr(0, separator);

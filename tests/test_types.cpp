@@ -131,6 +131,24 @@ TEST_CASE(type_checker_infers_anonymous_function_types_and_records_captures) {
     CHECK(lambda->captureNames[0] == "total");
 }
 
+TEST_CASE(type_checker_publishes_child_funcdef_parent_metadata) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("child-funcdef-types",
+        "class First { funcdef int Callback(int); Callback@ callback; } "
+        "class Second { funcdef int Callback(int); Callback@ callback; }",
+        diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    mini_as::TypeChecker checker(diagnostics);
+    CHECK(checker.Check(tree.root));
+    CHECK(checker.Funcdefs().size() == 2);
+    CHECK(checker.Funcdefs()[0].name == "First::Callback");
+    CHECK(checker.Funcdefs()[0].parentType == "First");
+    CHECK(checker.Funcdefs()[1].name == "Second::Callback");
+    CHECK(checker.Funcdefs()[1].parentType == "Second");
+    CHECK(checker.Funcdefs()[0].signature.parameters[0] == mini_as::DataType::Int());
+}
+
 TEST_CASE(type_checker_resolves_current_parent_and_explicit_namespaces) {
     mini_as::DiagnosticSink diagnostics;
     mini_as::Tokenizer tokenizer("types",

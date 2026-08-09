@@ -78,7 +78,7 @@ private:
     AstNode* ParseClass(bool isInterface);
     AstNode* ParseEnum();
     AstNode* ParseTypedef();
-    AstNode* ParseFuncdef();
+    AstNode* ParseFuncdef(std::string_view parentType = {});
     AstNode* ParseFunction(DataType returnType, Token name, bool returnsReference = false,
                            bool returnReferenceConst = false);
     AstNode* ParseBlock();
@@ -132,8 +132,10 @@ private:
     std::unordered_set<std::string> enumTypes_;
     std::unordered_set<std::string> objectTypes_;
     std::unordered_set<std::string> funcdefTypes_;
+    std::unordered_map<std::string, std::vector<std::string>> objectBases_;
     std::unordered_map<std::string, DataType> typedefTypes_;
     std::string currentNamespace_;
+    std::string currentTypeName_;
 };
 
 } // namespace mini_as

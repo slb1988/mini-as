@@ -39,6 +39,27 @@ std::vector<AstNode*> TopLevelDeclarations(AstNode* root) {
     return result;
 }
 
+struct FuncdefDeclaration {
+    AstNode* node = nullptr;
+    std::string parentType;
+};
+
+void CollectFuncdefDeclarations(AstNode* owner, std::vector<FuncdefDeclaration>& result) {
+    if (!owner) return;
+    for (AstNode* node = owner->firstChild; node; node = node->nextSibling) {
+        if (node->kind == NodeKind::NamespaceDecl) {
+            CollectFuncdefDeclarations(node, result);
+        } else if (node->kind == NodeKind::FuncdefDecl) {
+            result.push_back({node, {}});
+        } else if (node->kind == NodeKind::ClassDecl || node->kind == NodeKind::InterfaceDecl) {
+            for (AstNode* member = node->firstChild; member; member = member->nextSibling) {
+                if (member->kind == NodeKind::FuncdefDecl)
+                    result.push_back({member, node->token.lexeme});
+            }
+        }
+    }
+}
+
 std::string NamespaceOf(std::string_view qualifiedName) {
     const auto separator = qualifiedName.rfind("::");
     return separator == std::string_view::npos ? std::string{}
@@ -154,8 +175,10 @@ const std::vector<FuncdefSignature>& TypeChecker::Funcdefs() const { return func
 void TypeChecker::PredeclareFuncdefs(AstNode* root) {
     funcdefs_.clear();
     if (!root) return;
-    for (AstNode* node : TopLevelDeclarations(root)) {
-        if (node->kind != NodeKind::FuncdefDecl) continue;
+    std::vector<FuncdefDeclaration> declarations;
+    CollectFuncdefDeclarations(root, declarations);
+    for (const auto& declaration : declarations) {
+        AstNode* node = declaration.node;
         bool duplicate = false;
         for (const auto& existing : funcdefs_)
             duplicate = duplicate || existing.name == node->token.lexeme;
@@ -179,7 +202,8 @@ void TypeChecker::PredeclareFuncdefs(AstNode* root) {
             if (parameter->firstChild)
                 Error(parameter, "funcdef parameters cannot have default arguments");
         }
-        funcdefs_.push_back({node->token.lexeme, std::move(signature), {}});
+        funcdefs_.push_back({node->token.lexeme, std::move(signature), {},
+                            declaration.parentType});
     }
 }
 
@@ -1714,6 +1738,13 @@ const ClassSignature* TypeChecker::FindClass(std::string_view name) const {
 }
 
 const FuncdefSignature* TypeChecker::FindFuncdef(std::string_view name) const {
+    if (name.find("::") == std::string_view::npos && currentClass_) {
+        for (const ClassSignature* type = currentClass_; type;
+             type = type->baseClass.empty() ? nullptr : FindClass(type->baseClass)) {
+            const std::string child = type->name + "::" + std::string(name);
+            for (const auto& funcdef : funcdefs_) if (funcdef.name == child) return &funcdef;
+        }
+    }
     for (const auto& candidate : NameCandidates(currentNamespace_, name))
         for (const auto& type : funcdefs_) if (type.name == candidate) return &type;
     return nullptr;

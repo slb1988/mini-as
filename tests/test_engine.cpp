@@ -1933,3 +1933,86 @@ TEST_CASE(anonymous_function_exceptions_retain_body_and_call_locations) {
     CHECK(context->GetCallStack()[1].location.row == 6);
 }
 
+TEST_CASE(child_funcdefs_bind_function_handles_inside_and_outside_the_parent_class) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("child-funcdefs");
+    module->AddScriptSection("child-funcdefs",
+        "class Dispatcher { funcdef int Callback(int value); Callback@ callback; "
+        "int invoke(int value) { return callback(value); } } "
+        "class DerivedDispatcher : Dispatcher { Callback@ derivedCallback; "
+        "int invokeDerived(int value) { return derivedCallback(value); } } "
+        "int twice(int value) { return value * 2; } "
+        "int run() { DerivedDispatcher@ box = DerivedDispatcher(); "
+        "Dispatcher::Callback@ callback = @twice; "
+        "@box.derivedCallback = @callback; return box.invokeDerived(21); }");
+    CHECK(module->Build());
+    CHECK(module->Bytecode().funcdefs.size() == 1);
+    CHECK(module->Bytecode().funcdefs[0].name == "Dispatcher::Callback");
+    CHECK(module->Bytecode().funcdefs[0].parentType == "Dispatcher");
+    CHECK(module->Bytecode().funcdefs[0].id.IsValid());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+}
+
+TEST_CASE(child_funcdefs_reject_duplicate_and_cross_parent_handle_types) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    auto* module = engine->GetModule("bad-child-funcdefs");
+    module->AddScriptSection("bad-child-funcdefs",
+        "class First { funcdef int Callback(int); funcdef int Callback(int); } "
+        "class Second { funcdef int Callback(int); } "
+        "int identity(int value) { return value; } "
+        "int run() { First::Callback@ first = @identity; "
+        "Second::Callback@ second = @first; return 0; }");
+    CHECK(!module->Build());
+    bool duplicate = false;
+    bool incompatible = false;
+    for (const auto& diagnostic : diagnostics) {
+        duplicate = duplicate ||
+            diagnostic.message.find("duplicate or conflicting funcdef") != std::string::npos;
+        incompatible = incompatible ||
+            diagnostic.message.find("cannot initialize Second::Callback@") != std::string::npos;
+    }
+    CHECK(duplicate);
+    CHECK(incompatible);
+}
+
+TEST_CASE(child_funcdefs_are_rejected_in_interfaces) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    auto* module = engine->GetModule("interface-child-funcdef");
+    module->AddScriptSection("interface-child-funcdef",
+        "interface Invalid { funcdef void Callback(); }");
+    CHECK(!module->Build());
+    bool rejected = false;
+    for (const auto& diagnostic : diagnostics)
+        rejected = rejected ||
+            diagnostic.message.find("interfaces cannot declare child funcdefs") != std::string::npos;
+    CHECK(rejected);
+}
+
+TEST_CASE(null_child_funcdef_handles_report_the_call_location) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("null-child-funcdef");
+    module->AddScriptSection("null-child-funcdef",
+        "class Dispatcher { funcdef int Callback(int); }\n"
+        "int run() {\n"
+        "  Dispatcher::Callback@ callback;\n"
+        "  return callback(42);\n"
+        "}\n");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Exception);
+    CHECK(context->GetExceptionString().find("null function handle") != std::string::npos);
+    CHECK(context->GetExceptionLocation().row == 4);
+}
+

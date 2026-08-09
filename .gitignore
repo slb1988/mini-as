@@ -4,3 +4,5 @@
 *.suo
 
 /.idea
+cmake-build-clang
+cmake-build-alignment

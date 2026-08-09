@@ -1846,3 +1846,90 @@ TEST_CASE(delegate_creation_from_a_null_object_reports_its_location) {
     CHECK(context->GetExceptionLocation().row == 5);
 }
 
+TEST_CASE(anonymous_functions_infer_funcdef_parameters_and_execute) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("anonymous-functions");
+    module->AddScriptSection("anonymous-functions",
+        "funcdef int Binary(int, int); "
+        "int run() { Binary@ operation = function(left, right) { "
+        "return left * right + left; }; return operation(6, 6); }");
+    CHECK(module->Build());
+    bool emittedClosure = false;
+    for (const auto& function : module->Bytecode().functions)
+        for (const auto& instruction : function.code)
+            emittedClosure = emittedClosure || instruction.opcode == mini_as::OpCode::MakeClosure;
+    CHECK(emittedClosure);
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+}
+
+TEST_CASE(captured_locals_are_shared_mutable_cells_that_outlive_their_scope) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("captured-locals");
+    module->AddScriptSection("captured-locals",
+        "funcdef int Step(int); "
+        "Step@ makeCounter(int start) { int total = start; "
+        "return function(value) { total += value; return total; }; } "
+        "int run() { Step@ counter = makeCounter(10); "
+        "return counter(5) * 100 + counter(7); }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 1522);
+}
+
+TEST_CASE(captured_locals_share_updates_with_the_creating_scope) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("shared-captured-locals");
+    module->AddScriptSection("shared-captured-locals",
+        "funcdef int Step(int); int run() { int total = 1; "
+        "Step@ step = function(value) { total += value; return total; }; "
+        "total = 10; return step(2) + total; }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 24);
+}
+
+TEST_CASE(anonymous_functions_reject_ambiguous_funcdef_inference) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    auto* module = engine->GetModule("ambiguous-anonymous-function");
+    module->AddScriptSection("ambiguous-anonymous-function",
+        "funcdef int IntStep(int); funcdef float FloatStep(float); "
+        "int run() { auto callback = function(value) { return value; }; return 0; }");
+    CHECK(!module->Build());
+    bool ambiguous = false;
+    for (const auto& diagnostic : diagnostics)
+        ambiguous = ambiguous || diagnostic.message.find("signature is ambiguous") != std::string::npos;
+    CHECK(ambiguous);
+}
+
+TEST_CASE(anonymous_function_exceptions_retain_body_and_call_locations) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("anonymous-function-exception");
+    module->AddScriptSection("anonymous-function-exception",
+        "funcdef int Unary(int);\n"
+        "int run() {\n"
+        "  Unary@ callback = function(value) {\n"
+        "    return 10 / value;\n"
+        "  };\n"
+        "  return callback(0);\n"
+        "}\n");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Exception);
+    CHECK(context->GetExceptionString() == "division by zero");
+    CHECK(context->GetExceptionLocation().row == 4);
+    CHECK(context->GetCallStack().size() == 2);
+    CHECK(context->GetCallStack()[1].location.row == 6);
+}
+

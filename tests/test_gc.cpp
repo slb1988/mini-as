@@ -86,3 +86,19 @@ TEST_CASE(gc_collects_cycles_formed_by_delegate_receivers) {
     CHECK(engine->CollectGarbage() == 1);
     CHECK(engine->GetTrackedObjectCount() == 0);
 }
+
+TEST_CASE(gc_collects_cycles_formed_by_captured_object_handles) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("gc-closure-cycle");
+    module->AddScriptSection("gc-closure-cycle",
+        "funcdef int Step(int); "
+        "class Node { Step@ callback; int ping(int value) { return value; } } "
+        "Node@ makeCycle() { Node@ node = Node(); @node.callback = "
+        "function(value) { return node.ping(value); }; return node; }");
+    CHECK(module->Build());
+    mini_as::ObjectHandle root = BuildCycle(*engine, *module);
+    CHECK(engine->CollectGarbage() == 0);
+    root = {};
+    CHECK(engine->CollectGarbage() == 1);
+    CHECK(engine->GetTrackedObjectCount() == 0);
+}

@@ -39,10 +39,17 @@ public:
 
 private:
     struct CallFrame {
+        CallFrame(const BytecodeFunction* function = nullptr, std::size_t pc = 0,
+                  std::vector<Value> locals = {}, std::size_t stackBase = 0,
+                  std::vector<CapturedCellHandle> captures = {})
+            : function(function), pc(pc), locals(std::move(locals)), stackBase(stackBase),
+              captures(std::move(captures)) {}
+
         const BytecodeFunction* function = nullptr;
         std::size_t pc = 0;
         std::vector<Value> locals;
         std::size_t stackBase = 0;
+        std::vector<CapturedCellHandle> captures;
     };
 
     bool Step();
@@ -55,6 +62,7 @@ private:
 
     std::vector<Value> stack_;
     std::vector<Value> locals_;
+    std::vector<CapturedCellHandle> captures_;
     std::vector<CallFrame> callStack_;
     const BytecodeFunction* function_ = nullptr;
     const BytecodeModule* module_ = nullptr;

@@ -13,7 +13,8 @@ struct RegisteredHostFunction;
 
 enum class OpCode : std::uint8_t {
     Nop, Suspend,
-    PushConst, PushVoid, LoadLocal, StoreLocal, LoadGlobal, StoreGlobal, Dup, Swap, Pop,
+    PushConst, PushVoid, LoadLocal, StoreLocal, CaptureLocal, CaptureCapture,
+    LoadCapture, StoreCapture, LoadGlobal, StoreGlobal, Dup, Swap, Pop,
     ToFloat, ToDouble, ToInteger, ToString,
     AddInt, SubInt, MulInt, DivInt, ModInt, PowInt,
     BitAnd, BitOr, BitXor, ShiftLeft, ShiftRight, ShiftRightArithmetic,
@@ -22,7 +23,8 @@ enum class OpCode : std::uint8_t {
     Concat, NegInt, NegFloat, NegDouble, BitNot, LogicalNot,
     Equal, NotEqual, Less, LessEqual, Greater, GreaterEqual,
     Jump, JumpIfFalse,
-    Call, CallHost, CallVirtual, CallHandle, MakeDelegate, CastObject, NewObject, LoadField, StoreField,
+    Call, CallHost, CallVirtual, CallHandle, MakeDelegate, MakeClosure,
+    CastObject, NewObject, LoadField, StoreField,
     MakeGlobalReference, MakeFieldReference, LoadReference, StoreReference, Return
 };
 
@@ -124,7 +126,7 @@ private:
     using ReferenceReceiverMap = std::unordered_map<const AstNode*, VariableId>;
 
     struct LValueRef {
-        enum class Kind { Local, Global, Field, Dynamic, Index } kind = Kind::Local;
+        enum class Kind { Local, Capture, Global, Field, Dynamic, Index } kind = Kind::Local;
         DataType type = DataType::Invalid();
         VariableId variable;
         GlobalId global;
@@ -141,6 +143,7 @@ private:
 
     void CompileFunction(AstNode* node, std::size_t functionIndex,
                          std::string objectType = {});
+    void CompileAnonymousFunction(AstNode* node, std::size_t functionIndex);
     void CompileGlobalInitializer(AstNode* root);
     void CompileFieldInitializers(std::string_view typeName, const AstNode* source);
     void CompileImplicitBaseConstructor(std::string_view typeName, const AstNode* source);
@@ -204,6 +207,7 @@ private:
     std::uint32_t implicitThisSlot_ = 0;
     std::unordered_map<std::string, AstNode*> classNodes_;
     std::unordered_map<std::string, AstNode*> functionNodes_;
+    std::unordered_map<std::string, VariableId> captureSlots_;
 };
 
 } // namespace mini_as

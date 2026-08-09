@@ -133,7 +133,8 @@ bool operator==(const FunctionHandle& left, const FunctionHandle& right) {
     return left.function == right.function && left.signature == right.signature &&
            left.typeName == right.typeName && left.host == right.host &&
            left.object == right.object && left.dispatchType == right.dispatchType &&
-           left.virtualSlot == right.virtualSlot && left.virtualMethod == right.virtualMethod;
+           left.virtualSlot == right.virtualSlot && left.virtualMethod == right.virtualMethod &&
+           left.captures == right.captures;
 }
 
 Value::Value(bool value) : storage_(value) {}
@@ -144,6 +145,7 @@ Value::Value(std::string value) : storage_(std::move(value)) {}
 Value::Value(const char* value) : storage_(std::string(value)) {}
 Value::Value(ObjectHandle value) : storage_(std::move(value)) {}
 Value::Value(FunctionHandle value) : storage_(std::move(value)) {}
+Value::Value(CapturedCellHandle value) : storage_(std::move(value)) {}
 Value::Value(ReferenceStorage value) : storage_(std::move(value)) {}
 
 Value Value::Integer(const DataType& type, std::uint64_t bits) {
@@ -177,7 +179,11 @@ DataType Value::Type() const {
         const auto& handle = std::get<FunctionHandle>(storage_);
         return DataType::Function(handle.typeName, true);
     }
-    case 9: return std::get<ReferenceStorage>(storage_).type;
+    case 9: {
+        const auto& cell = std::get<CapturedCellHandle>(storage_);
+        return cell ? cell->value.Type() : DataType::Invalid();
+    }
+    case 10: return std::get<ReferenceStorage>(storage_).type;
     default: return DataType::Invalid();
     }
 }
@@ -221,6 +227,8 @@ std::string Value::ToString() const {
     }
     if (const auto* value = std::get_if<std::string>(&storage_)) return *value;
     if (std::holds_alternative<ReferenceStorage>(storage_)) return "<reference>";
+    if (const auto* cell = std::get_if<CapturedCellHandle>(&storage_))
+        return *cell ? (*cell)->value.ToString() : "<capture>";
     if (const auto* handle = std::get_if<FunctionHandle>(&storage_))
         return *handle ? "<" + handle->typeName + "@>" : "null";
     const auto& handle = std::get<ObjectHandle>(storage_);

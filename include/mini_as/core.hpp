@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -13,6 +14,8 @@
 namespace mini_as {
 
 class RefObject;
+struct CapturedCell;
+using CapturedCellHandle = std::shared_ptr<CapturedCell>;
 
 class ObjectHandle {
 public:
@@ -130,10 +133,11 @@ bool operator==(const IntegerStorage& left, const IntegerStorage& right);
 struct FunctionHandle {
     FunctionHandle(FunctionId function = {}, TypeId signature = {}, std::string typeName = {},
                    bool host = false, ObjectHandle object = {}, TypeId dispatchType = {},
-                   std::uint32_t virtualSlot = 0, bool virtualMethod = false)
+                   std::uint32_t virtualSlot = 0, bool virtualMethod = false,
+                   std::vector<CapturedCellHandle> captures = {})
         : function(function), signature(signature), typeName(std::move(typeName)), host(host),
           object(std::move(object)), dispatchType(dispatchType), virtualSlot(virtualSlot),
-          virtualMethod(virtualMethod) {}
+          virtualMethod(virtualMethod), captures(std::move(captures)) {}
 
     FunctionId function;
     TypeId signature;
@@ -143,6 +147,7 @@ struct FunctionHandle {
     TypeId dispatchType;
     std::uint32_t virtualSlot = 0;
     bool virtualMethod = false;
+    std::vector<CapturedCellHandle> captures;
 
     explicit operator bool() const { return function.IsValid() || (virtualMethod && object); }
 };
@@ -153,7 +158,7 @@ class Value {
 public:
     using Storage = std::variant<std::monostate, bool, std::int32_t, IntegerStorage,
                                  float, double, std::string, ObjectHandle, FunctionHandle,
-                                 ReferenceStorage>;
+                                 CapturedCellHandle, ReferenceStorage>;
 
     Value() = default;
     explicit Value(bool value);
@@ -164,6 +169,7 @@ public:
     explicit Value(const char* value);
     explicit Value(ObjectHandle value);
     explicit Value(FunctionHandle value);
+    explicit Value(CapturedCellHandle value);
     explicit Value(ReferenceStorage value);
 
     static Value Integer(const DataType& type, std::uint64_t bits);
@@ -187,6 +193,10 @@ public:
 
 private:
     Storage storage_;
+};
+
+struct CapturedCell {
+    Value value;
 };
 
 Value ConvertInteger(const Value& value, const DataType& target);

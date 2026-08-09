@@ -133,6 +133,7 @@ void TypeChecker::RegisterFunction(FunctionSignature signature) {
 
 bool TypeChecker::Check(AstNode* root) {
     scopes_.clear();
+    activeLambdas_.clear();
     scopes_.emplace_back();
     PredeclareTypedefs(root);
     PredeclareEnums(root);
@@ -780,6 +781,8 @@ DataType TypeChecker::CheckExpression(AstNode* node, std::optional<DataType> exp
                 if (field.name == node->token.lexeme) {
                     result = field.type;
                     node->implicitThis = true;
+                    if (!activeLambdas_.empty())
+                        Error(node, "anonymous functions cannot capture implicit this; capture an object handle explicitly");
                     CheckAccess(node, field.access, field.objectType, "field", field.name);
                     break;
                 }
@@ -884,6 +887,7 @@ DataType TypeChecker::CheckExpression(AstNode* node, std::optional<DataType> exp
         break;
     }
     case NodeKind::Call: result = CheckCall(node); break;
+    case NodeKind::AnonymousFunction: result = CheckAnonymousFunction(node, expected); break;
     case NodeKind::Assign: {
         const auto children = node->Children();
         DataType target;
@@ -1429,11 +1433,103 @@ DataType TypeChecker::CheckCall(AstNode* node) {
     return best->returnType;
 }
 
+DataType TypeChecker::CheckAnonymousFunction(AstNode* node,
+                                             std::optional<DataType> expected) {
+    std::vector<AstNode*> parameters;
+    AstNode* body = node ? node->firstChild : nullptr;
+    while (body && body->kind == NodeKind::Parameter) {
+        parameters.push_back(body);
+        body = body->nextSibling;
+    }
+    if (!body || body->kind != NodeKind::Block) {
+        Error(node, "anonymous function body is missing");
+        return DataType::Invalid();
+    }
+
+    const FuncdefSignature* required = expected && expected->kind == TypeKind::Function
+        ? FindFuncdef(expected->objectName) : nullptr;
+    if (expected && expected->kind == TypeKind::Function && !required) {
+        Error(node, "unknown funcdef type '" + expected->objectName + "'");
+        return DataType::Invalid();
+    }
+    const FuncdefSignature* selected = nullptr;
+    bool ambiguous = false;
+    for (const auto& funcdef : funcdefs_) {
+        if (required && funcdef.name != required->name) continue;
+        if (funcdef.signature.parameters.size() != parameters.size()) continue;
+        bool matches = true;
+        for (std::size_t index = 0; index < parameters.size(); ++index) {
+            if (parameters[index]->declaredType.IsValid() &&
+                parameters[index]->declaredType != funcdef.signature.parameters[index]) matches = false;
+            if (parameters[index]->declaredType.IsValid() &&
+                parameters[index]->parameterMode != funcdef.signature.parameterModes[index]) matches = false;
+        }
+        if (!matches) continue;
+        if (selected) ambiguous = true;
+        else selected = &funcdef;
+    }
+    if (!selected || ambiguous) {
+        Error(node, ambiguous ? "anonymous function signature is ambiguous"
+                              : "no funcdef matches anonymous function parameters");
+        return DataType::Invalid();
+    }
+
+    node->token.lexeme = "$lambda$" + node->token.location.section + "$" +
+        std::to_string(node->token.location.row) + "$" +
+        std::to_string(node->token.location.column);
+    node->declaredType = DataType::Function(selected->name, true);
+    node->returnsReference = selected->signature.returnsReference;
+    node->returnReferenceConst = selected->signature.returnReferenceConst;
+    for (std::size_t index = 0; index < parameters.size(); ++index) {
+        parameters[index]->declaredType = selected->signature.parameters[index];
+        parameters[index]->parameterMode = selected->signature.parameterModes[index];
+    }
+
+    FunctionSignature signature = selected->signature;
+    signature.name = node->token.lexeme;
+    signature.parameterNames.clear();
+    for (AstNode* parameter : parameters) signature.parameterNames.push_back(parameter->token.lexeme);
+    functions_.push_back(std::move(signature));
+
+    const DataType previousReturn = currentReturn_;
+    const bool previousReturnsReference = currentReturnsReference_;
+    const int previousBreakable = breakableDepth_;
+    const int previousLoop = loopDepth_;
+    currentReturn_ = selected->signature.returnType;
+    currentReturnsReference_ = selected->signature.returnsReference;
+    breakableDepth_ = 0;
+    loopDepth_ = 0;
+    scopes_.emplace_back();
+    const std::size_t lambdaScope = scopes_.size() - 1;
+    activeLambdas_.push_back({node, lambdaScope});
+    for (AstNode* parameter : parameters)
+        Declare(parameter->token, parameter->declaredType,
+                parameter->parameterMode == ParameterMode::In);
+    CheckBlock(body, false);
+    activeLambdas_.pop_back();
+    scopes_.pop_back();
+    currentReturn_ = previousReturn;
+    currentReturnsReference_ = previousReturnsReference;
+    breakableDepth_ = previousBreakable;
+    loopDepth_ = previousLoop;
+    return node->declaredType;
+}
+
 std::optional<TypeChecker::VariableSymbol> TypeChecker::Lookup(std::string_view name) const {
     for (const auto& candidate : NameCandidates(currentNamespace_, name)) {
-        for (auto scope = scopes_.rbegin(); scope != scopes_.rend(); ++scope) {
-            const auto found = scope->find(candidate);
-            if (found != scope->end()) return found->second;
+        for (std::size_t index = scopes_.size(); index > 0; --index) {
+            const auto found = scopes_[index - 1].find(candidate);
+            if (found != scopes_[index - 1].end()) {
+                if (index - 1 > 0) {
+                    for (const auto& lambda : activeLambdas_) {
+                        if (index - 1 >= lambda.second) continue;
+                        auto& captures = lambda.first->captureNames;
+                        if (std::find(captures.begin(), captures.end(), found->first) == captures.end())
+                            captures.push_back(found->first);
+                    }
+                }
+                return found->second;
+            }
         }
     }
     return std::nullopt;

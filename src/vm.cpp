@@ -117,6 +117,7 @@ bool VirtualMachine::Prepare(const BytecodeFunction& function, const std::vector
                              const BytecodeModule* module, ModuleState* state) {
     stack_.clear();
     callStack_.clear();
+    captures_.clear();
     locals_.assign(function.localCount, Value{});
     function_ = &function;
     module_ = module;
@@ -158,6 +159,7 @@ ExecutionResult VirtualMachine::Continue() {
     if (result_.state == ExecutionState::Exception || result_.state == ExecutionState::Aborted) {
         stack_.clear();
         locals_.clear();
+        captures_.clear();
         callStack_.clear();
         if (safePoint_) safePoint_();
     }
@@ -169,6 +171,7 @@ void VirtualMachine::Abort() {
     result_.state = ExecutionState::Aborted;
     stack_.clear();
     locals_.clear();
+    captures_.clear();
     callStack_.clear();
     if (safePoint_) safePoint_();
 }
@@ -214,11 +217,54 @@ bool VirtualMachine::Step() {
     case OpCode::PushVoid: Push(Value{}); break;
     case OpCode::LoadLocal:
         if (slot() >= locals_.size()) throw std::runtime_error("local slot out of range");
-        Push(locals_[slot()]); break;
+        if (const auto* cell = std::get_if<CapturedCellHandle>(&locals_[slot()].Raw())) {
+            if (!*cell) throw std::runtime_error("captured local cell is unavailable");
+            Push((*cell)->value);
+        } else Push(locals_[slot()]);
+        break;
     case OpCode::StoreLocal: {
         const auto index = slot();
         if (index >= locals_.size()) throw std::runtime_error("local slot out of range");
-        locals_[index] = Pop(); break;
+        Value stored = Pop();
+        if (const auto* cell = std::get_if<CapturedCellHandle>(&locals_[index].Raw())) {
+            if (!*cell) throw std::runtime_error("captured local cell is unavailable");
+            (*cell)->value = std::move(stored);
+        } else locals_[index] = std::move(stored);
+        break;
+    }
+    case OpCode::CaptureLocal: {
+        const auto index = slot();
+        if (index >= locals_.size()) throw std::runtime_error("captured local slot out of range");
+        CapturedCellHandle cell;
+        if (const auto* existing = std::get_if<CapturedCellHandle>(&locals_[index].Raw()))
+            cell = *existing;
+        else {
+            cell = std::make_shared<CapturedCell>();
+            cell->value = std::move(locals_[index]);
+            locals_[index] = Value(cell);
+        }
+        Push(Value(std::move(cell)));
+        break;
+    }
+    case OpCode::CaptureCapture: {
+        const auto index = slot();
+        if (index >= captures_.size()) throw std::runtime_error("parent capture slot out of range");
+        Push(Value(captures_[index]));
+        break;
+    }
+    case OpCode::LoadCapture: {
+        const auto index = slot();
+        if (index >= captures_.size() || !captures_[index])
+            throw std::runtime_error("capture slot is unavailable");
+        Push(captures_[index]->value);
+        break;
+    }
+    case OpCode::StoreCapture: {
+        const auto index = slot();
+        if (index >= captures_.size() || !captures_[index])
+            throw std::runtime_error("capture slot is unavailable");
+        captures_[index]->value = Pop();
+        break;
     }
     case OpCode::LoadGlobal: {
         if (!module_ || !moduleState_ || instruction.operand < 0)
@@ -294,6 +340,7 @@ bool VirtualMachine::Step() {
             result_.state = ExecutionState::Finished;
             stack_.clear();
             locals_.clear();
+            captures_.clear();
         } else {
             CallFrame frame = std::move(callStack_.back());
             callStack_.pop_back();
@@ -301,6 +348,7 @@ bool VirtualMachine::Step() {
             pc_ = frame.pc;
             locals_ = std::move(frame.locals);
             stackBase_ = frame.stackBase;
+            captures_ = std::move(frame.captures);
             Push(std::move(returnValue));
             for (auto& output : outputArguments) Push(std::move(output));
         }
@@ -331,11 +379,12 @@ bool VirtualMachine::Step() {
         const std::size_t hiddenArguments = callable->kind == CallableKind::ScriptMethod ? 1 : 0;
         std::vector<Value> arguments(target->signature.parameters.size() + hiddenArguments);
         for (std::size_t i = arguments.size(); i > 0; --i) arguments[i - 1] = Pop();
-        callStack_.push_back({function_, pc_, std::move(locals_), stackBase_});
+        callStack_.push_back({function_, pc_, std::move(locals_), stackBase_, std::move(captures_)});
         function_ = target;
         pc_ = 0;
         stackBase_ = stack_.size();
         locals_.assign(target->localCount, Value{});
+        captures_.clear();
         for (std::size_t i = 0; i < arguments.size(); ++i) locals_[i] = std::move(arguments[i]);
         break;
     }
@@ -383,11 +432,12 @@ bool VirtualMachine::Step() {
         const BytecodeFunction* target = module_->ResolveVirtual(
             receiver.Get()->GetTypeInfo()->id, callable->objectType, callable->virtualSlot);
         if (!target) throw std::runtime_error("virtual method implementation is unavailable");
-        callStack_.push_back({function_, pc_, std::move(locals_), stackBase_});
+        callStack_.push_back({function_, pc_, std::move(locals_), stackBase_, std::move(captures_)});
         function_ = target;
         pc_ = 0;
         stackBase_ = stack_.size();
         locals_.assign(target->localCount, Value{});
+        captures_.clear();
         for (std::size_t i = 0; i < arguments.size(); ++i) locals_[i] = std::move(arguments[i]);
         break;
     }
@@ -441,11 +491,12 @@ bool VirtualMachine::Step() {
         if (target->signature.parameters.size() != arguments.size())
             throw std::runtime_error("function handle argument count mismatch");
         if (handle.virtualMethod) arguments.insert(arguments.begin(), Value(handle.object));
-        callStack_.push_back({function_, pc_, std::move(locals_), stackBase_});
+        callStack_.push_back({function_, pc_, std::move(locals_), stackBase_, std::move(captures_)});
         function_ = target;
         pc_ = 0;
         stackBase_ = stack_.size();
         locals_.assign(target->localCount, Value{});
+        captures_ = handle.captures;
         for (std::size_t i = 0; i < arguments.size(); ++i) locals_[i] = std::move(arguments[i]);
         break;
     }
@@ -462,6 +513,21 @@ bool VirtualMachine::Step() {
         if (!receiver) throw std::runtime_error("cannot create delegate with null object");
         Push(Value(FunctionHandle{{}, funcdef->id, funcdef->name, false, receiver,
                                   callable->objectType, callable->virtualSlot, true}));
+        break;
+    }
+    case OpCode::MakeClosure: {
+        if (!module_ || instruction.operand < 0)
+            throw std::runtime_error("anonymous function target is unavailable");
+        const CallableRef* callable = module_->FindCallable(static_cast<std::size_t>(instruction.operand));
+        if (!callable || callable->kind != CallableKind::ScriptFunction)
+            throw std::runtime_error("closure descriptor kind does not match opcode");
+        const FuncdefSignature* funcdef = module_->FindFuncdef(callable->signatureType);
+        if (!funcdef) throw std::runtime_error("anonymous function funcdef is unavailable");
+        std::vector<CapturedCellHandle> captures(static_cast<std::size_t>(callable->parameterCount));
+        for (std::size_t index = captures.size(); index > 0; --index)
+            captures[index - 1] = Pop().As<CapturedCellHandle>();
+        Push(Value(FunctionHandle{callable->function, funcdef->id, funcdef->name, false,
+                                  {}, {}, 0, false, std::move(captures)}));
         break;
     }
     case OpCode::CastObject: {
@@ -635,6 +701,7 @@ bool VirtualMachine::HandleException(const Instruction& instruction, std::string
         pc_ = frame.pc;
         locals_ = std::move(frame.locals);
         stackBase_ = frame.stackBase;
+        captures_ = std::move(frame.captures);
     }
     stack_.resize(stackBase_);
     pc_ = handler->catchTarget;

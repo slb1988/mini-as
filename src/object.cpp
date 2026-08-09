@@ -2,8 +2,29 @@
 
 #include <utility>
 #include <algorithm>
+#include <unordered_set>
 
 namespace mini_as {
+namespace {
+
+void EnumerateValueReferences(const Value& value,
+                              const std::function<void(RefObject*)>& visitor,
+                              std::unordered_set<const CapturedCell*>& visited) {
+    if (value.Type().kind == TypeKind::Object) {
+        const auto& handle = value.As<ObjectHandle>();
+        if (handle) visitor(handle.Get());
+        return;
+    }
+    if (value.Type().kind != TypeKind::Function) return;
+    const auto& function = value.As<FunctionHandle>();
+    if (function.object) visitor(function.object.Get());
+    for (const auto& cell : function.captures) {
+        if (cell && visited.insert(cell.get()).second)
+            EnumerateValueReferences(cell->value, visitor, visited);
+    }
+}
+
+} // namespace
 
 ObjectHandle::ObjectHandle(RefObject* object) : object_(object) { if (object_) object_->AddRef(); }
 ObjectHandle::ObjectHandle(const ObjectHandle& other) : ObjectHandle(other.object_) {}
@@ -90,14 +111,9 @@ std::string ScriptObject::ResolveInterfaceMethod(std::string_view interfaceName,
 }
 
 void ScriptObject::EnumerateReferences(const std::function<void(RefObject*)>& visitor) const {
+    std::unordered_set<const CapturedCell*> visited;
     for (const auto& value : fields_) {
-        if (value.Type().kind == TypeKind::Object) {
-            const auto& handle = value.As<ObjectHandle>();
-            if (handle) visitor(handle.Get());
-        } else if (value.Type().kind == TypeKind::Function) {
-            const auto& handle = value.As<FunctionHandle>();
-            if (handle.object) visitor(handle.object.Get());
-        }
+        EnumerateValueReferences(value, visitor, visited);
     }
 }
 

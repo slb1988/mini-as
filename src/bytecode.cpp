@@ -33,6 +33,13 @@ std::vector<AstNode*> TopLevelDeclarations(AstNode* root) {
     return result;
 }
 
+void CollectNodes(AstNode* node, NodeKind kind, std::vector<AstNode*>& result) {
+    if (!node) return;
+    if (node->kind == kind) result.push_back(node);
+    for (AstNode* child = node->firstChild; child; child = child->nextSibling)
+        CollectNodes(child, kind, result);
+}
+
 std::string NamespaceOf(std::string_view qualifiedName) {
     const auto separator = qualifiedName.rfind("::");
     return separator == std::string_view::npos ? std::string{}
@@ -99,6 +106,7 @@ std::optional<std::vector<AstNode*>> OrderArguments(
 std::string_view OpCodeName(OpCode opcode) {
     static const char* names[] = {
         "NOP", "SUSPEND", "PUSH_CONST", "PUSH_VOID", "LOAD_LOCAL", "STORE_LOCAL",
+        "CAPTURE_LOCAL", "CAPTURE_CAPTURE", "LOAD_CAPTURE", "STORE_CAPTURE",
         "LOAD_GLOBAL", "STORE_GLOBAL", "DUP", "SWAP", "POP",
         "TO_FLOAT", "TO_DOUBLE", "TO_INTEGER", "TO_STRING",
         "ADD_I", "SUB_I", "MUL_I", "DIV_I", "MOD_I", "POW_I",
@@ -107,7 +115,8 @@ std::string_view OpCodeName(OpCode opcode) {
         "ADD_D", "SUB_D", "MUL_D", "DIV_D", "POW_D",
         "CONCAT", "NEG_I", "NEG_F", "NEG_D", "BIT_NOT", "NOT",
         "EQ", "NE", "LT", "LE", "GT", "GE", "JMP", "JZ", "CALL", "CALL_HOST",
-        "CALL_VIRTUAL", "CALL_HANDLE", "MAKE_DELEGATE", "CAST_OBJECT", "NEW_OBJECT", "LOAD_FIELD", "STORE_FIELD",
+        "CALL_VIRTUAL", "CALL_HANDLE", "MAKE_DELEGATE", "MAKE_CLOSURE",
+        "CAST_OBJECT", "NEW_OBJECT", "LOAD_FIELD", "STORE_FIELD",
         "MAKE_GLOBAL_REF", "MAKE_FIELD_REF", "LOAD_REF", "STORE_REF", "RET"
     };
     return names[static_cast<std::size_t>(opcode)];
@@ -122,11 +131,15 @@ std::string Disassemble(const BytecodeFunction& function) {
             << OpCodeName(instruction.opcode) << std::right;
         if (instruction.opcode == OpCode::PushConst || instruction.opcode == OpCode::LoadLocal ||
             instruction.opcode == OpCode::StoreLocal || instruction.opcode == OpCode::LoadGlobal ||
+            instruction.opcode == OpCode::CaptureLocal ||
+            instruction.opcode == OpCode::CaptureCapture ||
+            instruction.opcode == OpCode::LoadCapture || instruction.opcode == OpCode::StoreCapture ||
             instruction.opcode == OpCode::StoreGlobal || instruction.opcode == OpCode::Jump ||
             instruction.opcode == OpCode::ToInteger ||
             instruction.opcode == OpCode::JumpIfFalse || instruction.opcode == OpCode::Call ||
             instruction.opcode == OpCode::CallHost || instruction.opcode == OpCode::CallVirtual ||
             instruction.opcode == OpCode::CallHandle || instruction.opcode == OpCode::MakeDelegate ||
+            instruction.opcode == OpCode::MakeClosure ||
             instruction.opcode == OpCode::CastObject ||
             instruction.opcode == OpCode::NewObject ||
             instruction.opcode == OpCode::LoadField || instruction.opcode == OpCode::StoreField ||
@@ -222,6 +235,7 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
     classIds_.clear();
     classNodes_.clear();
     functionNodes_.clear();
+    captureSlots_.clear();
     std::uint32_t nextFunctionId = 0;
     for (const auto& signature : signatures_) {
         if (signature.id.IsValid() && signature.id.value >= nextFunctionId)
@@ -363,6 +377,15 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
                 CompileFunction(methodNode, found->second, typeNode->token.lexeme);
         }
     }
+    std::vector<AstNode*> anonymousFunctions;
+    CollectNodes(root, NodeKind::AnonymousFunction, anonymousFunctions);
+    for (AstNode* lambda : anonymousFunctions) {
+        const auto signature = std::find_if(signatures_.begin(), signatures_.end(),
+            [&](const auto& candidate) { return !candidate.method && candidate.name == lambda->token.lexeme; });
+        if (signature == signatures_.end()) continue;
+        const auto found = functionIndices_.find(FunctionKey(*signature));
+        if (found != functionIndices_.end()) CompileAnonymousFunction(lambda, found->second);
+    }
     CompileGlobalInitializer(root);
     return std::move(module_);
 }
@@ -409,6 +432,7 @@ void BytecodeCompiler::CompileFunction(AstNode* node, std::size_t functionIndex,
     function_->constants.clear();
     scopes_.clear();
     scopes_.emplace_back();
+    captureSlots_.clear();
     controlFlow_.clear();
     currentObjectType_ = std::move(objectType);
     currentNamespace_ = NamespaceOf(currentObjectType_.empty()
@@ -433,6 +457,36 @@ void BytecodeCompiler::CompileFunction(AstNode* node, std::size_t functionIndex,
     }
     function_->localCount = static_cast<std::size_t>(nextLocal_);
     currentObjectType_.clear();
+    currentNamespace_.clear();
+    function_ = nullptr;
+}
+
+void BytecodeCompiler::CompileAnonymousFunction(AstNode* node, std::size_t functionIndex) {
+    function_ = &module_.functions.at(functionIndex);
+    function_->code.clear();
+    function_->constants.clear();
+    function_->exceptionHandlers.clear();
+    scopes_.clear();
+    scopes_.emplace_back();
+    controlFlow_.clear();
+    captureSlots_.clear();
+    for (std::size_t index = 0; index < node->captureNames.size(); ++index)
+        captureSlots_[node->captureNames[index]] = VariableId{static_cast<std::uint32_t>(index)};
+    currentObjectType_.clear();
+    currentNamespace_ = NamespaceOf(node->token.lexeme);
+    nextLocal_ = 0;
+    AstNode* child = node->firstChild;
+    while (child && child->kind == NodeKind::Parameter) {
+        DeclareLocal(child->token);
+        child = child->nextSibling;
+    }
+    if (child && child->kind == NodeKind::Block) CompileBlock(child, false);
+    if (function_->code.empty() || function_->code.back().opcode != OpCode::Return) {
+        Emit(OpCode::PushVoid, 0, node);
+        Emit(OpCode::Return, 0, node);
+    }
+    function_->localCount = static_cast<std::size_t>(nextLocal_);
+    captureSlots_.clear();
     currentNamespace_.clear();
     function_ = nullptr;
 }
@@ -751,6 +805,37 @@ void BytecodeCompiler::CompileExpression(AstNode* node) {
         }
         break;
     case NodeKind::Call: CompileCall(node); break;
+    case NodeKind::AnonymousFunction: {
+        const FuncdefSignature* funcdef = nullptr;
+        for (const auto& candidate : module_.funcdefs)
+            if (candidate.name == node->inferredType.objectName) funcdef = &candidate;
+        const FunctionSignature* target = nullptr;
+        for (const auto& candidate : signatures_)
+            if (!candidate.method && candidate.name == node->token.lexeme) target = &candidate;
+        const auto functionId = target ? functionIds_.find(FunctionKey(*target)) : functionIds_.end();
+        if (!funcdef || !target || functionId == functionIds_.end()) {
+            Error(node, "anonymous function target is unavailable");
+            break;
+        }
+        for (const auto& capture : node->captureNames) {
+            const auto local = LookupLocal(capture);
+            if (local) {
+                Emit(OpCode::CaptureLocal, static_cast<std::int32_t>(local->value), node);
+                continue;
+            }
+            const auto parentCapture = captureSlots_.find(capture);
+            if (parentCapture != captureSlots_.end()) {
+                Emit(OpCode::CaptureCapture,
+                     static_cast<std::int32_t>(parentCapture->second.value), node);
+                continue;
+            }
+            Error(node, "captured local '" + capture + "' is unavailable");
+        }
+        Emit(OpCode::MakeClosure,
+             AddCallable({CallableKind::ScriptFunction, functionId->second, {}, 0,
+                          static_cast<std::uint32_t>(node->captureNames.size()), funcdef->id}), node);
+        break;
+    }
     default: Error(node, "expression cannot be compiled"); break;
     }
 }
@@ -766,6 +851,14 @@ std::optional<BytecodeCompiler::LValueRef> BytecodeCompiler::ResolveLValue(AstNo
             result.kind = LValueRef::Kind::Local;
             result.type = expression->inferredType;
             result.variable = *local;
+            return result;
+        }
+        const auto capture = captureSlots_.find(expression->token.lexeme);
+        if (capture != captureSlots_.end()) {
+            LValueRef result;
+            result.kind = LValueRef::Kind::Capture;
+            result.type = expression->inferredType;
+            result.variable = capture->second;
             return result;
         }
         if (expression->implicitThis) {
@@ -817,6 +910,9 @@ void BytecodeCompiler::CompileLValueLoad(const LValueRef& target, const AstNode*
     case LValueRef::Kind::Local:
         Emit(OpCode::LoadLocal, static_cast<std::int32_t>(target.variable.value), source);
         break;
+    case LValueRef::Kind::Capture:
+        Emit(OpCode::LoadCapture, static_cast<std::int32_t>(target.variable.value), source);
+        break;
     case LValueRef::Kind::Field:
         if (target.receiver) CompileExpression(target.receiver);
         else Emit(OpCode::LoadLocal, static_cast<std::int32_t>(implicitThisSlot_), source);
@@ -854,6 +950,10 @@ void BytecodeCompiler::CompileLValueStore(const LValueRef& target, AstNode* valu
     case LValueRef::Kind::Local:
         Emit(OpCode::Dup, 0, source);
         Emit(OpCode::StoreLocal, static_cast<std::int32_t>(target.variable.value), source);
+        break;
+    case LValueRef::Kind::Capture:
+        Emit(OpCode::Dup, 0, source);
+        Emit(OpCode::StoreCapture, static_cast<std::int32_t>(target.variable.value), source);
         break;
     case LValueRef::Kind::Field:
         Emit(OpCode::StoreField, static_cast<std::int32_t>(target.field), source);
@@ -921,6 +1021,10 @@ void BytecodeCompiler::CompileCompoundAssignment(const LValueRef& target, AstNod
     case LValueRef::Kind::Local:
         Emit(OpCode::Dup, 0, source);
         Emit(OpCode::StoreLocal, static_cast<std::int32_t>(target.variable.value), source);
+        break;
+    case LValueRef::Kind::Capture:
+        Emit(OpCode::Dup, 0, source);
+        Emit(OpCode::StoreCapture, static_cast<std::int32_t>(target.variable.value), source);
         break;
     case LValueRef::Kind::Global:
         Emit(OpCode::Dup, 0, source);
@@ -999,6 +1103,10 @@ void BytecodeCompiler::CompileIncrement(AstNode* node) {
     case LValueRef::Kind::Local:
         Emit(OpCode::Dup, 0, node);
         Emit(OpCode::StoreLocal, static_cast<std::int32_t>(target->variable.value), node);
+        break;
+    case LValueRef::Kind::Capture:
+        Emit(OpCode::Dup, 0, node);
+        Emit(OpCode::StoreCapture, static_cast<std::int32_t>(target->variable.value), node);
         break;
     case LValueRef::Kind::Global:
         Emit(OpCode::Dup, 0, node);
@@ -1709,6 +1817,9 @@ void BytecodeCompiler::CompileReferenceWritebacks(
         switch (target->kind) {
         case LValueRef::Kind::Local:
             Emit(OpCode::StoreLocal, static_cast<std::int32_t>(target->variable.value), source);
+            break;
+        case LValueRef::Kind::Capture:
+            Emit(OpCode::StoreCapture, static_cast<std::int32_t>(target->variable.value), source);
             break;
         case LValueRef::Kind::Global:
             Emit(OpCode::StoreGlobal, static_cast<std::int32_t>(target->global.value), source);

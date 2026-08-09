@@ -114,6 +114,23 @@ TEST_CASE(type_checker_resolves_delegate_construction_to_an_instance_method) {
     CHECK(callback->firstChild->operatorMethod == "int apply(int)");
 }
 
+TEST_CASE(type_checker_infers_anonymous_function_types_and_records_captures) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("lambda-types",
+        "funcdef int Step(int); int run() { int total = 1; Step@ callback = "
+        "function(value) { total += value; return total; }; return callback(1); }",
+        diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    mini_as::TypeChecker checker(diagnostics);
+    CHECK(checker.Check(tree.root));
+    auto* lambda = tree.root->Children()[1]->firstChild->firstChild->nextSibling->firstChild;
+    CHECK(lambda->inferredType == mini_as::DataType::Function("Step", true));
+    CHECK(lambda->firstChild->declaredType == mini_as::DataType::Int());
+    CHECK(lambda->captureNames.size() == 1);
+    CHECK(lambda->captureNames[0] == "total");
+}
+
 TEST_CASE(type_checker_resolves_current_parent_and_explicit_namespaces) {
     mini_as::DiagnosticSink diagnostics;
     mini_as::Tokenizer tokenizer("types",

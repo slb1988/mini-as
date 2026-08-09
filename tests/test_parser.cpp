@@ -361,3 +361,21 @@ TEST_CASE(parser_recognizes_funcdef_handle_types_and_function_addresses) {
     CHECK(variable->firstChild->token.kind == mini_as::TokenKind::At);
 }
 
+TEST_CASE(parser_builds_anonymous_function_parameters_and_body) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("lambda",
+        "funcdef int Binary(int, int); int run() { Binary@ callback = "
+        "function(int left, right) { return left + right; }; return callback(20, 22); }",
+        diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    CHECK(!diagnostics.HasErrors());
+    auto* lambda = tree.root->Children()[1]->firstChild->firstChild->firstChild;
+    CHECK(lambda->kind == mini_as::NodeKind::AnonymousFunction);
+    const auto children = lambda->Children();
+    CHECK(children.size() == 3);
+    CHECK(children[0]->declaredType == mini_as::DataType::Int());
+    CHECK(!children[1]->declaredType.IsValid());
+    CHECK(children[2]->kind == mini_as::NodeKind::Block);
+}
+

@@ -18,7 +18,8 @@ enum class NodeKind {
     Block, DeclList, VarDecl, IfStmt, WhileStmt, DoWhileStmt, ForStmt,
     SwitchStmt, CaseClause, DefaultClause, ReturnStmt, BreakStmt, ContinueStmt, TryStmt,
     ExprStmt, EmptyStmt,
-    Assign, Conditional, Binary, Unary, Increment, Cast, ValueCast, Call, NamedArgument, Member, Literal, Identifier
+    Assign, Conditional, Binary, Unary, Increment, Cast, ValueCast, Call, NamedArgument,
+    AnonymousFunction, Member, Literal, Identifier
 };
 
 struct AstNode {
@@ -43,6 +44,7 @@ struct AstNode {
     std::string propertyGetter;
     std::string propertySetter;
     std::string delegateObjectType;
+    std::vector<std::string> captureNames;
     MemberAccess memberAccess = MemberAccess::Public;
     ParameterMode parameterMode = ParameterMode::Value;
     AstNode* firstChild = nullptr;
@@ -105,6 +107,7 @@ private:
     AstNode* ParseUnary();
     AstNode* ParseCall();
     AstNode* ParsePrimary();
+    AstNode* ParseAnonymousFunction();
     DataType ParseType(bool allowVoid = false);
     Token ParseQualifiedIdentifier(const char* message);
     std::string QualifyDeclaration(std::string_view name) const;

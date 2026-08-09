@@ -112,6 +112,7 @@ private:
     DataType CheckBinary(AstNode* node);
     DataType CheckUnary(AstNode* node, std::optional<DataType> expected = std::nullopt);
     DataType CheckCall(AstNode* node);
+    DataType CheckAnonymousFunction(AstNode* node, std::optional<DataType> expected);
     std::optional<VariableSymbol> Lookup(std::string_view name) const;
     std::optional<Value> FindEnumConstant(std::string_view name) const;
     bool IsReadOnlyLValue(const AstNode* node) const;
@@ -166,6 +167,7 @@ private:
     bool currentConstructor_ = false;
     int superCallCount_ = 0;
     std::string currentNamespace_;
+    mutable std::vector<std::pair<AstNode*, std::size_t>> activeLambdas_;
 };
 
 } // namespace mini_as

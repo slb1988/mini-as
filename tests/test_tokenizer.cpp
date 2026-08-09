@@ -160,3 +160,11 @@ TEST_CASE(tokenizer_recognizes_funcdef_declarations) {
     CHECK(tokens[0].kind == mini_as::TokenKind::KwFuncdef);
 }
 
+TEST_CASE(tokenizer_recognizes_anonymous_function_keyword) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("lambda", "function(value) { return value; }", diagnostics);
+    const auto tokens = tokenizer.ScanAll();
+    CHECK(!diagnostics.HasErrors());
+    CHECK(tokens[0].kind == mini_as::TokenKind::KwFunction);
+}
+

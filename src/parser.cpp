@@ -640,6 +640,7 @@ AstNode* Parser::ParseCall() {
 }
 
 AstNode* Parser::ParsePrimary() {
+    if (Match(TokenKind::KwFunction)) return ParseAnonymousFunction();
     if (IsTypeStart(false) && !Check(TokenKind::Identifier)) {
         const Token castToken = Current();
         AstNode* cast = arena_->Make(NodeKind::ValueCast, castToken);
@@ -716,6 +717,41 @@ bool Parser::IsTypeStart(bool allowIdentifier) const {
     case TokenKind::Identifier: return allowIdentifier;
     default: return false;
     }
+}
+
+AstNode* Parser::ParseAnonymousFunction() {
+    AstNode* function = arena_->Make(NodeKind::AnonymousFunction, Previous());
+    Consume(TokenKind::LeftParen, "expected '(' after 'function'");
+    if (!Check(TokenKind::RightParen)) {
+        do {
+            AstNode* parameter = arena_->Make(NodeKind::Parameter, Current());
+            const bool builtInType = Current().kind >= TokenKind::KwBool &&
+                Current().kind <= TokenKind::KwString;
+            bool namedType = false;
+            if (Check(TokenKind::Identifier) && current_ + 1 < tokens_.size()) {
+                std::size_t cursor = current_ + 1;
+                while (cursor + 1 < tokens_.size() && tokens_[cursor].kind == TokenKind::Scope &&
+                       tokens_[cursor + 1].kind == TokenKind::Identifier) cursor += 2;
+                if (cursor < tokens_.size() && tokens_[cursor].kind == TokenKind::At) ++cursor;
+                namedType = cursor < tokens_.size() && tokens_[cursor].kind == TokenKind::Identifier;
+            }
+            if (builtInType || namedType) {
+                parameter->declaredType = ParseType(false);
+                if (Match(TokenKind::Amp)) {
+                    if (Match(TokenKind::KwIn)) parameter->parameterMode = ParameterMode::In;
+                    else if (Match(TokenKind::KwOut)) parameter->parameterMode = ParameterMode::Out;
+                    else if (Match(TokenKind::KwInOut)) parameter->parameterMode = ParameterMode::InOut;
+                    else parameter->parameterMode = ParameterMode::InOut;
+                }
+            }
+            parameter->token = Consume(TokenKind::Identifier, "expected anonymous function parameter name");
+            function->AppendChild(parameter);
+        } while (Match(TokenKind::Comma));
+    }
+    Consume(TokenKind::RightParen, "expected ')' after anonymous function parameters");
+    if (!Check(TokenKind::LeftBrace)) Error(Current(), "expected anonymous function body");
+    function->AppendChild(ParseBlock());
+    return function;
 }
 
 Token Parser::ParseQualifiedIdentifier(const char* message) {

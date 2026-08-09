@@ -6,6 +6,7 @@
 #include <functional>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -127,12 +128,23 @@ struct IntegerStorage {
 bool operator==(const IntegerStorage& left, const IntegerStorage& right);
 
 struct FunctionHandle {
+    FunctionHandle(FunctionId function = {}, TypeId signature = {}, std::string typeName = {},
+                   bool host = false, ObjectHandle object = {}, TypeId dispatchType = {},
+                   std::uint32_t virtualSlot = 0, bool virtualMethod = false)
+        : function(function), signature(signature), typeName(std::move(typeName)), host(host),
+          object(std::move(object)), dispatchType(dispatchType), virtualSlot(virtualSlot),
+          virtualMethod(virtualMethod) {}
+
     FunctionId function;
     TypeId signature;
     std::string typeName;
     bool host = false;
+    ObjectHandle object;
+    TypeId dispatchType;
+    std::uint32_t virtualSlot = 0;
+    bool virtualMethod = false;
 
-    explicit operator bool() const { return function.IsValid(); }
+    explicit operator bool() const { return function.IsValid() || (virtualMethod && object); }
 };
 
 bool operator==(const FunctionHandle& left, const FunctionHandle& right);

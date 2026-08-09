@@ -428,16 +428,40 @@ bool VirtualMachine::Step() {
             break;
         }
         if (callStack_.size() >= 1024) throw std::runtime_error("script call stack overflow");
-        const BytecodeFunction* target = module_->FindFunction(handle.function);
+        const BytecodeFunction* target = nullptr;
+        if (handle.virtualMethod) {
+            if (!handle.object || !handle.object.Get()->GetTypeInfo())
+                throw std::runtime_error("null delegate object");
+            target = module_->ResolveVirtual(handle.object.Get()->GetTypeInfo()->id,
+                                             handle.dispatchType, handle.virtualSlot);
+        } else {
+            target = module_->FindFunction(handle.function);
+        }
         if (!target) throw std::runtime_error("script function handle target is unavailable");
         if (target->signature.parameters.size() != arguments.size())
             throw std::runtime_error("function handle argument count mismatch");
+        if (handle.virtualMethod) arguments.insert(arguments.begin(), Value(handle.object));
         callStack_.push_back({function_, pc_, std::move(locals_), stackBase_});
         function_ = target;
         pc_ = 0;
         stackBase_ = stack_.size();
         locals_.assign(target->localCount, Value{});
         for (std::size_t i = 0; i < arguments.size(); ++i) locals_[i] = std::move(arguments[i]);
+        break;
+    }
+    case OpCode::MakeDelegate: {
+        if (!module_ || instruction.operand < 0)
+            throw std::runtime_error("delegate target is unavailable");
+        const CallableRef* callable = module_->FindCallable(static_cast<std::size_t>(instruction.operand));
+        if (!callable || callable->kind != CallableKind::VirtualMethod)
+            throw std::runtime_error("delegate descriptor kind does not match opcode");
+        const FuncdefSignature* funcdef = module_->FindFuncdef(callable->signatureType);
+        if (!funcdef) throw std::runtime_error("delegate funcdef is unavailable");
+        Value receiverValue = Pop();
+        const ObjectHandle receiver = receiverValue.As<ObjectHandle>();
+        if (!receiver) throw std::runtime_error("cannot create delegate with null object");
+        Push(Value(FunctionHandle{{}, funcdef->id, funcdef->name, false, receiver,
+                                  callable->objectType, callable->virtualSlot, true}));
         break;
     }
     case OpCode::CastObject: {

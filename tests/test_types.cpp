@@ -97,6 +97,23 @@ TEST_CASE(type_checker_resolves_function_addresses_against_funcdef_signatures) {
     CHECK(variable->firstChild->inferredType == mini_as::DataType::Function("Unary", true));
 }
 
+TEST_CASE(type_checker_resolves_delegate_construction_to_an_instance_method) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("delegate-types",
+        "funcdef int Unary(int); class Target { int apply(int value) { return value; } } "
+        "int run() { Target@ object = Target(); Unary@ callback = Unary(object.apply); "
+        "return callback(42); }", diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    mini_as::TypeChecker checker(diagnostics);
+    CHECK(checker.Check(tree.root));
+    const auto body = tree.root->Children()[2]->firstChild;
+    const auto callback = body->firstChild->nextSibling;
+    CHECK(callback->firstChild->inferredType == mini_as::DataType::Function("Unary", true));
+    CHECK(callback->firstChild->delegateObjectType == "Target");
+    CHECK(callback->firstChild->operatorMethod == "int apply(int)");
+}
+
 TEST_CASE(type_checker_resolves_current_parent_and_explicit_namespaces) {
     mini_as::DiagnosticSink diagnostics;
     mini_as::Tokenizer tokenizer("types",

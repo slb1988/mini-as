@@ -1768,3 +1768,81 @@ TEST_CASE(null_function_handle_calls_report_the_call_location) {
     CHECK(context->GetExceptionLocation().row == 5);
 }
 
+TEST_CASE(delegates_bind_object_state_and_dispatch_virtual_overrides) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("delegates");
+    module->AddScriptSection("delegates",
+        "funcdef int Unary(int); "
+        "class Base { int total; Base(int value) { total = value; } "
+        "int apply(int value) { total += value; return total; } } "
+        "class Derived : Base { Derived(int value) { super(value); } "
+        "int apply(int value) { total += value * 2; return total; } } "
+        "int run() { Base@ object = Derived(10); Unary@ callback = Unary(object.apply); "
+        "return callback(5) * 100 + callback(6); }");
+    CHECK(module->Build());
+    bool emittedDelegate = false;
+    for (const auto& function : module->Bytecode().functions)
+        for (const auto& instruction : function.code)
+            emittedDelegate = emittedDelegate || instruction.opcode == mini_as::OpCode::MakeDelegate;
+    CHECK(emittedDelegate);
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 2032);
+}
+
+TEST_CASE(delegates_keep_bound_objects_alive_after_local_handles_leave_scope) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("delegate-lifetime");
+    module->AddScriptSection("delegate-lifetime",
+        "funcdef int Unary(int); Unary@ callback; "
+        "class Accumulator { int total; Accumulator(int value) { total = value; } "
+        "int add(int value) { total += value; return total; } } "
+        "void install() { Accumulator@ object = Accumulator(40); "
+        "@callback = Unary(object.add); } "
+        "int run() { install(); return callback(2); }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+    CHECK(engine->GetTrackedObjectCount() == 1);
+    CHECK(engine->CollectGarbage() == 0);
+}
+
+TEST_CASE(delegates_reject_mismatched_method_signatures) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    auto* module = engine->GetModule("bad-delegate");
+    module->AddScriptSection("bad-delegate",
+        "funcdef int Unary(int); class Target { int combine(int a, int b) { return a + b; } } "
+        "int run() { Target@ object = Target(); Unary@ callback = Unary(object.combine); return 0; }");
+    CHECK(!module->Build());
+    bool mismatch = false;
+    for (const auto& diagnostic : diagnostics)
+        mismatch = mismatch || diagnostic.message.find("no method matching funcdef") != std::string::npos;
+    CHECK(mismatch);
+}
+
+TEST_CASE(delegate_creation_from_a_null_object_reports_its_location) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("null-delegate");
+    module->AddScriptSection("null-delegate",
+        "funcdef int Unary(int);\n"
+        "class Target { int apply(int value) { return value; } }\n"
+        "int run() {\n"
+        "  Target@ object = null;\n"
+        "  Unary@ callback = Unary(object.apply);\n"
+        "  return callback(42);\n"
+        "}\n");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Exception);
+    CHECK(context->GetExceptionString().find("null object") != std::string::npos);
+    CHECK(context->GetExceptionLocation().row == 5);
+}
+

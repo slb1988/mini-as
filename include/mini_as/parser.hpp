@@ -42,6 +42,7 @@ struct AstNode {
     bool operatorReversed = false;
     std::string propertyGetter;
     std::string propertySetter;
+    std::string delegateObjectType;
     MemberAccess memberAccess = MemberAccess::Public;
     ParameterMode parameterMode = ParameterMode::Value;
     AstNode* firstChild = nullptr;

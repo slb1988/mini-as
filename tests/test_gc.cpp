@@ -71,3 +71,18 @@ TEST_CASE(gc_queues_each_script_destructor_once_for_cycles) {
     CHECK(engine->CollectGarbage() == 0);
     CHECK(finalized == 2);
 }
+
+TEST_CASE(gc_collects_cycles_formed_by_delegate_receivers) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("gc-delegate-cycle");
+    module->AddScriptSection("gc-delegate-cycle",
+        "funcdef int Unary(int); "
+        "class Node { Unary@ callback; int ping(int value) { return value; } } "
+        "Node@ makeCycle() { Node@ node = Node(); @node.callback = Unary(node.ping); return node; }");
+    CHECK(module->Build());
+    mini_as::ObjectHandle root = BuildCycle(*engine, *module);
+    CHECK(engine->CollectGarbage() == 0);
+    root = {};
+    CHECK(engine->CollectGarbage() == 1);
+    CHECK(engine->GetTrackedObjectCount() == 0);
+}

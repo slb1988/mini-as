@@ -22,7 +22,7 @@ enum class OpCode : std::uint8_t {
     Concat, NegInt, NegFloat, NegDouble, BitNot, LogicalNot,
     Equal, NotEqual, Less, LessEqual, Greater, GreaterEqual,
     Jump, JumpIfFalse,
-    Call, CallHost, CallVirtual, CallHandle, CastObject, NewObject, LoadField, StoreField,
+    Call, CallHost, CallVirtual, CallHandle, MakeDelegate, CastObject, NewObject, LoadField, StoreField,
     MakeGlobalReference, MakeFieldReference, LoadReference, StoreReference, Return
 };
 
@@ -56,11 +56,18 @@ enum class CallableKind {
 };
 
 struct CallableRef {
+    CallableRef(CallableKind kind = CallableKind::ScriptFunction, FunctionId function = {},
+                TypeId objectType = {}, std::uint32_t virtualSlot = 0,
+                std::uint32_t parameterCount = 0, TypeId signatureType = {})
+        : kind(kind), function(function), objectType(objectType), virtualSlot(virtualSlot),
+          parameterCount(parameterCount), signatureType(signatureType) {}
+
     CallableKind kind = CallableKind::ScriptFunction;
     FunctionId function;
     TypeId objectType;
     std::uint32_t virtualSlot = 0;
     std::uint32_t parameterCount = 0;
+    TypeId signatureType;
 };
 
 struct VirtualDispatchEntry {
@@ -95,6 +102,7 @@ struct BytecodeModule {
     FunctionId FindDestructor(TypeId id) const;
     std::vector<FunctionId> FindDestructors(TypeId id) const;
     const CallableRef* FindCallable(std::size_t index) const;
+    const FuncdefSignature* FindFuncdef(TypeId id) const;
     std::optional<std::size_t> FindGlobalIndex(GlobalId id) const;
     const BytecodeFunction* ResolveVirtual(TypeId concreteType, TypeId interfaceType,
                                            std::uint32_t slot) const;

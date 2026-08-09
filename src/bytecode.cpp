@@ -107,7 +107,7 @@ std::string_view OpCodeName(OpCode opcode) {
         "ADD_D", "SUB_D", "MUL_D", "DIV_D", "POW_D",
         "CONCAT", "NEG_I", "NEG_F", "NEG_D", "BIT_NOT", "NOT",
         "EQ", "NE", "LT", "LE", "GT", "GE", "JMP", "JZ", "CALL", "CALL_HOST",
-        "CALL_VIRTUAL", "CALL_HANDLE", "CAST_OBJECT", "NEW_OBJECT", "LOAD_FIELD", "STORE_FIELD",
+        "CALL_VIRTUAL", "CALL_HANDLE", "MAKE_DELEGATE", "CAST_OBJECT", "NEW_OBJECT", "LOAD_FIELD", "STORE_FIELD",
         "MAKE_GLOBAL_REF", "MAKE_FIELD_REF", "LOAD_REF", "STORE_REF", "RET"
     };
     return names[static_cast<std::size_t>(opcode)];
@@ -126,7 +126,7 @@ std::string Disassemble(const BytecodeFunction& function) {
             instruction.opcode == OpCode::ToInteger ||
             instruction.opcode == OpCode::JumpIfFalse || instruction.opcode == OpCode::Call ||
             instruction.opcode == OpCode::CallHost || instruction.opcode == OpCode::CallVirtual ||
-            instruction.opcode == OpCode::CallHandle ||
+            instruction.opcode == OpCode::CallHandle || instruction.opcode == OpCode::MakeDelegate ||
             instruction.opcode == OpCode::CastObject ||
             instruction.opcode == OpCode::NewObject ||
             instruction.opcode == OpCode::LoadField || instruction.opcode == OpCode::StoreField ||
@@ -165,6 +165,11 @@ std::vector<FunctionId> BytecodeModule::FindDestructors(TypeId id) const {
 
 const CallableRef* BytecodeModule::FindCallable(std::size_t index) const {
     return index < callables.size() ? &callables[index] : nullptr;
+}
+
+const FuncdefSignature* BytecodeModule::FindFuncdef(TypeId id) const {
+    for (const auto& funcdef : funcdefs) if (funcdef.id == id) return &funcdef;
+    return nullptr;
 }
 
 std::optional<std::size_t> BytecodeModule::FindGlobalIndex(GlobalId id) const {
@@ -1301,6 +1306,46 @@ void BytecodeCompiler::CompileCall(AstNode* node, bool dereferenceResult) {
         CompileCall(&call, dereferenceResult);
         return;
     }
+    if (callee && node->inferredType.kind == TypeKind::Function &&
+        !node->delegateObjectType.empty()) {
+        AstNode* method = callee->nextSibling;
+        if (!method || method->kind != NodeKind::Member || !method->firstChild) {
+            Error(node, "delegate method expression is unavailable");
+            return;
+        }
+        const FuncdefSignature* funcdef = nullptr;
+        for (const auto& candidate : module_.funcdefs)
+            if (candidate.name == node->inferredType.objectName) funcdef = &candidate;
+        const FunctionSignature* target = nullptr;
+        for (const auto& candidate : signatures_) {
+            if (candidate.method && candidate.objectType == node->delegateObjectType &&
+                candidate.Declaration() == node->operatorMethod) target = &candidate;
+        }
+        const ClassSignature* staticType = FindClass(method->firstChild->inferredType.objectName);
+        if (!funcdef || !target || !staticType) {
+            Error(node, "delegate target metadata is unavailable");
+            return;
+        }
+        const auto layout = VirtualLayout(*staticType);
+        std::uint32_t slot = 0;
+        bool foundSlot = false;
+        for (std::size_t index = 0; index < layout.size(); ++index) {
+            const auto* candidate = layout[index];
+            if (candidate->name == target->name && candidate->returnType == target->returnType &&
+                candidate->parameters == target->parameters &&
+                candidate->parameterModes == target->parameterModes) {
+                slot = static_cast<std::uint32_t>(index);
+                foundSlot = true;
+                break;
+            }
+        }
+        if (!foundSlot) { Error(node, "delegate virtual method slot is unavailable"); return; }
+        CompileExpression(method->firstChild);
+        Emit(OpCode::MakeDelegate,
+             AddCallable({CallableKind::VirtualMethod, {}, staticType->id, slot,
+                          static_cast<std::uint32_t>(target->parameters.size()), funcdef->id}), node);
+        return;
+    }
     if (callee && callee->inferredType.kind == TypeKind::Function) {
         const FuncdefSignature* funcdef = nullptr;
         for (const auto& candidate : module_.funcdefs)
@@ -1798,7 +1843,8 @@ std::int32_t BytecodeCompiler::AddCallable(CallableRef callable) {
         const auto& existing = module_.callables[i];
         if (existing.kind == callable.kind && existing.function == callable.function &&
             existing.objectType == callable.objectType && existing.virtualSlot == callable.virtualSlot &&
-            existing.parameterCount == callable.parameterCount)
+            existing.parameterCount == callable.parameterCount &&
+            existing.signatureType == callable.signatureType)
             return static_cast<std::int32_t>(i);
     }
     module_.callables.push_back(std::move(callable));

@@ -143,10 +143,10 @@ Do not stage generated build directories or unrelated user changes. Inspect
 The completed stage notes are authoritative. At the time this guide was added,
 the latest language stage is:
 
-- Stage 52: typed function handles for global script and registered host functions.
+- Stage 53: object-bound delegates with virtual dispatch and GC-visible receivers.
 
 The v0.3 compatibility matrix is published. The next planned language feature
-is v0.4 delegates, followed by anonymous functions and captured locals. Confirm the
+is v0.4 anonymous functions and captured locals, followed by child funcdefs. Confirm the
 latest git history and `docs/stages/` before choosing the next stage number.
 
 ## Common pitfalls

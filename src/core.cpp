@@ -131,7 +131,9 @@ bool operator==(const ReferenceStorage& left, const ReferenceStorage& right) {
 
 bool operator==(const FunctionHandle& left, const FunctionHandle& right) {
     return left.function == right.function && left.signature == right.signature &&
-           left.typeName == right.typeName && left.host == right.host;
+           left.typeName == right.typeName && left.host == right.host &&
+           left.object == right.object && left.dispatchType == right.dispatchType &&
+           left.virtualSlot == right.virtualSlot && left.virtualMethod == right.virtualMethod;
 }
 
 Value::Value(bool value) : storage_(value) {}

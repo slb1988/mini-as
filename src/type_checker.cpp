@@ -1184,6 +1184,33 @@ DataType TypeChecker::CheckUnary(AstNode* node, std::optional<DataType> expected
 DataType TypeChecker::CheckCall(AstNode* node) {
     AstNode* callee = node->firstChild;
     if (!callee) return DataType::Invalid();
+    if (callee->kind == NodeKind::Identifier) {
+        if (const FuncdefSignature* delegateType = FindFuncdef(callee->token.lexeme)) {
+            AstNode* argument = callee->nextSibling;
+            if (!argument || argument->nextSibling || argument->kind != NodeKind::Member) {
+                Error(node, "delegate construction requires exactly one object method");
+                return DataType::Invalid();
+            }
+            const DataType receiver = CheckExpression(argument->firstChild);
+            const ClassSignature* owner = FindClass(receiver.objectName);
+            const FunctionSignature* method = owner
+                ? FindExactMethod(owner, argument->token.lexeme,
+                                  delegateType->signature.parameters,
+                                  delegateType->signature.parameterModes)
+                : nullptr;
+            if (!method || !SameCallableSignature(*method, delegateType->signature)) {
+                Error(argument, "no method matching funcdef '" + delegateType->name + "'");
+                return DataType::Invalid();
+            }
+            CheckAccess(argument, method->access, method->objectType, "method", method->name);
+            node->operatorMethod = method->Declaration();
+            node->delegateObjectType = method->objectType;
+            node->declaredType = DataType::Function(delegateType->name, true);
+            callee->inferredType = node->declaredType;
+            argument->inferredType = node->declaredType;
+            return node->declaredType;
+        }
+    }
     const FuncdefSignature* handleType = nullptr;
     if (callee->kind == NodeKind::Identifier) {
         const auto symbol = Lookup(callee->token.lexeme);

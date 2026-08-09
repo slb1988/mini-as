@@ -91,15 +91,23 @@ std::string ScriptObject::ResolveInterfaceMethod(std::string_view interfaceName,
 
 void ScriptObject::EnumerateReferences(const std::function<void(RefObject*)>& visitor) const {
     for (const auto& value : fields_) {
-        if (value.Type().kind != TypeKind::Object) continue;
-        const auto& handle = value.As<ObjectHandle>();
-        if (handle) visitor(handle.Get());
+        if (value.Type().kind == TypeKind::Object) {
+            const auto& handle = value.As<ObjectHandle>();
+            if (handle) visitor(handle.Get());
+        } else if (value.Type().kind == TypeKind::Function) {
+            const auto& handle = value.As<FunctionHandle>();
+            if (handle.object) visitor(handle.object.Get());
+        }
     }
 }
 
 void ScriptObject::ClearReferences() {
     for (auto& value : fields_) {
         if (value.Type().kind == TypeKind::Object) value = Value(ObjectHandle{});
+        else if (value.Type().kind == TypeKind::Function) {
+            const std::string typeName = value.Type().objectName;
+            value = Value(FunctionHandle{{}, {}, typeName, false});
+        }
     }
 }
 

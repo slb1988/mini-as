@@ -295,3 +295,22 @@ TEST_CASE(parser_builds_reference_cast_expressions) {
     CHECK(cast->firstChild->kind == mini_as::NodeKind::Identifier);
 }
 
+TEST_CASE(parser_expands_compact_and_marks_explicit_property_accessors) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer lexer("parse",
+        "class Box { int value { get const { return 1; } set { value = value; } } "
+        "int get_other() const property { return 2; } }", diagnostics);
+    mini_as::Parser parser(lexer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    CHECK(!diagnostics.HasErrors());
+    const auto members = tree.root->firstChild->Children();
+    CHECK(members[0]->token.lexeme == "get_value");
+    CHECK(members[0]->propertyAccessor);
+    CHECK(members[1]->token.lexeme == "set_value");
+    CHECK(members[1]->propertyAccessor);
+    CHECK(members[1]->firstChild->kind == mini_as::NodeKind::Parameter);
+    CHECK(members[1]->firstChild->token.lexeme == "value");
+    CHECK(members[2]->token.lexeme == "get_other");
+    CHECK(members[2]->propertyAccessor);
+}
+

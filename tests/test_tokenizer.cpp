@@ -143,3 +143,12 @@ TEST_CASE(tokenizer_recognizes_namespaces_and_scope_resolution) {
     CHECK(tokens[7].lexeme == "::");
 }
 
+TEST_CASE(tokenizer_keeps_property_as_a_contextual_identifier) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer lexer("property", "int get_value() const property;", diagnostics);
+    const auto tokens = lexer.ScanAll();
+    CHECK(!diagnostics.HasErrors());
+    CHECK(tokens[5].kind == mini_as::TokenKind::Identifier);
+    CHECK(tokens[5].lexeme == "property");
+}
+

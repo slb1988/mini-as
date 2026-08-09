@@ -426,3 +426,32 @@ TEST_CASE(bytecode_lowers_operator_overloads_to_virtual_method_calls) {
     CHECK(virtualCall);
 }
 
+TEST_CASE(bytecode_lowers_property_accessors_to_virtual_method_calls) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("property-bytecode",
+        "class Box { int stored; int value { get { return stored; } set { stored = value; } } } "
+        "int run(Box@ box) { box.value = 42; return box.value; }", diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    mini_as::TypeChecker checker(diagnostics);
+    CHECK(checker.Check(tree.root));
+    auto classes = checker.Classes();
+    auto functions = checker.Functions();
+    classes[0].id = mini_as::TypeId{10};
+    std::uint32_t methodId = 20;
+    for (auto& method : classes[0].methods) method.id = mini_as::FunctionId{methodId++};
+    functions[0].id = mini_as::FunctionId{30};
+    mini_as::BytecodeCompiler compiler(diagnostics);
+    auto module = compiler.Compile(tree.root, functions, classes);
+    CHECK(!diagnostics.HasErrors());
+    const auto* assignment = tree.root->Children()[1]->Children().back()->firstChild->firstChild;
+    CHECK(assignment->firstChild->propertySetter == "set_value");
+    std::size_t virtualCalls = 0;
+    for (const auto& function : module.functions) {
+        if (function.signature.name != "run") continue;
+        for (const auto& instruction : function.code)
+            if (instruction.opcode == mini_as::OpCode::CallVirtual) ++virtualCalls;
+    }
+    CHECK(virtualCalls == 2);
+}
+

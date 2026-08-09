@@ -253,6 +253,35 @@ AstNode* Parser::ParseClass(bool isInterface) {
             AstNode* method = ParseFunction(type, std::move(memberName), returnsReference, returnConst);
             method->memberAccess = access;
             node->AppendChild(method);
+        } else if (Match(TokenKind::LeftBrace)) {
+            bool sawGetter = false;
+            bool sawSetter = false;
+            while (!Check(TokenKind::RightBrace) && !Check(TokenKind::End)) {
+                Token accessor = Consume(TokenKind::Identifier, "expected 'get' or 'set' accessor");
+                const bool getter = accessor.lexeme == "get";
+                const bool setter = accessor.lexeme == "set";
+                if (!getter && !setter) Error(accessor, "expected 'get' or 'set' accessor");
+                if ((getter && sawGetter) || (setter && sawSetter))
+                    Error(accessor, "duplicate property accessor");
+                sawGetter = sawGetter || getter;
+                sawSetter = sawSetter || setter;
+                AstNode* method = arena_->Make(NodeKind::FunctionDecl, accessor);
+                method->token.lexeme = std::string(getter ? "get_" : "set_") + memberName.lexeme;
+                method->declaredType = getter ? type : DataType::Void();
+                method->memberAccess = access;
+                method->propertyAccessor = true;
+                if (setter) {
+                    Token valueName{TokenKind::Identifier, "value", accessor.location};
+                    AstNode* parameter = arena_->Make(NodeKind::Parameter, valueName);
+                    parameter->declaredType = type;
+                    method->AppendChild(parameter);
+                }
+                if (getter) Match(TokenKind::KwConst);
+                if (!Match(TokenKind::Semicolon)) method->AppendChild(ParseBlock());
+                node->AppendChild(method);
+            }
+            Consume(TokenKind::RightBrace, "expected '}' after property accessors");
+            Match(TokenKind::Semicolon);
         } else {
             AstNode* field = arena_->Make(NodeKind::FieldDecl, memberName);
             field->declaredType = type;
@@ -299,6 +328,12 @@ AstNode* Parser::ParseFunction(DataType returnType, Token name, bool returnsRefe
         } while (Match(TokenKind::Comma));
     }
     Consume(TokenKind::RightParen, "expected ')' after parameters");
+    while (Check(TokenKind::KwConst) ||
+           (Check(TokenKind::Identifier) && Current().lexeme == "property")) {
+        if (Match(TokenKind::KwConst)) continue;
+        function->propertyAccessor = true;
+        Advance();
+    }
     if (Match(TokenKind::Semicolon)) return function;
     function->AppendChild(ParseBlock());
     return function;

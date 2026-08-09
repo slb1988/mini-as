@@ -1514,3 +1514,77 @@ TEST_CASE(operator_overload_null_receivers_report_the_operator_location) {
     CHECK(context->GetExceptionLocation().row == 4);
 }
 
+TEST_CASE(property_accessors_support_compact_explicit_and_virtual_access) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("property-accessors");
+    module->AddScriptSection("property-accessors",
+        "interface IValue { int amount { get const; set; } } "
+        "class Meter : IValue { private int stored; Meter() { stored = 1; } "
+        "int amount { get const { return stored; } set { stored = value * 2; } } "
+        "int get_raw() const property { return stored; } "
+        "void set_raw(int input) property { stored = input; } "
+        "int bumpRaw() { raw += 1; return raw; } } "
+        "Meter@ shared = Meter(); int receiverCalls = 0; "
+        "Meter@ select() { receiverCalls++; return shared; } "
+        "int run() { IValue@ view = shared; int inner = shared.bumpRaw(); "
+        "view.amount = 10; view.amount += 1; select().raw += 3; "
+        "return view.amount + shared.raw + receiverCalls + inner; }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 93);
+}
+
+TEST_CASE(property_accessors_reject_invalid_read_write_and_declarations) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    auto* module = engine->GetModule("bad-property-accessors");
+    module->AddScriptSection("bad-property-accessors",
+        "class Bad { int get_readOnly() property { return 1; } "
+        "void set_writeOnly(int value) property {} "
+        "int get_mismatch() property { return 1; } "
+        "void set_mismatch(string value) property {} "
+        "int get_indexed(int index) property { return index; } "
+        "int get_plain() { return 1; } } "
+        "class Hidden { private int get_secret() property { return 1; } } "
+        "int run() { Bad@ value = Bad(); value.readOnly = 2; int a = value.writeOnly; "
+        "value.readOnly++; Hidden().secret; return value.plain; }");
+    CHECK(!module->Build());
+    bool readOnly = false, writeOnly = false, mismatch = false;
+    bool indexed = false, unmarked = false, increment = false, inaccessible = false;
+    for (const auto& diagnostic : diagnostics) {
+        readOnly = readOnly || diagnostic.message.find("is read-only") != std::string::npos;
+        writeOnly = writeOnly || diagnostic.message.find("is write-only") != std::string::npos;
+        mismatch = mismatch || diagnostic.message.find("getter and setter types must match") != std::string::npos;
+        indexed = indexed || diagnostic.message.find("indexed or malformed property accessor") != std::string::npos;
+        unmarked = unmarked || diagnostic.message.find("has no field or property 'plain'") != std::string::npos;
+        increment = increment || diagnostic.message.find("increment and decrement are not supported") != std::string::npos;
+        inaccessible = inaccessible || diagnostic.message.find("private property getter 'Hidden::secret'") != std::string::npos;
+    }
+    CHECK(readOnly);
+    CHECK(writeOnly);
+    CHECK(mismatch);
+    CHECK(indexed);
+    CHECK(unmarked);
+    CHECK(increment);
+    CHECK(inaccessible);
+}
+
+TEST_CASE(property_accessor_null_receivers_report_the_access_location) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("null-property-receiver");
+    module->AddScriptSection("null-property-receiver",
+        "class Value { int get_number() property { return 1; } }\n"
+        "int run() {\n Value@ value = null;\n return value.number;\n}");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Exception);
+    CHECK(context->GetExceptionString() == "null virtual method receiver");
+    CHECK(context->GetExceptionLocation().row == 4);
+}
+

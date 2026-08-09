@@ -25,6 +25,7 @@ struct FunctionSignature {
     bool returnReferenceConst = false;
     bool destructor = false;
     MemberAccess access = MemberAccess::Public;
+    bool propertyAccessor = false;
 
     std::string Declaration() const;
 };
@@ -98,6 +99,8 @@ private:
     void CheckFunction(AstNode* node);
     void CheckBlock(AstNode* node, bool createScope = true);
     DataType CheckExpression(AstNode* node);
+    DataType CheckMember(AstNode* node, bool writing = false, bool compound = false);
+    DataType CheckImplicitProperty(AstNode* node, bool writing = false, bool compound = false);
     DataType CheckBinary(AstNode* node);
     DataType CheckUnary(AstNode* node);
     DataType CheckCall(AstNode* node);

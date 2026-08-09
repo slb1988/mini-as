@@ -608,6 +608,18 @@ void BytecodeCompiler::CompileExpression(AstNode* node) {
         break;
     }
     case NodeKind::Identifier: {
+        if (!node->propertyGetter.empty() && node->implicitThis) {
+            Token receiverName{TokenKind::Identifier, "$implicit_property_this", node->token.location};
+            scopes_.back()[receiverName.lexeme] = VariableId{implicitThisSlot_};
+            AstNode receiver;
+            receiver.kind = NodeKind::Identifier;
+            receiver.token = receiverName;
+            receiver.inferredType = DataType::Object(currentObjectType_, true);
+            AstNode call = *node;
+            call.operatorMethod = node->propertyGetter;
+            CompileOperatorCall(&call, &receiver);
+            break;
+        }
         const auto target = ResolveLValue(node);
         if (target) CompileLValueLoad(*target, node);
         else {
@@ -623,6 +635,10 @@ void BytecodeCompiler::CompileExpression(AstNode* node) {
     }
     case NodeKind::Assign: {
         const auto children = node->Children();
+        if (!children[0]->propertySetter.empty()) {
+            CompilePropertyAssignment(node, children[0], children[1]);
+            break;
+        }
         if (!node->operatorMethod.empty()) {
             CompileOperatorCall(node, children[0], children[1]);
             break;
@@ -634,6 +650,12 @@ void BytecodeCompiler::CompileExpression(AstNode* node) {
         break;
     }
     case NodeKind::Member: {
+        if (!node->propertyGetter.empty()) {
+            AstNode call = *node;
+            call.operatorMethod = node->propertyGetter;
+            CompileOperatorCall(&call, node->firstChild);
+            break;
+        }
         const auto target = ResolveLValue(node);
         if (!target) Error(node, "unknown field");
         else CompileLValueLoad(*target, node);
@@ -977,6 +999,78 @@ void BytecodeCompiler::CompileOperatorCall(AstNode* node, AstNode* receiver, Ast
     call.nextSibling = nullptr;
     call.operatorMethod.clear();
     CompileCall(&call);
+}
+
+void BytecodeCompiler::CompilePropertyAssignment(AstNode* node, AstNode* member, AstNode* value) {
+    if (!node || !member || member->propertySetter.empty()) {
+        Error(node, "property assignment cannot be compiled");
+        return;
+    }
+    const DataType propertyType = member->inferredType;
+    Token receiverName{TokenKind::Identifier,
+                       "$property_receiver_" + std::to_string(nextLocal_), node->token.location};
+    const VariableId receiverSlot = DeclareLocal(receiverName);
+    if (member->firstChild) CompileExpression(member->firstChild);
+    else Emit(OpCode::LoadLocal, static_cast<std::int32_t>(implicitThisSlot_), node);
+    Emit(OpCode::StoreLocal, static_cast<std::int32_t>(receiverSlot.value), node);
+    AstNode receiver;
+    receiver.kind = NodeKind::Identifier;
+    receiver.token = receiverName;
+    receiver.inferredType = member->firstChild ? member->firstChild->inferredType
+                                              : DataType::Object(currentObjectType_, true);
+
+    AstNode resultExpression;
+    AstNode getterMember;
+    AstNode valueCopy = *value;
+    valueCopy.nextSibling = nullptr;
+    AstNode* storedExpression = &valueCopy;
+    if (node->token.kind != TokenKind::Equal) {
+        getterMember = *member;
+        getterMember.firstChild = &receiver;
+        getterMember.nextSibling = &valueCopy;
+        AstNode binary;
+        binary.kind = NodeKind::Binary;
+        binary.token = node->token;
+        switch (node->token.kind) {
+        case TokenKind::PlusEqual: binary.token.kind = TokenKind::Plus; break;
+        case TokenKind::MinusEqual: binary.token.kind = TokenKind::Minus; break;
+        case TokenKind::StarEqual: binary.token.kind = TokenKind::Star; break;
+        case TokenKind::SlashEqual: binary.token.kind = TokenKind::Slash; break;
+        case TokenKind::PercentEqual: binary.token.kind = TokenKind::Percent; break;
+        case TokenKind::StarStarEqual: binary.token.kind = TokenKind::StarStar; break;
+        case TokenKind::AmpEqual: binary.token.kind = TokenKind::Amp; break;
+        case TokenKind::PipeEqual: binary.token.kind = TokenKind::Pipe; break;
+        case TokenKind::CaretEqual: binary.token.kind = TokenKind::Caret; break;
+        case TokenKind::ShiftLeftEqual: binary.token.kind = TokenKind::ShiftLeft; break;
+        case TokenKind::ShiftRightEqual: binary.token.kind = TokenKind::ShiftRight; break;
+        case TokenKind::ShiftRightArithmeticEqual:
+            binary.token.kind = TokenKind::ShiftRightArithmetic; break;
+        default: Error(node, "property compound assignment operator is unavailable"); return;
+        }
+        binary.firstChild = &getterMember;
+        binary.inferredType = propertyType == DataType::String()
+            ? DataType::String() : CommonNumericType(propertyType, value->inferredType);
+        resultExpression = binary;
+        storedExpression = &resultExpression;
+    }
+
+    Token valueName{TokenKind::Identifier,
+                    "$property_value_" + std::to_string(nextLocal_), node->token.location};
+    const VariableId valueSlot = DeclareLocal(valueName);
+    CompileExpression(storedExpression);
+    EmitConversion(storedExpression->inferredType, propertyType, node);
+    Emit(OpCode::StoreLocal, static_cast<std::int32_t>(valueSlot.value), node);
+    AstNode storedValue;
+    storedValue.kind = NodeKind::Identifier;
+    storedValue.token = valueName;
+    storedValue.inferredType = propertyType;
+
+    AstNode setterCall = *node;
+    setterCall.operatorMethod = member->propertySetter;
+    setterCall.inferredType = DataType::Void();
+    CompileOperatorCall(&setterCall, &receiver, &storedValue);
+    Emit(OpCode::Pop, 0, node);
+    Emit(OpCode::LoadLocal, static_cast<std::int32_t>(valueSlot.value), node);
 }
 
 void BytecodeCompiler::CompileBinary(AstNode* node) {

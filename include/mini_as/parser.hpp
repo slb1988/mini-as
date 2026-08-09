@@ -36,8 +36,11 @@ struct AstNode {
     bool nonVirtualCall = false;
     bool returnsReference = false;
     bool returnReferenceConst = false;
+    bool propertyAccessor = false;
     std::string operatorMethod;
     bool operatorReversed = false;
+    std::string propertyGetter;
+    std::string propertySetter;
     MemberAccess memberAccess = MemberAccess::Public;
     ParameterMode parameterMode = ParameterMode::Value;
     AstNode* firstChild = nullptr;

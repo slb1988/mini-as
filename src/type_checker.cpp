@@ -244,6 +244,7 @@ void TypeChecker::Predeclare(AstNode* root) {
                                          child->returnsReference, child->returnReferenceConst,
                                          child->isDestructor};
                 method.access = child->memberAccess;
+                method.propertyAccessor = child->propertyAccessor;
                 for (AstNode* parameter = child->firstChild;
                      parameter && parameter->kind == NodeKind::Parameter; parameter = parameter->nextSibling) {
                     method.parameters.push_back(parameter->declaredType);
@@ -343,6 +344,32 @@ void TypeChecker::Predeclare(AstNode* root) {
         state = 2;
     };
     for (auto& type : classes_) resolveInheritance(type);
+
+    for (const auto& type : classes_) {
+        for (const auto& method : type.methods) {
+            if (!method.propertyAccessor) continue;
+            const bool getter = method.name.rfind("get_", 0) == 0;
+            const bool setter = method.name.rfind("set_", 0) == 0;
+            if ((!getter && !setter) || method.name.size() <= 4) {
+                Error(root, "property accessor must be named get_<name> or set_<name>");
+                continue;
+            }
+            if ((getter && (method.returnType == DataType::Void() || !method.parameters.empty())) ||
+                (setter && (method.returnType != DataType::Void() || method.parameters.size() != 1))) {
+                Error(root, "indexed or malformed property accessor '" + method.Declaration() + "'");
+                continue;
+            }
+            if (!getter) continue;
+            const std::string setterName = "set_" + method.name.substr(4);
+            for (const auto& candidate : type.methods) {
+                if (!candidate.propertyAccessor || candidate.name != setterName ||
+                    candidate.parameters.size() != 1) continue;
+                if (candidate.parameters[0] != method.returnType)
+                    Error(root, "property getter and setter types must match for '" +
+                                method.name.substr(4) + "'");
+            }
+        }
+    }
 
     for (const auto& type : classes_) {
         if (type.interfaceType) continue;
@@ -701,28 +728,17 @@ DataType TypeChecker::CheckExpression(AstNode* node) {
                 }
             }
         }
+        if (!result.IsValid() && currentClass_)
+            result = CheckImplicitProperty(node);
         if (!result.IsValid()) {
             const auto constant = FindEnumConstant(node->token.lexeme);
             if (constant) result = constant->Type();
         }
-        if (!result.IsValid()) Error(node, "unknown variable '" + node->token.lexeme + "'");
+        if (!result.IsValid() && node->propertyGetter.empty() && node->propertySetter.empty())
+            Error(node, "unknown variable '" + node->token.lexeme + "'");
         break;
     }
-    case NodeKind::Member: {
-        DataType object = CheckExpression(node->firstChild);
-        const ClassSignature* type = FindClass(object.objectName);
-        if (!type) Error(node, "unknown object type '" + object.objectName + "'");
-        else {
-            for (const auto& field : type->fields) {
-                if (field.name != node->token.lexeme) continue;
-                result = field.type;
-                CheckAccess(node, field.access, field.objectType, "field", field.name);
-                break;
-            }
-            if (!result.IsValid()) Error(node, "type '" + type->name + "' has no field '" + node->token.lexeme + "'");
-        }
-        break;
-    }
+    case NodeKind::Member: result = CheckMember(node); break;
     case NodeKind::Conditional: {
         const auto children = node->Children();
         if (CheckExpression(children[0]) != DataType::Bool())
@@ -741,6 +757,11 @@ DataType TypeChecker::CheckExpression(AstNode* node) {
     case NodeKind::Increment: {
         AstNode* operand = node->firstChild;
         result = CheckExpression(operand);
+        if (operand && (!operand->propertyGetter.empty() || !operand->propertySetter.empty())) {
+            Error(node, "increment and decrement are not supported for property accessors");
+            result = DataType::Invalid();
+            break;
+        }
         if (result.kind == TypeKind::Object) {
             const std::string_view name = node->token.kind == TokenKind::PlusPlus
                 ? (node->isPostfix ? "opPostInc" : "opPreInc")
@@ -808,7 +829,18 @@ DataType TypeChecker::CheckExpression(AstNode* node) {
     case NodeKind::Call: result = CheckCall(node); break;
     case NodeKind::Assign: {
         const auto children = node->Children();
-        DataType target = CheckExpression(children[0]);
+        DataType target;
+        if (children[0]->kind == NodeKind::Member) {
+            target = CheckMember(children[0], true, node->token.kind != TokenKind::Equal);
+        } else if (children[0]->kind == NodeKind::Identifier && currentClass_ &&
+                   !Lookup(children[0]->token.lexeme)) {
+            target = CheckImplicitProperty(children[0], true, node->token.kind != TokenKind::Equal);
+            if (children[0]->propertyGetter.empty() && children[0]->propertySetter.empty())
+                target = CheckExpression(children[0]);
+        } else {
+            target = CheckExpression(children[0]);
+        }
+        children[0]->inferredType = target;
         if (children[0]->kind != NodeKind::Identifier && children[0]->kind != NodeKind::Member &&
             !(children[0]->kind == NodeKind::Call && children[0]->returnsReference)) {
             Error(children[0], "left side of assignment is not assignable");
@@ -819,6 +851,12 @@ DataType TypeChecker::CheckExpression(AstNode* node) {
             Error(children[0], "cannot assign to const variable '" + children[0]->token.lexeme + "'");
         }
         DataType value = CheckExpression(children[1]);
+        if (!children[0]->propertySetter.empty() && node->token.kind != TokenKind::Equal &&
+            !target.IsNumeric() && target != DataType::String()) {
+            Error(node, "compound property assignment currently requires a numeric or string property");
+            result = DataType::Invalid();
+            break;
+        }
         const std::string_view operatorName = AssignmentOperatorMethod(node->token.kind);
         if (target.kind == TypeKind::Object && !operatorName.empty()) {
             const FunctionSignature* method = FindOperatorMethod(target, operatorName, {value});
@@ -869,6 +907,101 @@ DataType TypeChecker::CheckExpression(AstNode* node) {
     }
     node->inferredType = result;
     return result;
+}
+
+DataType TypeChecker::CheckMember(AstNode* node, bool writing, bool compound) {
+    if (!node || !node->firstChild) return DataType::Invalid();
+    const DataType object = CheckExpression(node->firstChild);
+    const ClassSignature* type = FindClass(object.objectName);
+    if (!type) {
+        Error(node, "unknown object type '" + object.objectName + "'");
+        return DataType::Invalid();
+    }
+    for (const auto& field : type->fields) {
+        if (field.name != node->token.lexeme) continue;
+        CheckAccess(node, field.access, field.objectType, "field", field.name);
+        return field.type;
+    }
+
+    const std::string getterName = "get_" + node->token.lexeme;
+    const std::string setterName = "set_" + node->token.lexeme;
+    const FunctionSignature* getter = nullptr;
+    const FunctionSignature* setter = nullptr;
+    for (const ClassSignature* owner = type; owner;
+         owner = owner->baseClass.empty() ? nullptr : FindClass(owner->baseClass)) {
+        for (const auto& method : owner->methods) {
+            if (!method.propertyAccessor) continue;
+            if (!getter && method.name == getterName && method.parameters.empty() &&
+                method.returnType != DataType::Void()) getter = &method;
+            if (!setter && method.name == setterName && method.parameters.size() == 1 &&
+                method.returnType == DataType::Void()) setter = &method;
+        }
+    }
+    if (!getter && !setter) {
+        Error(node, "type '" + type->name + "' has no field or property '" +
+                    node->token.lexeme + "'");
+        return DataType::Invalid();
+    }
+    if (getter && setter && getter->returnType != setter->parameters[0]) {
+        Error(node, "property getter and setter types must match for '" + node->token.lexeme + "'");
+        return DataType::Invalid();
+    }
+    node->propertyGetter = getter ? getter->name : std::string{};
+    node->propertySetter = setter ? setter->name : std::string{};
+    if ((compound || !writing) && !getter) {
+        Error(node, "property '" + node->token.lexeme + "' is write-only");
+        return DataType::Invalid();
+    }
+    if (writing && !setter) {
+        Error(node, "property '" + node->token.lexeme + "' is read-only");
+        return DataType::Invalid();
+    }
+    if (getter && (compound || !writing))
+        CheckAccess(node, getter->access, getter->objectType, "property getter", node->token.lexeme);
+    if (setter && writing)
+        CheckAccess(node, setter->access, setter->objectType, "property setter", node->token.lexeme);
+    return getter ? getter->returnType : setter->parameters[0];
+}
+
+DataType TypeChecker::CheckImplicitProperty(AstNode* node, bool writing, bool compound) {
+    if (!node || !currentClass_) return DataType::Invalid();
+    for (const auto& field : currentClass_->fields)
+        if (field.name == node->token.lexeme) return DataType::Invalid();
+    const std::string getterName = "get_" + node->token.lexeme;
+    const std::string setterName = "set_" + node->token.lexeme;
+    const FunctionSignature* getter = nullptr;
+    const FunctionSignature* setter = nullptr;
+    for (const ClassSignature* owner = currentClass_; owner;
+         owner = owner->baseClass.empty() ? nullptr : FindClass(owner->baseClass)) {
+        for (const auto& method : owner->methods) {
+            if (!method.propertyAccessor) continue;
+            if (!getter && method.name == getterName && method.parameters.empty() &&
+                method.returnType != DataType::Void()) getter = &method;
+            if (!setter && method.name == setterName && method.parameters.size() == 1 &&
+                method.returnType == DataType::Void()) setter = &method;
+        }
+    }
+    if (!getter && !setter) return DataType::Invalid();
+    node->propertyGetter = getter ? getter->name : std::string{};
+    node->propertySetter = setter ? setter->name : std::string{};
+    node->implicitThis = true;
+    if (getter && setter && getter->returnType != setter->parameters[0]) {
+        Error(node, "property getter and setter types must match for '" + node->token.lexeme + "'");
+        return DataType::Invalid();
+    }
+    if ((compound || !writing) && !getter) {
+        Error(node, "property '" + node->token.lexeme + "' is write-only");
+        return DataType::Invalid();
+    }
+    if (writing && !setter) {
+        Error(node, "property '" + node->token.lexeme + "' is read-only");
+        return DataType::Invalid();
+    }
+    if (getter && (compound || !writing))
+        CheckAccess(node, getter->access, getter->objectType, "property getter", node->token.lexeme);
+    if (setter && writing)
+        CheckAccess(node, setter->access, setter->objectType, "property setter", node->token.lexeme);
+    return getter ? getter->returnType : setter->parameters[0];
 }
 
 DataType TypeChecker::CheckBinary(AstNode* node) {
@@ -1287,7 +1420,11 @@ bool TypeChecker::ValidateReferenceArguments(
         if (mode != ParameterMode::Out && mode != ParameterMode::InOut) continue;
         AstNode* argument = ordered[parameter];
         if (!argument) continue;
-        if (argument->kind != NodeKind::Identifier && argument->kind != NodeKind::Member) {
+        if (argument->kind == NodeKind::Member &&
+            (!argument->propertyGetter.empty() || !argument->propertySetter.empty())) {
+            Error(argument, "property accessors cannot be passed to out or inout parameters");
+            valid = false;
+        } else if (argument->kind != NodeKind::Identifier && argument->kind != NodeKind::Member) {
             Error(argument, "out and inout arguments must be assignable lvalues");
             valid = false;
         } else if (IsReadOnlyLValue(argument)) {

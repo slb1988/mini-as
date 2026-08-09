@@ -147,6 +147,7 @@ private:
                                    TokenKind operation, const AstNode* source);
     void CompileIncrement(AstNode* node);
     void CompileOperatorCall(AstNode* node, AstNode* receiver, AstNode* argument = nullptr);
+    void CompilePropertyAssignment(AstNode* node, AstNode* member, AstNode* value);
     void EmitConversion(const DataType& from, const DataType& to, const AstNode* source);
     const FunctionSignature* FindImplicitConversion(const DataType& from,
                                                     const DataType& to) const;

@@ -95,7 +95,8 @@ public:
     explicit BytecodeCompiler(DiagnosticSink& diagnostics);
     BytecodeModule Compile(AstNode* root, const std::vector<FunctionSignature>& signatures,
                            const std::vector<ClassSignature>& classes = {},
-                           const std::vector<GlobalSignature>& globals = {});
+                           const std::vector<GlobalSignature>& globals = {},
+                           const std::vector<EnumSignature>& enums = {});
 
 private:
     struct LValueRef {
@@ -154,6 +155,7 @@ private:
     std::unordered_map<std::string, TypeId> classIds_;
     std::vector<GlobalSignature> globals_;
     std::unordered_map<std::string, GlobalSignature> globalSymbols_;
+    std::unordered_map<std::string, Value> enumConstants_;
     std::vector<ControlFlowContext> controlFlow_;
     std::string currentObjectType_;
     std::uint32_t implicitThisSlot_ = 0;

@@ -88,7 +88,8 @@ BytecodeCompiler::BytecodeCompiler(DiagnosticSink& diagnostics) : diagnostics_(d
 
 BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<FunctionSignature>& signatures,
                                          const std::vector<ClassSignature>& classes,
-                                         const std::vector<GlobalSignature>& globals) {
+                                         const std::vector<GlobalSignature>& globals,
+                                         const std::vector<EnumSignature>& enums) {
     module_ = {};
     signatures_ = signatures;
     functionIndices_.clear();
@@ -102,6 +103,14 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
     for (const auto& global : globals_) {
         globalSymbols_[global.name] = global;
         module_.globals.push_back({global});
+    }
+    enumConstants_.clear();
+    for (const auto& type : enums) {
+        const DataType enumType = DataType::Enum(type.name);
+        for (const auto& value : type.values) {
+            enumConstants_.emplace(
+                value.name, Value::Integer(enumType, static_cast<std::uint32_t>(value.value)));
+        }
     }
     classIds_.clear();
     classNodes_.clear();
@@ -366,7 +375,12 @@ void BytecodeCompiler::CompileStatement(AstNode* node) {
                 continue;
             }
             AstNode* valueExpression = clause->firstChild;
-            auto value = ConstantExpressionEvaluator{}.Evaluate(valueExpression);
+            ConstantExpressionEvaluator evaluator([this](std::string_view name) -> std::optional<Value> {
+                const auto found = enumConstants_.find(std::string(name));
+                return found == enumConstants_.end() ? std::nullopt
+                                                     : std::optional<Value>{found->second};
+            });
+            auto value = evaluator.Evaluate(valueExpression);
             if (!value || !value->Type().IsInteger()) {
                 Error(valueExpression, "case value cannot be compiled");
                 continue;
@@ -423,8 +437,13 @@ void BytecodeCompiler::CompileExpression(AstNode* node) {
     }
     case NodeKind::Identifier: {
         const auto target = ResolveLValue(node);
-        if (!target) Error(node, "unknown local '" + node->token.lexeme + "'");
-        else CompileLValueLoad(*target, node);
+        if (target) CompileLValueLoad(*target, node);
+        else {
+            const auto constant = enumConstants_.find(node->token.lexeme);
+            if (constant == enumConstants_.end())
+                Error(node, "unknown local '" + node->token.lexeme + "'");
+            else Emit(OpCode::PushConst, AddConstant(constant->second), node);
+        }
         break;
     }
     case NodeKind::Assign: {
@@ -906,6 +925,7 @@ void BytecodeCompiler::EmitConversion(const DataType& from, const DataType& to,
 std::optional<int> BytecodeCompiler::ConversionCost(const DataType& from,
                                                      const DataType& to) const {
     if (from == to) return 0;
+    if (to.kind == TypeKind::Enum) return std::nullopt;
     if (from.IsInteger() && to.IsInteger()) {
         const int widthCost = static_cast<int>(from.IntegerBits() > to.IntegerBits()
             ? from.IntegerBits() - to.IntegerBits() : to.IntegerBits() - from.IntegerBits());

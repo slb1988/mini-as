@@ -177,3 +177,23 @@ TEST_CASE(bytecode_emits_integer_and_double_power_operations) {
     CHECK(listing.find("POW_D") != std::string::npos);
 }
 
+TEST_CASE(bytecode_embeds_enum_constants_and_converts_them_to_int) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("enum-bytecode",
+        "enum Color { Red = 2, Green, Blue = Green + 2 } int value() { return Blue; }",
+        diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    mini_as::TypeChecker checker(diagnostics);
+    CHECK(checker.Check(tree.root));
+    mini_as::BytecodeCompiler compiler(diagnostics);
+    auto module = compiler.Compile(tree.root, checker.Functions(), checker.Classes(),
+                                   checker.Globals(), checker.Enums());
+    CHECK(!diagnostics.HasErrors());
+    CHECK(module.functions[0].constants.size() == 1);
+    CHECK(module.functions[0].constants[0].Type() == mini_as::DataType::Enum("Color"));
+    const auto listing = mini_as::Disassemble(module.functions[0]);
+    CHECK(listing.find("PUSH_CONST") != std::string::npos);
+    CHECK(listing.find("TO_INTEGER") != std::string::npos);
+}
+

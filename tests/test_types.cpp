@@ -34,3 +34,21 @@ TEST_CASE(type_checker_promotes_and_converts_integer_widths) {
           mini_as::DataType::UInt64());
 }
 
+TEST_CASE(type_checker_resolves_enum_constant_expressions_and_preserves_identity) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("types",
+        "enum Color { Red = 2, Green, Blue = Green + 2 } "
+        "Color choose() { Color value = Blue; return value; }",
+        diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    mini_as::TypeChecker checker(diagnostics);
+    CHECK(checker.Check(tree.root));
+    CHECK(checker.Enums().size() == 1);
+    CHECK(checker.Enums()[0].values.size() == 3);
+    CHECK(checker.Enums()[0].values[0].value == 2);
+    CHECK(checker.Enums()[0].values[1].value == 3);
+    CHECK(checker.Enums()[0].values[2].value == 5);
+    CHECK(tree.root->Children()[1]->declaredType == mini_as::DataType::Enum("Color"));
+}
+

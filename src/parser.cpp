@@ -28,7 +28,14 @@ AstNode* AstArena::Make(NodeKind kind, const Token& token) {
 }
 
 Parser::Parser(std::vector<Token> tokens, DiagnosticSink& diagnostics)
-    : tokens_(std::move(tokens)), diagnostics_(diagnostics) {}
+    : tokens_(std::move(tokens)), diagnostics_(diagnostics) {
+    for (std::size_t index = 0; index + 1 < tokens_.size(); ++index) {
+        if (tokens_[index].kind == TokenKind::KwEnum &&
+            tokens_[index + 1].kind == TokenKind::Identifier) {
+            enumTypes_.insert(tokens_[index + 1].lexeme);
+        }
+    }
+}
 
 SyntaxTree Parser::Parse() {
     SyntaxTree tree;
@@ -46,6 +53,7 @@ SyntaxTree Parser::Parse() {
 AstNode* Parser::ParseTopLevel() {
     if (Match(TokenKind::KwClass)) return ParseClass(false);
     if (Match(TokenKind::KwInterface)) return ParseClass(true);
+    if (Match(TokenKind::KwEnum)) return ParseEnum();
     if (IsTypeStart()) {
         const auto saved = current_;
         DataType type = ParseType(true);
@@ -62,6 +70,24 @@ AstNode* Parser::ParseTopLevel() {
              declaration = declaration->nextSibling) declaration->isGlobal = true;
     }
     return statement;
+}
+
+AstNode* Parser::ParseEnum() {
+    Token name = Consume(TokenKind::Identifier, "expected enum name");
+    AstNode* declaration = arena_->Make(NodeKind::EnumDecl, name);
+    Consume(TokenKind::LeftBrace, "expected '{' before enum body");
+    if (!Check(TokenKind::RightBrace)) {
+        do {
+            Token valueName = Consume(TokenKind::Identifier, "expected enum value name");
+            AstNode* value = arena_->Make(NodeKind::EnumValue, valueName);
+            value->declaredType = DataType::Enum(name.lexeme);
+            if (Match(TokenKind::Equal)) value->AppendChild(ParseExpression());
+            declaration->AppendChild(value);
+        } while (Match(TokenKind::Comma) && !Check(TokenKind::RightBrace));
+    }
+    Consume(TokenKind::RightBrace, "expected '}' after enum body");
+    Match(TokenKind::Semicolon);
+    return declaration;
 }
 
 AstNode* Parser::ParseClass(bool isInterface) {
@@ -381,7 +407,11 @@ DataType Parser::ParseType(bool allowVoid) {
     else if (Match(TokenKind::KwFloat)) type = DataType::Float();
     else if (Match(TokenKind::KwDouble)) type = DataType::Double();
     else if (Match(TokenKind::KwString)) type = DataType::String();
-    else if (Match(TokenKind::Identifier)) type = DataType::Object(Previous().lexeme);
+    else if (Match(TokenKind::Identifier)) {
+        const std::string& name = Previous().lexeme;
+        type = enumTypes_.find(name) != enumTypes_.end() ? DataType::Enum(name)
+                                                        : DataType::Object(name);
+    }
     else { Error(Current(), "expected type"); return DataType::Invalid(); }
     if (Match(TokenKind::At)) type.isHandle = true;
     return type;
@@ -446,7 +476,7 @@ void Parser::Synchronize() {
         case TokenKind::KwFor: case TokenKind::KwSwitch: case TokenKind::KwCase:
         case TokenKind::KwDefault: case TokenKind::KwReturn: case TokenKind::KwBreak:
         case TokenKind::KwContinue:
-        case TokenKind::KwClass: case TokenKind::KwInterface: return;
+        case TokenKind::KwClass: case TokenKind::KwInterface: case TokenKind::KwEnum: return;
         default: Advance();
         }
     }

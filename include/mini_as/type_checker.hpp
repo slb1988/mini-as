@@ -38,6 +38,17 @@ struct GlobalSignature {
     GlobalId id;
 };
 
+struct EnumValueSignature {
+    std::string name;
+    std::int32_t value = 0;
+};
+
+struct EnumSignature {
+    std::string name;
+    std::vector<EnumValueSignature> values;
+    TypeId id;
+};
+
 class TypeChecker {
 public:
     explicit TypeChecker(DiagnosticSink& diagnostics);
@@ -46,6 +57,7 @@ public:
     const std::vector<FunctionSignature>& Functions() const;
     const std::vector<ClassSignature>& Classes() const;
     const std::vector<GlobalSignature>& Globals() const;
+    const std::vector<EnumSignature>& Enums() const;
 
 private:
     struct VariableSymbol {
@@ -53,6 +65,7 @@ private:
         bool isConst = false;
     };
 
+    void PredeclareEnums(AstNode* root);
     void Predeclare(AstNode* root);
     void PredeclareGlobals(AstNode* root);
     void CheckNode(AstNode* node);
@@ -76,6 +89,8 @@ private:
     std::vector<FunctionSignature> functions_;
     std::vector<ClassSignature> classes_;
     std::vector<GlobalSignature> globals_;
+    std::vector<EnumSignature> enums_;
+    std::unordered_map<std::string, Value> enumConstants_;
     std::vector<std::unordered_map<std::string, VariableSymbol>> scopes_;
     DataType currentReturn_ = DataType::Void();
     int breakableDepth_ = 0;

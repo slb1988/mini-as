@@ -63,7 +63,7 @@ enum class TypeKind {
     Void, Bool,
     Int8, Int16, Int, Int64,
     UInt8, UInt16, UInt, UInt64,
-    Float, Double, String, Object, Invalid
+    Float, Double, String, Enum, Object, Invalid
 };
 
 struct DataType {
@@ -86,6 +86,7 @@ struct DataType {
     static DataType Float();
     static DataType Double();
     static DataType String();
+    static DataType Enum(std::string name);
     static DataType Object(std::string name, bool handle = false);
     static DataType Invalid();
 
@@ -106,6 +107,7 @@ DataType CommonNumericType(const DataType& left, const DataType& right);
 struct IntegerStorage {
     TypeKind kind = TypeKind::Int;
     std::uint64_t bits = 0;
+    std::string typeName;
 };
 
 bool operator==(const IntegerStorage& left, const IntegerStorage& right);

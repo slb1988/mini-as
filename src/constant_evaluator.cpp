@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <limits>
+#include <utility>
 
 namespace mini_as {
 namespace {
@@ -189,6 +190,9 @@ std::optional<Value> DecodeNumericLiteral(const Token& token) {
     return Value::Integer(DataType::UInt64(), parsed);
 }
 
+ConstantExpressionEvaluator::ConstantExpressionEvaluator(IdentifierResolver resolver)
+    : resolver_(std::move(resolver)) {}
+
 std::optional<Value> ConstantExpressionEvaluator::Evaluate(const AstNode* expression) const {
     if (!expression) return std::nullopt;
     if (expression->kind == NodeKind::Literal) {
@@ -202,6 +206,8 @@ std::optional<Value> ConstantExpressionEvaluator::Evaluate(const AstNode* expres
         default: return std::nullopt;
         }
     }
+    if (expression->kind == NodeKind::Identifier)
+        return resolver_ ? resolver_(expression->token.lexeme) : std::nullopt;
     if (expression->kind == NodeKind::Unary) {
         auto operand = Evaluate(expression->firstChild);
         if (!operand) return std::nullopt;

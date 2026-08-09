@@ -67,7 +67,9 @@ bool ScriptModule::Build() {
     for (auto& global : globals)
         global.id = engine_.GetOrCreateGlobalId(name_ + "\n" + global.name);
     BytecodeCompiler compiler(diagnostics);
-    BytecodeModule candidate = compiler.Compile(tree.root, functions, classes, globals);
+    auto enums = checker.Enums();
+    for (auto& type : enums) type.id = engine_.GetOrCreateTypeId(type.name);
+    BytecodeModule candidate = compiler.Compile(tree.root, functions, classes, globals, enums);
     if (diagnostics.HasErrors()) return false;
     std::vector<const TypeInfo*> concreteTypes;
     for (const auto& type : classes) {

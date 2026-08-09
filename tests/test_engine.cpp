@@ -757,3 +757,41 @@ TEST_CASE(exponent_operators_reject_objects_and_locate_integer_overflow) {
     CHECK(context->GetExceptionLocation().row == 2);
 }
 
+TEST_CASE(enums_execute_auto_and_constant_values_as_named_int32_types) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("enums");
+    module->AddScriptSection("enums",
+        "enum Color { Red = 2, Green, Blue = Green + 2 } "
+        "Color selected = Blue; "
+        "int main() { Color local = Green; switch (local) { "
+        "case Red: return 0; case Green: return selected == Blue ? 42 : 0; default: return 0; } }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int main()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+}
+
+TEST_CASE(enums_reject_duplicate_nonconstant_and_mutated_values) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    auto* module = engine->GetModule("bad-enums");
+    module->AddScriptSection("bad-enums",
+        "int runtime() { return 1; } enum Bad { Same, Same, Dynamic = runtime() } "
+        "int main() { Same = 3; return 0; }");
+    CHECK(!module->Build());
+    bool duplicate = false, nonconstant = false, mutation = false;
+    for (const auto& diagnostic : diagnostics) {
+        duplicate = duplicate || diagnostic.message.find("duplicate enum value 'Same'") != std::string::npos;
+        nonconstant = nonconstant ||
+            diagnostic.message.find("enum value must be an integer constant expression") != std::string::npos;
+        mutation = mutation || diagnostic.message.find("cannot assign to enum value 'Same'") != std::string::npos;
+    }
+    CHECK(duplicate);
+    CHECK(nonconstant);
+    CHECK(mutation);
+}
+

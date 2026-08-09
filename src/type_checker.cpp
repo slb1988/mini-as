@@ -1,6 +1,7 @@
 #include "mini_as/type_checker.hpp"
 #include "mini_as/constant_evaluator.hpp"
 
+#include <limits>
 #include <sstream>
 #include <unordered_set>
 #include <utility>
@@ -26,6 +27,7 @@ void TypeChecker::RegisterFunction(FunctionSignature signature) {
 bool TypeChecker::Check(AstNode* root) {
     scopes_.clear();
     scopes_.emplace_back();
+    PredeclareEnums(root);
     Predeclare(root);
     PredeclareGlobals(root);
     if (root) for (AstNode* child = root->firstChild; child; child = child->nextSibling) CheckNode(child);
@@ -35,6 +37,69 @@ bool TypeChecker::Check(AstNode* root) {
 const std::vector<FunctionSignature>& TypeChecker::Functions() const { return functions_; }
 const std::vector<ClassSignature>& TypeChecker::Classes() const { return classes_; }
 const std::vector<GlobalSignature>& TypeChecker::Globals() const { return globals_; }
+const std::vector<EnumSignature>& TypeChecker::Enums() const { return enums_; }
+
+void TypeChecker::PredeclareEnums(AstNode* root) {
+    enums_.clear();
+    enumConstants_.clear();
+    if (!root) return;
+    for (AstNode* node = root->firstChild; node; node = node->nextSibling) {
+        if (node->kind != NodeKind::EnumDecl) continue;
+        bool duplicateType = false;
+        for (const auto& existing : enums_) {
+            if (existing.name == node->token.lexeme) duplicateType = true;
+        }
+        if (duplicateType) {
+            Error(node, "duplicate enum '" + node->token.lexeme + "'");
+            continue;
+        }
+        EnumSignature signature;
+        signature.name = node->token.lexeme;
+        const DataType enumType = DataType::Enum(signature.name);
+        std::int64_t nextValue = 0;
+        std::unordered_set<std::string> localNames;
+        for (AstNode* valueNode = node->firstChild; valueNode; valueNode = valueNode->nextSibling) {
+            valueNode->declaredType = enumType;
+            if (!localNames.insert(valueNode->token.lexeme).second ||
+                enumConstants_.find(valueNode->token.lexeme) != enumConstants_.end()) {
+                Error(valueNode, "duplicate enum value '" + valueNode->token.lexeme + "'");
+                continue;
+            }
+            if (valueNode->firstChild) {
+                ConstantExpressionEvaluator evaluator([this](std::string_view name) -> std::optional<Value> {
+                    const auto found = enumConstants_.find(std::string(name));
+                    return found == enumConstants_.end() ? std::nullopt
+                                                         : std::optional<Value>{found->second};
+                });
+                const auto explicitValue = evaluator.Evaluate(valueNode->firstChild);
+                if (!explicitValue || !explicitValue->Type().IsInteger()) {
+                    Error(valueNode->firstChild, "enum value must be an integer constant expression");
+                    continue;
+                }
+                if (explicitValue->Type().IsSignedInteger()) {
+                    nextValue = explicitValue->SignedInteger();
+                } else if (explicitValue->UnsignedInteger() <=
+                           static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max())) {
+                    nextValue = static_cast<std::int64_t>(explicitValue->UnsignedInteger());
+                } else {
+                    Error(valueNode->firstChild, "enum value is outside the int32 range");
+                    continue;
+                }
+            }
+            if (nextValue < std::numeric_limits<std::int32_t>::min() ||
+                nextValue > std::numeric_limits<std::int32_t>::max()) {
+                Error(valueNode, "enum value is outside the int32 range");
+                continue;
+            }
+            const auto stored = static_cast<std::int32_t>(nextValue);
+            signature.values.push_back({valueNode->token.lexeme, stored});
+            enumConstants_.emplace(valueNode->token.lexeme,
+                                   Value::Integer(enumType, static_cast<std::uint32_t>(stored)));
+            ++nextValue;
+        }
+        enums_.push_back(std::move(signature));
+    }
+}
 
 void TypeChecker::Predeclare(AstNode* root) {
     if (!root) return;
@@ -227,7 +292,12 @@ void TypeChecker::CheckNode(AstNode* node) {
             if (clause->kind == NodeKind::CaseClause) {
                 AstNode* valueExpression = statement;
                 const DataType valueType = CheckExpression(valueExpression);
-                auto value = ConstantExpressionEvaluator{}.Evaluate(valueExpression);
+                ConstantExpressionEvaluator evaluator([this](std::string_view name) -> std::optional<Value> {
+                    const auto found = enumConstants_.find(std::string(name));
+                    return found == enumConstants_.end() ? std::nullopt
+                                                         : std::optional<Value>{found->second};
+                });
+                auto value = evaluator.Evaluate(valueExpression);
                 if (!valueType.IsInteger() || !value || !value->Type().IsInteger()) {
                     Error(valueExpression, "case value must be an integer constant expression");
                 } else if (selectorType.IsInteger() &&
@@ -275,7 +345,8 @@ void TypeChecker::CheckNode(AstNode* node) {
         currentClass_ = previousClass;
         break;
     }
-    case NodeKind::InterfaceDecl: case NodeKind::EmptyStmt:
+    case NodeKind::InterfaceDecl: case NodeKind::EnumDecl: case NodeKind::EnumValue:
+    case NodeKind::EmptyStmt:
     case NodeKind::CaseClause: case NodeKind::DefaultClause: break;
     default: CheckExpression(node); break;
     }
@@ -323,7 +394,7 @@ DataType TypeChecker::CheckExpression(AstNode* node) {
     case NodeKind::Identifier: {
         const auto type = Lookup(node->token.lexeme);
         if (type) result = type->type;
-        else if (currentClass_) {
+        if (!result.IsValid() && currentClass_) {
             for (const auto& field : currentClass_->fields) {
                 if (field.first == node->token.lexeme) {
                     result = field.second;
@@ -331,8 +402,12 @@ DataType TypeChecker::CheckExpression(AstNode* node) {
                     break;
                 }
             }
-            if (!result.IsValid()) Error(node, "unknown variable '" + node->token.lexeme + "'");
-        } else Error(node, "unknown variable '" + node->token.lexeme + "'");
+        }
+        if (!result.IsValid()) {
+            const auto constant = enumConstants_.find(node->token.lexeme);
+            if (constant != enumConstants_.end()) result = constant->second.Type();
+        }
+        if (!result.IsValid()) Error(node, "unknown variable '" + node->token.lexeme + "'");
         break;
     }
     case NodeKind::Member: {
@@ -375,7 +450,10 @@ DataType TypeChecker::CheckExpression(AstNode* node) {
         if (children[0]->kind != NodeKind::Identifier && children[0]->kind != NodeKind::Member) {
             Error(children[0], "left side of assignment is not assignable");
         }
-        if (IsReadOnlyLValue(children[0])) {
+        if (children[0]->kind == NodeKind::Identifier &&
+            enumConstants_.find(children[0]->token.lexeme) != enumConstants_.end()) {
+            Error(children[0], "cannot assign to enum value '" + children[0]->token.lexeme + "'");
+        } else if (IsReadOnlyLValue(children[0])) {
             Error(children[0], "cannot assign to const variable '" + children[0]->token.lexeme + "'");
         }
         DataType target = CheckExpression(children[0]);
@@ -585,6 +663,7 @@ void TypeChecker::Declare(const Token& name, const DataType& type, bool isConst)
 
 bool TypeChecker::CanConvert(const DataType& from, const DataType& to) const {
     if (from == to) return true;
+    if (to.kind == TypeKind::Enum) return false;
     if (from.IsInteger() && (to.IsInteger() || to == DataType::Float() || to == DataType::Double()))
         return true;
     if ((from == DataType::Float() && to == DataType::Double()) ||
@@ -600,6 +679,7 @@ bool TypeChecker::CanConvert(const DataType& from, const DataType& to) const {
 
 std::optional<int> TypeChecker::ConversionCost(const DataType& from, const DataType& to) const {
     if (from == to) return 0;
+    if (to.kind == TypeKind::Enum) return std::nullopt;
     if (from.IsInteger() && to.IsInteger()) {
         const int widthCost = static_cast<int>(from.IntegerBits() > to.IntegerBits()
             ? from.IntegerBits() - to.IntegerBits() : to.IntegerBits() - from.IntegerBits());

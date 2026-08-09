@@ -44,6 +44,7 @@ DataType DataType::UInt64() { return {TypeKind::UInt64, {}, false}; }
 DataType DataType::Float() { return {TypeKind::Float, {}, false}; }
 DataType DataType::Double() { return {TypeKind::Double, {}, false}; }
 DataType DataType::String() { return {TypeKind::String, {}, false}; }
+DataType DataType::Enum(std::string name) { return {TypeKind::Enum, std::move(name), false}; }
 DataType DataType::Object(std::string name, bool handle) {
     return {TypeKind::Object, std::move(name), handle};
 }
@@ -64,6 +65,7 @@ std::string DataType::Name() const {
     case TypeKind::Float: return "float";
     case TypeKind::Double: return "double";
     case TypeKind::String: return "string";
+    case TypeKind::Enum: return objectName;
     case TypeKind::Object: return objectName + (isHandle ? "@" : "");
     case TypeKind::Invalid: return "<invalid>";
     }
@@ -76,7 +78,7 @@ bool DataType::IsNumeric() const {
 bool DataType::IsInteger() const { return IsSignedInteger() || IsUnsignedInteger(); }
 bool DataType::IsSignedInteger() const {
     return kind == TypeKind::Int8 || kind == TypeKind::Int16 ||
-           kind == TypeKind::Int || kind == TypeKind::Int64;
+           kind == TypeKind::Int || kind == TypeKind::Int64 || kind == TypeKind::Enum;
 }
 bool DataType::IsUnsignedInteger() const {
     return kind == TypeKind::UInt8 || kind == TypeKind::UInt16 ||
@@ -86,7 +88,7 @@ unsigned DataType::IntegerBits() const {
     switch (kind) {
     case TypeKind::Int8: case TypeKind::UInt8: return 8;
     case TypeKind::Int16: case TypeKind::UInt16: return 16;
-    case TypeKind::Int: case TypeKind::UInt: return 32;
+    case TypeKind::Int: case TypeKind::UInt: case TypeKind::Enum: return 32;
     case TypeKind::Int64: case TypeKind::UInt64: return 64;
     default: return 0;
     }
@@ -115,7 +117,7 @@ DataType CommonNumericType(const DataType& left, const DataType& right) {
 }
 
 bool operator==(const IntegerStorage& left, const IntegerStorage& right) {
-    return left.kind == right.kind && left.bits == right.bits;
+    return left.kind == right.kind && left.bits == right.bits && left.typeName == right.typeName;
 }
 
 Value::Value(bool value) : storage_(value) {}
@@ -132,7 +134,7 @@ Value Value::Integer(const DataType& type, std::uint64_t bits) {
     if (width < 64) bits &= (std::uint64_t{1} << width) - 1;
     if (type == DataType::Int()) return Value(static_cast<std::int32_t>(static_cast<std::uint32_t>(bits)));
     Value value;
-    value.storage_ = IntegerStorage{type.kind, bits};
+    value.storage_ = IntegerStorage{type.kind, bits, type.objectName};
     return value;
 }
 
@@ -141,7 +143,10 @@ DataType Value::Type() const {
     case 0: return DataType::Void();
     case 1: return DataType::Bool();
     case 2: return DataType::Int();
-    case 3: return {std::get<IntegerStorage>(storage_).kind, {}, false};
+    case 3: {
+        const auto& integer = std::get<IntegerStorage>(storage_);
+        return {integer.kind, integer.typeName, false};
+    }
     case 4: return DataType::Float();
     case 5: return DataType::Double();
     case 6: return DataType::String();

@@ -94,3 +94,13 @@ TEST_CASE(tokenizer_recognizes_exponent_operators) {
     CHECK(tokens[5].kind == mini_as::TokenKind::StarStarEqual);
 }
 
+TEST_CASE(tokenizer_recognizes_enum_declarations) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer lexer("enum", "enum Color { Red, Green = 3 }", diagnostics);
+    const auto tokens = lexer.ScanAll();
+    CHECK(!diagnostics.HasErrors());
+    CHECK(tokens[0].kind == mini_as::TokenKind::KwEnum);
+    CHECK(tokens[1].kind == mini_as::TokenKind::Identifier);
+    CHECK(tokens[4].kind == mini_as::TokenKind::Comma);
+}
+

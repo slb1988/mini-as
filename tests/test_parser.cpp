@@ -89,3 +89,23 @@ TEST_CASE(parser_makes_conditional_expressions_right_associative) {
     CHECK(expression->Children()[2]->kind == mini_as::NodeKind::Conditional);
 }
 
+TEST_CASE(parser_builds_typed_enum_values_with_optional_initializers) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer lexer("parse",
+        "enum Color { Red = 2, Green, Blue = Green + 2 }; Color current = Blue;",
+        diagnostics);
+    mini_as::Parser parser(lexer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    CHECK(!diagnostics.HasErrors());
+    const auto declarations = tree.root->Children();
+    CHECK(declarations.size() == 2);
+    CHECK(declarations[0]->kind == mini_as::NodeKind::EnumDecl);
+    const auto values = declarations[0]->Children();
+    CHECK(values.size() == 3);
+    CHECK(values[0]->kind == mini_as::NodeKind::EnumValue);
+    CHECK(values[0]->firstChild->kind == mini_as::NodeKind::Literal);
+    CHECK(values[1]->firstChild == nullptr);
+    CHECK(values[2]->firstChild->kind == mini_as::NodeKind::Binary);
+    CHECK(declarations[1]->declaredType == mini_as::DataType::Enum("Color"));
+}
+

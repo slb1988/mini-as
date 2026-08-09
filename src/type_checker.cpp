@@ -344,6 +344,10 @@ void TypeChecker::Predeclare(AstNode* root) {
                 type.methods.push_back(std::move(method));
             }
         }
+        type.generatedCopyConstructor = !type.interfaceType &&
+            std::none_of(type.methods.begin(), type.methods.end(), [](const auto& method) {
+                return method.constructor && method.parameters.size() == 1;
+            });
         classes_.push_back(std::move(type));
     }
 
@@ -1406,7 +1410,11 @@ DataType TypeChecker::CheckCall(AstNode* node) {
                 const auto cost = MatchArguments(candidate, arguments, argumentNames);
                 if (cost && *cost < bestCost) { constructor = &candidate; bestCost = *cost; }
             }
-            if ((hasConstructors && !constructor) || (!hasConstructors && !arguments.empty())) {
+            const bool generatedCopy = type->generatedCopyConstructor && arguments.size() == 1 &&
+                argumentNames[0].empty() &&
+                ConversionCost(arguments[0], DataType::Object(type->name, true)).has_value();
+            if (!constructor && !generatedCopy &&
+                ((hasConstructors && !constructor) || (!hasConstructors && !arguments.empty()))) {
                 const DataType target = DataType::Object(type->name, true);
                 const FunctionSignature* conversion = arguments.size() == 1 && argumentNames[0].empty()
                     ? FindOperatorMethod(arguments[0], "opConv", {}, target) : nullptr;

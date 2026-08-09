@@ -473,3 +473,29 @@ TEST_CASE(bytecode_records_try_ranges_and_catch_targets) {
     CHECK(handler.catchTarget < module.functions[0].code.size());
 }
 
+TEST_CASE(bytecode_lowers_generated_copy_construction_to_object_copy) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("generated-copy-bytecode",
+        "class Box { int value; } int run() { Box@ source = Box(); "
+        "Box@ copied = Box(source); return copied.value; }", diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    mini_as::TypeChecker checker(diagnostics);
+    CHECK(checker.Check(tree.root));
+    auto classes = checker.Classes();
+    classes[0].id = mini_as::TypeId{17};
+    mini_as::BytecodeCompiler compiler(diagnostics);
+    auto module = compiler.Compile(tree.root, checker.Functions(), classes);
+    CHECK(!diagnostics.HasErrors());
+    bool copied = false;
+    for (const auto& function : module.functions) {
+        if (function.signature.name != "run") continue;
+        for (const auto& instruction : function.code) {
+            if (instruction.opcode != mini_as::OpCode::CopyObject) continue;
+            copied = true;
+            CHECK(instruction.operand == 17);
+        }
+    }
+    CHECK(copied);
+}
+

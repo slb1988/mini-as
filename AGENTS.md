@@ -143,10 +143,10 @@ Do not stage generated build directories or unrelated user changes. Inspect
 The completed stage notes are authoritative. At the time this guide was added,
 the latest language stage is:
 
-- Stage 56: intrinsic `weakref<T>`/`const_weakref<T>` support for script objects.
+- Stage 57: generated member-wise copy constructors for script classes.
 
 The v0.3 compatibility matrix is published. The next planned language feature
-is v0.4 generated copy constructors. Confirm the
+is v0.4 disabled default and copy operations. Confirm the
 latest git history and `docs/stages/` before choosing the next stage number.
 
 ## Common pitfalls

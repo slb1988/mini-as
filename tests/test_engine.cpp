@@ -2072,3 +2072,58 @@ TEST_CASE(weak_references_reject_invalid_subtypes_and_cross_type_assignment) {
     CHECK(assignment);
 }
 
+TEST_CASE(generated_copy_constructors_copy_inherited_values_and_share_handles) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("generated-copy-constructors");
+    module->AddScriptSection("generated-copy-constructors",
+        "int constructions = 0; class Payload { int value; } "
+        "class Base { int baseValue; Base() { constructions += 1; } } "
+        "class Derived : Base { int ownValue; Payload@ payload; } "
+        "int run() { Derived@ original = Derived(); original.baseValue = 3; "
+        "original.ownValue = 4; @original.payload = Payload(); original.payload.value = 5; "
+        "Derived@ copied = Derived(original); original.baseValue = 30; "
+        "original.ownValue = 40; original.payload.value = 50; "
+        "return copied.baseValue * 100 + copied.ownValue * 10 + copied.payload.value + constructions; }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 391);
+}
+
+TEST_CASE(single_argument_constructors_suppress_generated_copy_constructors) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    auto* module = engine->GetModule("suppressed-generated-copy");
+    module->AddScriptSection("suppressed-generated-copy",
+        "class Box { Box(int value) {} } int run() { Box@ source = Box(1); "
+        "Box@ copied = Box(source); return 0; }");
+    CHECK(!module->Build());
+    bool missing = false;
+    for (const auto& diagnostic : diagnostics)
+        missing = missing || diagnostic.message.find("no matching constructor for 'Box'") !=
+            std::string::npos;
+    CHECK(missing);
+}
+
+TEST_CASE(null_generated_copy_sources_report_the_call_location) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("null-generated-copy");
+    module->AddScriptSection("null-generated-copy",
+        "class Box { int value; }\n"
+        "int run() {\n"
+        "  Box@ source;\n"
+        "  Box@ copied = Box(source);\n"
+        "  return copied.value;\n"
+        "}\n");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Exception);
+    CHECK(context->GetExceptionString().find("copy constructor source is null") != std::string::npos);
+    CHECK(context->GetExceptionLocation().row == 4);
+}
+

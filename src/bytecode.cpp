@@ -116,7 +116,7 @@ std::string_view OpCodeName(OpCode opcode) {
         "CONCAT", "NEG_I", "NEG_F", "NEG_D", "BIT_NOT", "NOT",
         "EQ", "NE", "LT", "LE", "GT", "GE", "JMP", "JZ", "CALL", "CALL_HOST",
         "CALL_VIRTUAL", "CALL_HANDLE", "MAKE_DELEGATE", "MAKE_CLOSURE",
-        "CAST_OBJECT", "NEW_OBJECT", "MAKE_WEAKREF", "LOCK_WEAKREF", "TO_CONST_WEAKREF",
+        "CAST_OBJECT", "NEW_OBJECT", "COPY_OBJECT", "MAKE_WEAKREF", "LOCK_WEAKREF", "TO_CONST_WEAKREF",
         "LOAD_FIELD", "STORE_FIELD",
         "MAKE_GLOBAL_REF", "MAKE_FIELD_REF", "LOAD_REF", "STORE_REF", "RET"
     };
@@ -143,6 +143,7 @@ std::string Disassemble(const BytecodeFunction& function) {
             instruction.opcode == OpCode::MakeClosure ||
             instruction.opcode == OpCode::CastObject ||
             instruction.opcode == OpCode::NewObject ||
+            instruction.opcode == OpCode::CopyObject ||
             instruction.opcode == OpCode::MakeWeakRef ||
             instruction.opcode == OpCode::LoadField || instruction.opcode == OpCode::StoreField ||
             instruction.opcode == OpCode::MakeGlobalReference ||
@@ -1560,6 +1561,16 @@ void BytecodeCompiler::CompileCall(AstNode* node, bool dereferenceResult) {
     if (!explicitMethod && classFound != classIds_.end()) {
         ReferenceReceiverMap referenceReceivers;
         Emit(OpCode::NewObject, static_cast<std::int32_t>(classFound->second.value), node);
+        const ClassSignature* constructedType = FindClass(resolvedClassName);
+        const bool generatedCopy = constructedType && constructedType->generatedCopyConstructor &&
+            arguments.size() == 1 && arguments[0]->kind != NodeKind::NamedArgument &&
+            ConversionCost(ArgumentExpression(arguments[0])->inferredType,
+                           DataType::Object(resolvedClassName, true)).has_value();
+        if (generatedCopy) {
+            CompileExpression(ArgumentExpression(arguments[0]));
+            Emit(OpCode::CopyObject, static_cast<std::int32_t>(classFound->second.value), node);
+            return;
+        }
         CompileFieldInitializers(resolvedClassName, node);
         const FunctionSignature* constructor = nullptr;
         int bestCost = 1000000;

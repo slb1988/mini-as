@@ -154,6 +154,15 @@ ScriptObject::ScriptObject(const TypeInfo* type, ObjectFinalizerQueue* finalizer
 
 const Value& ScriptObject::GetField(std::size_t index) const { return fields_.at(index); }
 void ScriptObject::SetField(std::size_t index, Value value) { fields_.at(index) = std::move(value); }
+bool ScriptObject::CopyFieldsFrom(const ScriptObject& source) {
+    const TypeInfo* destinationType = GetTypeInfo();
+    if (!destinationType || !source.IsA(destinationType->name) ||
+        source.fields_.size() < fields_.size()) return false;
+    std::vector<Value> copied(source.fields_.begin(),
+                              source.fields_.begin() + static_cast<std::ptrdiff_t>(fields_.size()));
+    fields_ = std::move(copied);
+    return true;
+}
 std::size_t ScriptObject::FieldCount() const { return fields_.size(); }
 
 bool ScriptObject::Implements(std::string_view interfaceName) const {

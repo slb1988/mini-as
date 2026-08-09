@@ -573,6 +573,25 @@ bool VirtualMachine::Step() {
         Push(Value(ObjectHandle(new ScriptObject(type, finalizerQueue_, std::move(finalizer)))));
         break;
     }
+    case OpCode::CopyObject: {
+        if (!module_ || instruction.operand < 0)
+            throw std::runtime_error("copy constructor type is unavailable");
+        const TypeInfo* type = module_->FindType(TypeId{static_cast<std::uint32_t>(instruction.operand)});
+        if (!type) throw std::runtime_error("copy constructor type is unavailable");
+        Value sourceValue = Pop();
+        Value destinationValue = Pop();
+        const auto& sourceHandle = sourceValue.As<ObjectHandle>();
+        const auto& destinationHandle = destinationValue.As<ObjectHandle>();
+        auto* source = sourceHandle ? dynamic_cast<ScriptObject*>(sourceHandle.Get()) : nullptr;
+        auto* destination = destinationHandle
+            ? dynamic_cast<ScriptObject*>(destinationHandle.Get()) : nullptr;
+        if (!source || !destination)
+            throw std::runtime_error("copy constructor source is null or not a script object");
+        if (destination->GetTypeInfo() != type || !destination->CopyFieldsFrom(*source))
+            throw std::runtime_error("copy constructor object types are incompatible");
+        Push(std::move(destinationValue));
+        break;
+    }
     case OpCode::MakeWeakRef: {
         if (instruction.operand < 0 ||
             static_cast<std::size_t>(instruction.operand) >= function_->constants.size())

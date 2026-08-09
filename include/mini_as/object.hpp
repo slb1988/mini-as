@@ -72,6 +72,7 @@ public:
                           ScriptFinalizerBinding finalizer = {});
     const Value& GetField(std::size_t index) const;
     void SetField(std::size_t index, Value value);
+    bool CopyFieldsFrom(const ScriptObject& source);
     std::size_t FieldCount() const;
     bool Implements(std::string_view interfaceName) const;
     bool IsA(std::string_view typeName) const;

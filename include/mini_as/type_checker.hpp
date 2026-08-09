@@ -46,6 +46,7 @@ struct ClassSignature {
     std::vector<FieldSignature> fields;
     std::size_t inheritedFieldCount = 0;
     std::vector<FunctionSignature> methods;
+    bool generatedCopyConstructor = false;
     TypeId id;
 };
 

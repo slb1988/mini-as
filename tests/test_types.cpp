@@ -167,6 +167,22 @@ TEST_CASE(type_checker_resolves_weakref_construction_get_and_implicit_lock) {
     CHECK(statement->firstChild->inferredType == mini_as::DataType::WeakRef("Payload"));
 }
 
+TEST_CASE(type_checker_marks_generated_copy_constructors_using_official_suppression_rule) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("generated-copy-types",
+        "class Automatic { Automatic() {} } "
+        "class Suppressed { Suppressed(int value) {} } interface Contract {}",
+        diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    mini_as::TypeChecker checker(diagnostics);
+    CHECK(checker.Check(tree.root));
+    CHECK(checker.Classes().size() == 3);
+    CHECK(checker.Classes()[0].generatedCopyConstructor);
+    CHECK(!checker.Classes()[1].generatedCopyConstructor);
+    CHECK(!checker.Classes()[2].generatedCopyConstructor);
+}
+
 TEST_CASE(type_checker_resolves_current_parent_and_explicit_namespaces) {
     mini_as::DiagnosticSink diagnostics;
     mini_as::Tokenizer tokenizer("types",

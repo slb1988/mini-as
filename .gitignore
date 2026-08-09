@@ -6,3 +6,5 @@
 /.idea
 cmake-build-clang
 cmake-build-alignment
+cmake-build-sanitize
+cmake-build-msvc

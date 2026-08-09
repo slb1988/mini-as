@@ -386,6 +386,59 @@ bool VirtualMachine::Step() {
         Push(std::move(fieldValue));
         break;
     }
+    case OpCode::MakeGlobalReference: {
+        if (!module_ || !moduleState_ || instruction.operand < 0)
+            throw std::runtime_error("global reference target is unavailable");
+        const GlobalId id{static_cast<std::uint32_t>(instruction.operand)};
+        const auto index = module_->FindGlobalIndex(id);
+        if (!index) throw std::runtime_error("global reference target is unavailable");
+        Push(Value(ReferenceStorage{ReferenceKind::Global,
+            module_->globals[*index].signature.type, id.value, {}}));
+        break;
+    }
+    case OpCode::MakeFieldReference: {
+        Value objectValue = Pop();
+        const auto& handle = objectValue.As<ObjectHandle>();
+        auto* object = handle ? dynamic_cast<ScriptObject*>(handle.Get()) : nullptr;
+        if (!object) throw std::runtime_error("null or non-script object reference target");
+        if (instruction.operand < 0 ||
+            static_cast<std::size_t>(instruction.operand) >= object->FieldCount())
+            throw std::runtime_error("field reference index out of range");
+        const auto field = static_cast<std::uint32_t>(instruction.operand);
+        Push(Value(ReferenceStorage{ReferenceKind::Field,
+            object->GetTypeInfo()->fields[field].second, field, handle}));
+        break;
+    }
+    case OpCode::LoadReference: {
+        const auto reference = Pop().As<ReferenceStorage>();
+        if (reference.kind == ReferenceKind::Global) {
+            if (!module_ || !moduleState_) throw std::runtime_error("global reference is unavailable");
+            const auto index = module_->FindGlobalIndex(GlobalId{reference.slot});
+            if (!index) throw std::runtime_error("global reference is unavailable");
+            Push(moduleState_->globals.at(*index));
+        } else {
+            auto* object = reference.object ? dynamic_cast<ScriptObject*>(reference.object.Get()) : nullptr;
+            if (!object) throw std::runtime_error("field reference is unavailable");
+            Push(object->GetField(reference.slot));
+        }
+        break;
+    }
+    case OpCode::StoreReference: {
+        Value stored = Pop();
+        const auto reference = Pop().As<ReferenceStorage>();
+        if (reference.kind == ReferenceKind::Global) {
+            if (!module_ || !moduleState_) throw std::runtime_error("global reference is unavailable");
+            const auto index = module_->FindGlobalIndex(GlobalId{reference.slot});
+            if (!index) throw std::runtime_error("global reference is unavailable");
+            moduleState_->globals.at(*index) = stored;
+        } else {
+            auto* object = reference.object ? dynamic_cast<ScriptObject*>(reference.object.Get()) : nullptr;
+            if (!object) throw std::runtime_error("field reference is unavailable");
+            object->SetField(reference.slot, stored);
+        }
+        Push(std::move(stored));
+        break;
+    }
     }
     return result_.state == ExecutionState::Active;
 }

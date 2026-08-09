@@ -280,3 +280,22 @@ TEST_CASE(bytecode_emits_reference_parameter_copy_in_and_writeback) {
     CHECK(listing.find("STORE_LOCAL") != std::string::npos);
 }
 
+TEST_CASE(bytecode_materializes_and_dereferences_returned_storage_references) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("return-reference-bytecode",
+        "int value = 1; int &access() { return value; } "
+        "int main() { access() = 42; return access(); }", diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    mini_as::TypeChecker checker(diagnostics);
+    CHECK(checker.Check(tree.root));
+    mini_as::BytecodeCompiler compiler(diagnostics);
+    auto module = compiler.Compile(tree.root, checker.Functions(), checker.Classes(), checker.Globals());
+    CHECK(!diagnostics.HasErrors());
+    const auto accessor = mini_as::Disassemble(module.functions[0]);
+    const auto caller = mini_as::Disassemble(module.functions[1]);
+    CHECK(accessor.find("MAKE_GLOBAL_REF") != std::string::npos);
+    CHECK(caller.find("STORE_REF") != std::string::npos);
+    CHECK(caller.find("LOAD_REF") != std::string::npos);
+}
+

@@ -122,13 +122,16 @@ AstNode* Parser::ParseTopLevel() {
     if (Match(TokenKind::KwInterface)) return ParseClass(true);
     if (Match(TokenKind::KwEnum)) return ParseEnum();
     if (Match(TokenKind::KwTypedef)) return ParseTypedef();
-    if (IsTypeStart()) {
+    if (IsTypeStart() || Check(TokenKind::KwConst)) {
         const auto saved = current_;
+        const bool returnConst = Match(TokenKind::KwConst);
         DataType type = ParseType(true);
+        const bool returnsReference = Match(TokenKind::Amp);
         if (Check(TokenKind::Identifier)) {
             Token name = Advance();
             name.lexeme = QualifyDeclaration(name.lexeme);
-            if (Check(TokenKind::LeftParen)) return ParseFunction(type, std::move(name));
+            if (Check(TokenKind::LeftParen))
+                return ParseFunction(type, std::move(name), returnsReference, returnConst);
         }
         current_ = saved;
     }
@@ -215,10 +218,12 @@ AstNode* Parser::ParseClass(bool isInterface) {
             node->AppendChild(constructor);
             continue;
         }
+        const bool returnConst = Match(TokenKind::KwConst);
         DataType type = ParseType(true);
+        const bool returnsReference = Match(TokenKind::Amp);
         Token memberName = Consume(TokenKind::Identifier, "expected member name");
         if (Check(TokenKind::LeftParen)) {
-            AstNode* method = ParseFunction(type, std::move(memberName));
+            AstNode* method = ParseFunction(type, std::move(memberName), returnsReference, returnConst);
             node->AppendChild(method);
         } else {
             AstNode* field = arena_->Make(NodeKind::FieldDecl, memberName);
@@ -233,9 +238,12 @@ AstNode* Parser::ParseClass(bool isInterface) {
     return node;
 }
 
-AstNode* Parser::ParseFunction(DataType returnType, Token name) {
+AstNode* Parser::ParseFunction(DataType returnType, Token name, bool returnsReference,
+                               bool returnReferenceConst) {
     AstNode* function = arena_->Make(NodeKind::FunctionDecl, name);
     function->declaredType = std::move(returnType);
+    function->returnsReference = returnsReference;
+    function->returnReferenceConst = returnReferenceConst;
     Consume(TokenKind::LeftParen, "expected '(' after function name");
     bool sawDefault = false;
     if (!Check(TokenKind::RightParen)) {

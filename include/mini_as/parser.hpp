@@ -30,6 +30,8 @@ struct AstNode {
     bool isPostfix = false;
     bool implicitThis = false;
     bool isConstructor = false;
+    bool returnsReference = false;
+    bool returnReferenceConst = false;
     ParameterMode parameterMode = ParameterMode::Value;
     AstNode* firstChild = nullptr;
     AstNode* nextSibling = nullptr;
@@ -62,7 +64,8 @@ private:
     AstNode* ParseClass(bool isInterface);
     AstNode* ParseEnum();
     AstNode* ParseTypedef();
-    AstNode* ParseFunction(DataType returnType, Token name);
+    AstNode* ParseFunction(DataType returnType, Token name, bool returnsReference = false,
+                           bool returnReferenceConst = false);
     AstNode* ParseBlock();
     AstNode* ParseStatement();
     AstNode* ParseVariableDeclaration();

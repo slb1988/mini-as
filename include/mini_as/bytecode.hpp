@@ -22,7 +22,8 @@ enum class OpCode : std::uint8_t {
     Concat, NegInt, NegFloat, NegDouble, BitNot, LogicalNot,
     Equal, NotEqual, Less, LessEqual, Greater, GreaterEqual,
     Jump, JumpIfFalse,
-    Call, CallHost, CallVirtual, NewObject, LoadField, StoreField, Return
+    Call, CallHost, CallVirtual, NewObject, LoadField, StoreField,
+    MakeGlobalReference, MakeFieldReference, LoadReference, StoreReference, Return
 };
 
 struct Instruction {
@@ -102,7 +103,7 @@ private:
     using ReferenceReceiverMap = std::unordered_map<const AstNode*, VariableId>;
 
     struct LValueRef {
-        enum class Kind { Local, Global, Field, Index } kind = Kind::Local;
+        enum class Kind { Local, Global, Field, Dynamic, Index } kind = Kind::Local;
         DataType type = DataType::Invalid();
         VariableId variable;
         GlobalId global;
@@ -126,7 +127,8 @@ private:
     void CompileExpression(AstNode* node);
     void CompileBinary(AstNode* node);
     void CompileLogical(AstNode* node);
-    void CompileCall(AstNode* node);
+    void CompileCall(AstNode* node, bool dereferenceResult = true);
+    void CompileReferenceTarget(AstNode* expression, const AstNode* source);
     void CompileCallArgument(const FunctionSignature& signature, std::size_t index,
                              AstNode* expression, ReferenceReceiverMap& receivers);
     void CompileReferenceWritebacks(const FunctionSignature& signature,

@@ -72,7 +72,15 @@ std::optional<FunctionSignature> ParseFunctionDeclaration(
     if (diagnostics.HasErrors()) return std::nullopt;
     std::size_t index = 0;
     FunctionSignature signature;
+    if (index < tokens.size() && tokens[index].kind == TokenKind::KwConst) {
+        signature.returnReferenceConst = true;
+        ++index;
+    }
     signature.returnType = ReadType(tokens, index);
+    if (index < tokens.size() && tokens[index].kind == TokenKind::Amp) {
+        signature.returnsReference = true;
+        ++index;
+    }
     if (!signature.returnType.IsValid() || index >= tokens.size() || tokens[index].kind != TokenKind::Identifier) {
         diagnostics.Report(tokens[std::min(index, tokens.size() - 1)].location, Severity::Error,
                            "invalid function declaration");

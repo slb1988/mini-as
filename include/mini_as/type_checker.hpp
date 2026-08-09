@@ -21,6 +21,8 @@ struct FunctionSignature {
     std::size_t defaultArgumentCount = 0;
     std::vector<std::string> parameterNames;
     std::vector<ParameterMode> parameterModes;
+    bool returnsReference = false;
+    bool returnReferenceConst = false;
 
     std::string Declaration() const;
 };
@@ -73,6 +75,7 @@ private:
     struct VariableSymbol {
         DataType type;
         bool isConst = false;
+        bool returnableReference = false;
     };
 
     void PredeclareTypedefs(AstNode* root);
@@ -99,7 +102,9 @@ private:
                                     const std::vector<AstNode*>& arguments,
                                     const std::vector<std::string>& argumentNames);
     const ClassSignature* FindClass(std::string_view name) const;
-    void Declare(const Token& name, const DataType& type, bool isConst = false);
+    void Declare(const Token& name, const DataType& type, bool isConst = false,
+                 bool returnableReference = false);
+    bool CanReturnReference(const AstNode* node) const;
     bool CanConvert(const DataType& from, const DataType& to) const;
     std::optional<int> ConversionCost(const DataType& from, const DataType& to) const;
     void Error(const AstNode* node, std::string message);
@@ -113,6 +118,7 @@ private:
     std::unordered_map<std::string, Value> enumConstants_;
     std::vector<std::unordered_map<std::string, VariableSymbol>> scopes_;
     DataType currentReturn_ = DataType::Void();
+    bool currentReturnsReference_ = false;
     int breakableDepth_ = 0;
     int loopDepth_ = 0;
     const ClassSignature* currentClass_ = nullptr;

@@ -216,6 +216,11 @@ bool ScriptEngine::RegisterGlobalFunction(std::string declaration, GenericFuncti
     DiagnosticSink diagnostics([this](const Diagnostic& diagnostic) { ForwardDiagnostic(diagnostic); });
     auto signature = ParseFunctionDeclaration(declaration, diagnostics);
     if (!signature || !callback) return false;
+    if (signature->returnsReference) {
+        diagnostics.Report({"registration"}, Severity::Error,
+                           "host return references require registered property storage");
+        return false;
+    }
     for (const auto& existing : hostFunctions_) {
         if (existing.signature.name == signature->name &&
             existing.signature.parameters == signature->parameters) {

@@ -1005,3 +1005,58 @@ TEST_CASE(reference_parameter_runtime_errors_report_the_callee_location) {
     CHECK(context->GetExceptionLocation().row == 2);
 }
 
+TEST_CASE(return_references_modify_globals_and_fields_and_read_as_values) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("return-references");
+    module->AddScriptSection("return-references",
+        "int value = 1; int &access() { return value; } "
+        "const int &read() { return value; } "
+        "class Box { int field = 0; int &get() { return field; } } "
+        "int main() { Box@ box = Box(); access() = 38; access() += 2; "
+        "int before = access()++; ++access(); box.get() = 2; "
+        "return before + read() + box.get() - 42; }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int main()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+}
+
+TEST_CASE(return_references_reject_locals_parameters_const_writes_and_host_registration) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    auto* module = engine->GetModule("bad-return-references");
+    module->AddScriptSection("bad-return-references",
+        "int global = 0; int &localRef() { int local = 0; return local; } "
+        "int &parameterRef(int value) { return value; } "
+        "const int &read() { return global; } int main() { read() = 1; return 0; }");
+    CHECK(!module->Build());
+    int lifetimeErrors = 0;
+    bool constWrite = false;
+    for (const auto& diagnostic : diagnostics) {
+        if (diagnostic.message.find("sufficient lifetime") != std::string::npos) ++lifetimeErrors;
+        constWrite = constWrite || diagnostic.message.find("cannot assign to const") != std::string::npos;
+    }
+    CHECK(lifetimeErrors >= 2);
+    CHECK(constWrite);
+    CHECK(!engine->RegisterGlobalFunction("int &hostRef()", [](mini_as::GenericCall&) {}));
+}
+
+TEST_CASE(return_reference_runtime_errors_report_the_return_location) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("return-reference-runtime");
+    module->AddScriptSection("return-reference-runtime",
+        "class Box { int value = 0; } Box@ box;\n"
+        "int &fail() { return box.value; }\n"
+        "int main() { return fail(); }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int main()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Exception);
+    CHECK(context->GetExceptionString() == "null or non-script object reference target");
+    CHECK(context->GetExceptionLocation().row == 2);
+}
+

@@ -143,10 +143,10 @@ Do not stage generated build directories or unrelated user changes. Inspect
 The completed stage notes are authoritative. At the time this guide was added,
 the latest language stage is:
 
-- Stage 42: `in`, `out`, and `inout` parameters.
+- Stage 43: script return references.
 
-The next planned language feature is return references, followed by script
-destructors, inheritance/polymorphism, access control, casts, operator
+The next planned language feature is script destructors, followed by
+inheritance/polymorphism, access control, casts, operator
 overloads, property accessors, and script exceptions. Confirm the latest git
 history and `docs/stages/` before choosing the next stage number.
 

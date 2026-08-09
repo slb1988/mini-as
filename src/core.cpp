@@ -120,6 +120,11 @@ bool operator==(const IntegerStorage& left, const IntegerStorage& right) {
     return left.kind == right.kind && left.bits == right.bits && left.typeName == right.typeName;
 }
 
+bool operator==(const ReferenceStorage& left, const ReferenceStorage& right) {
+    return left.kind == right.kind && left.type == right.type && left.slot == right.slot &&
+           left.object == right.object;
+}
+
 Value::Value(bool value) : storage_(value) {}
 Value::Value(std::int32_t value) : storage_(value) {}
 Value::Value(float value) : storage_(value) {}
@@ -127,6 +132,7 @@ Value::Value(double value) : storage_(value) {}
 Value::Value(std::string value) : storage_(std::move(value)) {}
 Value::Value(const char* value) : storage_(std::string(value)) {}
 Value::Value(ObjectHandle value) : storage_(std::move(value)) {}
+Value::Value(ReferenceStorage value) : storage_(std::move(value)) {}
 
 Value Value::Integer(const DataType& type, std::uint64_t bits) {
     if (!type.IsInteger()) throw std::runtime_error("integer value requires an integer type");
@@ -155,11 +161,13 @@ DataType Value::Type() const {
         return handle ? DataType::Object(handle.Get()->GetTypeInfo()->name, true)
                       : DataType::Object("<null>", true);
     }
+    case 8: return std::get<ReferenceStorage>(storage_).type;
     default: return DataType::Invalid();
     }
 }
 
 bool Value::IsVoid() const { return std::holds_alternative<std::monostate>(storage_); }
+bool Value::IsReference() const { return std::holds_alternative<ReferenceStorage>(storage_); }
 std::uint64_t Value::UnsignedInteger() const {
     if (const auto* value = std::get_if<std::int32_t>(&storage_))
         return static_cast<std::uint32_t>(*value);
@@ -196,6 +204,7 @@ std::string Value::ToString() const {
         return stream.str();
     }
     if (const auto* value = std::get_if<std::string>(&storage_)) return *value;
+    if (std::holds_alternative<ReferenceStorage>(storage_)) return "<reference>";
     const auto& handle = std::get<ObjectHandle>(storage_);
     return handle ? "<" + handle.Get()->GetTypeInfo()->name + "@>" : "null";
 }

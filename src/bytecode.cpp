@@ -101,7 +101,8 @@ std::string_view OpCodeName(OpCode opcode) {
         "ADD_D", "SUB_D", "MUL_D", "DIV_D", "POW_D",
         "CONCAT", "NEG_I", "NEG_F", "NEG_D", "BIT_NOT", "NOT",
         "EQ", "NE", "LT", "LE", "GT", "GE", "JMP", "JZ", "CALL", "CALL_HOST",
-        "CALL_VIRTUAL", "NEW_OBJECT", "LOAD_FIELD", "STORE_FIELD", "RET"
+        "CALL_VIRTUAL", "NEW_OBJECT", "LOAD_FIELD", "STORE_FIELD",
+        "MAKE_GLOBAL_REF", "MAKE_FIELD_REF", "LOAD_REF", "STORE_REF", "RET"
     };
     return names[static_cast<std::size_t>(opcode)];
 }
@@ -120,7 +121,9 @@ std::string Disassemble(const BytecodeFunction& function) {
             instruction.opcode == OpCode::JumpIfFalse || instruction.opcode == OpCode::Call ||
             instruction.opcode == OpCode::CallHost || instruction.opcode == OpCode::CallVirtual ||
             instruction.opcode == OpCode::NewObject ||
-            instruction.opcode == OpCode::LoadField || instruction.opcode == OpCode::StoreField) out << instruction.operand;
+            instruction.opcode == OpCode::LoadField || instruction.opcode == OpCode::StoreField ||
+            instruction.opcode == OpCode::MakeGlobalReference ||
+            instruction.opcode == OpCode::MakeFieldReference) out << instruction.operand;
         out << "  ; " << instruction.location.row << ':' << instruction.location.column << '\n';
     }
     return out.str();
@@ -214,7 +217,8 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
         if (node->kind == NodeKind::ClassDecl) classNodes_[node->token.lexeme] = node;
     for (AstNode* node : TopLevelDeclarations(root)) {
         if (node->kind == NodeKind::FunctionDecl) {
-            FunctionSignature signature{node->token.lexeme, node->declaredType, {}, false, {}, {}, false, false, 0, {}, {}};
+            FunctionSignature signature{node->token.lexeme, node->declaredType, {}, false, {}, {}, false, false, 0, {}, {},
+                                        node->returnsReference, node->returnReferenceConst};
             for (AstNode* parameter = node->firstChild;
                  parameter && parameter->kind == NodeKind::Parameter; parameter = parameter->nextSibling) {
                 signature.parameters.push_back(parameter->declaredType);
@@ -228,7 +232,8 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
             for (AstNode* methodNode = node->firstChild; methodNode; methodNode = methodNode->nextSibling) {
                 if (methodNode->kind != NodeKind::FunctionDecl) continue;
                 FunctionSignature method{methodNode->token.lexeme, methodNode->declaredType, {}, false, {},
-                                         node->token.lexeme, true, methodNode->isConstructor, 0, {}, {}};
+                                         node->token.lexeme, true, methodNode->isConstructor, 0, {}, {},
+                                         methodNode->returnsReference, methodNode->returnReferenceConst};
                 for (AstNode* parameter = methodNode->firstChild;
                      parameter && parameter->kind == NodeKind::Parameter; parameter = parameter->nextSibling) {
                     method.parameters.push_back(parameter->declaredType);
@@ -271,7 +276,9 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
                     if (implementation.constructor || implementation.name != required.name ||
                         implementation.returnType != required.returnType ||
                         implementation.parameters != required.parameters ||
-                        implementation.parameterModes != required.parameterModes) continue;
+                        implementation.parameterModes != required.parameterModes ||
+                        implementation.returnsReference != required.returnsReference ||
+                        implementation.returnReferenceConst != required.returnReferenceConst) continue;
                     const auto found = functionIds_.find(FunctionKey(implementation));
                     if (found != functionIds_.end())
                         module_.virtualDispatch.push_back({concrete.id, interfaceType->id,
@@ -282,7 +289,8 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
     }
     for (AstNode* node : TopLevelDeclarations(root)) {
         if (node->kind != NodeKind::FunctionDecl) continue;
-        FunctionSignature astSignature{node->token.lexeme, node->declaredType, {}, false, {}, {}, false, false, 0, {}, {}};
+        FunctionSignature astSignature{node->token.lexeme, node->declaredType, {}, false, {}, {}, false, false, 0, {}, {},
+                                       node->returnsReference, node->returnReferenceConst};
         for (AstNode* child = node->firstChild; child && child->kind == NodeKind::Parameter; child = child->nextSibling) {
             astSignature.parameters.push_back(child->declaredType);
             astSignature.parameterModes.push_back(child->parameterMode);
@@ -295,7 +303,8 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
         for (AstNode* methodNode = typeNode->firstChild; methodNode; methodNode = methodNode->nextSibling) {
             if (methodNode->kind != NodeKind::FunctionDecl || !methodNode->firstChild) continue;
             FunctionSignature method{methodNode->token.lexeme, methodNode->declaredType, {}, false, {},
-                                     typeNode->token.lexeme, true, methodNode->isConstructor, 0, {}, {}};
+                                     typeNode->token.lexeme, true, methodNode->isConstructor, 0, {}, {},
+                                     methodNode->returnsReference, methodNode->returnReferenceConst};
             for (AstNode* parameter = methodNode->firstChild;
                  parameter && parameter->kind == NodeKind::Parameter; parameter = parameter->nextSibling) {
                 method.parameters.push_back(parameter->declaredType);
@@ -402,9 +411,11 @@ void BytecodeCompiler::CompileStatement(AstNode* node) {
     }
     case NodeKind::ExprStmt: CompileExpression(node->firstChild); Emit(OpCode::Pop, 0, node); break;
     case NodeKind::ReturnStmt:
-        if (node->firstChild) CompileExpression(node->firstChild);
+        if (node->firstChild && function_->signature.returnsReference)
+            CompileReferenceTarget(node->firstChild, node);
+        else if (node->firstChild) CompileExpression(node->firstChild);
         else Emit(OpCode::PushVoid, 0, node);
-        if (node->firstChild)
+        if (node->firstChild && !function_->signature.returnsReference)
             EmitConversion(node->firstChild->inferredType, function_->signature.returnType, node);
         Emit(OpCode::Return, 0, node);
         break;
@@ -660,6 +671,13 @@ std::optional<BytecodeCompiler::LValueRef> BytecodeCompiler::ResolveLValue(AstNo
         result.receiver = expression->firstChild;
         return result;
     }
+    if (expression->kind == NodeKind::Call && expression->returnsReference) {
+        LValueRef result;
+        result.kind = LValueRef::Kind::Dynamic;
+        result.type = expression->inferredType;
+        result.receiver = expression;
+        return result;
+    }
     return std::nullopt;
 }
 
@@ -676,6 +694,10 @@ void BytecodeCompiler::CompileLValueLoad(const LValueRef& target, const AstNode*
     case LValueRef::Kind::Global:
         Emit(OpCode::LoadGlobal, static_cast<std::int32_t>(target.global.value), source);
         break;
+    case LValueRef::Kind::Dynamic:
+        CompileCall(target.receiver, false);
+        Emit(OpCode::LoadReference, 0, source);
+        break;
     case LValueRef::Kind::Index:
         Error(source, "lvalue kind is not implemented");
         break;
@@ -684,6 +706,13 @@ void BytecodeCompiler::CompileLValueLoad(const LValueRef& target, const AstNode*
 
 void BytecodeCompiler::CompileLValueStore(const LValueRef& target, AstNode* value,
                                           const AstNode* source) {
+    if (target.kind == LValueRef::Kind::Dynamic) {
+        CompileCall(target.receiver, false);
+        CompileExpression(value);
+        EmitConversion(value->inferredType, target.type, source);
+        Emit(OpCode::StoreReference, 0, source);
+        return;
+    }
     if (target.kind == LValueRef::Kind::Field) {
         if (target.receiver) CompileExpression(target.receiver);
         else Emit(OpCode::LoadLocal, static_cast<std::int32_t>(implicitThisSlot_), source);
@@ -702,6 +731,7 @@ void BytecodeCompiler::CompileLValueStore(const LValueRef& target, AstNode* valu
         Emit(OpCode::Dup, 0, source);
         Emit(OpCode::StoreGlobal, static_cast<std::int32_t>(target.global.value), source);
         break;
+    case LValueRef::Kind::Dynamic: break;
     case LValueRef::Kind::Index:
         Error(source, "lvalue kind is not implemented");
         break;
@@ -710,7 +740,11 @@ void BytecodeCompiler::CompileLValueStore(const LValueRef& target, AstNode* valu
 
 void BytecodeCompiler::CompileCompoundAssignment(const LValueRef& target, AstNode* value,
                                                  TokenKind operation, const AstNode* source) {
-    if (target.kind == LValueRef::Kind::Field) {
+    if (target.kind == LValueRef::Kind::Dynamic) {
+        CompileCall(target.receiver, false);
+        Emit(OpCode::Dup, 0, source);
+        Emit(OpCode::LoadReference, 0, source);
+    } else if (target.kind == LValueRef::Kind::Field) {
         if (target.receiver) CompileExpression(target.receiver);
         else Emit(OpCode::LoadLocal, static_cast<std::int32_t>(implicitThisSlot_), source);
         Emit(OpCode::Dup, 0, source);
@@ -764,6 +798,9 @@ void BytecodeCompiler::CompileCompoundAssignment(const LValueRef& target, AstNod
     case LValueRef::Kind::Field:
         Emit(OpCode::StoreField, static_cast<std::int32_t>(target.field), source);
         break;
+    case LValueRef::Kind::Dynamic:
+        Emit(OpCode::StoreReference, 0, source);
+        break;
     case LValueRef::Kind::Index:
         Error(source, "lvalue kind is not implemented");
         break;
@@ -773,6 +810,33 @@ void BytecodeCompiler::CompileCompoundAssignment(const LValueRef& target, AstNod
 void BytecodeCompiler::CompileIncrement(AstNode* node) {
     const auto target = ResolveLValue(node ? node->firstChild : nullptr);
     if (!target) { Error(node, "increment target cannot be compiled"); return; }
+    if (target->kind == LValueRef::Kind::Dynamic) {
+        CompileCall(target->receiver, false);
+        Emit(OpCode::Dup, 0, node);
+        Emit(OpCode::LoadReference, 0, node);
+        std::optional<VariableId> original;
+        if (node->isPostfix) {
+            original = VariableId{nextLocal_++};
+            Emit(OpCode::Dup, 0, node);
+            Emit(OpCode::StoreLocal, static_cast<std::int32_t>(original->value), node);
+        }
+        const bool floating = target->type == DataType::Float();
+        const bool doublePrecision = target->type == DataType::Double();
+        Emit(OpCode::PushConst,
+             AddConstant(doublePrecision ? Value(1.0)
+                         : floating ? Value(1.0f) : Value::Integer(target->type, 1)), node);
+        Emit(node->token.kind == TokenKind::PlusPlus
+                 ? (doublePrecision ? OpCode::AddDouble
+                                    : floating ? OpCode::AddFloat : OpCode::AddInt)
+                 : (doublePrecision ? OpCode::SubDouble
+                                    : floating ? OpCode::SubFloat : OpCode::SubInt), 0, node);
+        Emit(OpCode::StoreReference, 0, node);
+        if (original) {
+            Emit(OpCode::Pop, 0, node);
+            Emit(OpCode::LoadLocal, static_cast<std::int32_t>(original->value), node);
+        }
+        return;
+    }
     if (target->kind == LValueRef::Kind::Field) {
         if (target->receiver) CompileExpression(target->receiver);
         else Emit(OpCode::LoadLocal, static_cast<std::int32_t>(implicitThisSlot_), node);
@@ -808,6 +872,7 @@ void BytecodeCompiler::CompileIncrement(AstNode* node) {
     case LValueRef::Kind::Field:
         Emit(OpCode::StoreField, static_cast<std::int32_t>(target->field), node);
         break;
+    case LValueRef::Kind::Dynamic: break;
     case LValueRef::Kind::Index:
         Error(node, "lvalue kind is not implemented");
         return;
@@ -919,7 +984,7 @@ void BytecodeCompiler::CompileFieldInitializers(std::string_view typeName, const
     implicitThisSlot_ = previousThisSlot;
 }
 
-void BytecodeCompiler::CompileCall(AstNode* node) {
+void BytecodeCompiler::CompileCall(AstNode* node, bool dereferenceResult) {
     AstNode* callee = node->firstChild;
     if (!callee || (callee->kind != NodeKind::Identifier && callee->kind != NodeKind::Member)) {
         Error(node, "callee cannot be compiled"); return;
@@ -1051,7 +1116,9 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
                 const auto& method = ownerType->methods[index];
                 if (method.name == target->name && method.returnType == target->returnType &&
                     method.parameters == target->parameters &&
-                    method.parameterModes == target->parameterModes) {
+                    method.parameterModes == target->parameterModes &&
+                    method.returnsReference == target->returnsReference &&
+                    method.returnReferenceConst == target->returnReferenceConst) {
                     slot = static_cast<std::uint32_t>(index);
                     foundSlot = true;
                     break;
@@ -1062,6 +1129,7 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
                  AddCallable({CallableKind::VirtualMethod, {}, ownerType->id, slot,
                               static_cast<std::uint32_t>(target->parameters.size())}), node);
             CompileReferenceWritebacks(*target, *ordered, referenceReceivers, node);
+            if (target->returnsReference && dereferenceResult) Emit(OpCode::LoadReference, 0, node);
             return;
         }
     }
@@ -1084,6 +1152,23 @@ void BytecodeCompiler::CompileCall(AstNode* node) {
                                        static_cast<std::uint32_t>(target->parameters.size())}), node);
     }
     CompileReferenceWritebacks(*target, *ordered, referenceReceivers, node);
+    if (target->returnsReference && dereferenceResult) Emit(OpCode::LoadReference, 0, node);
+}
+
+void BytecodeCompiler::CompileReferenceTarget(AstNode* expression, const AstNode* source) {
+    if (expression && expression->kind == NodeKind::Call && expression->returnsReference) {
+        CompileCall(expression, false);
+        return;
+    }
+    const auto target = ResolveLValue(expression);
+    if (!target) { Error(source, "return reference target cannot be compiled"); return; }
+    if (target->kind == LValueRef::Kind::Global) {
+        Emit(OpCode::MakeGlobalReference, static_cast<std::int32_t>(target->global.value), source);
+    } else if (target->kind == LValueRef::Kind::Field) {
+        if (target->receiver) CompileExpression(target->receiver);
+        else Emit(OpCode::LoadLocal, static_cast<std::int32_t>(implicitThisSlot_), source);
+        Emit(OpCode::MakeFieldReference, static_cast<std::int32_t>(target->field), source);
+    } else Error(source, "cannot return reference to local storage");
 }
 
 void BytecodeCompiler::CompileCallArgument(const FunctionSignature& signature, std::size_t index,
@@ -1155,6 +1240,10 @@ void BytecodeCompiler::CompileReferenceWritebacks(
             else Emit(OpCode::LoadLocal, static_cast<std::int32_t>(implicitThisSlot_), source);
             Emit(OpCode::Swap, 0, source);
             Emit(OpCode::StoreField, static_cast<std::int32_t>(target->field), source);
+            Emit(OpCode::Pop, 0, source);
+            break;
+        case LValueRef::Kind::Dynamic:
+            Error(source, "dynamic reference argument writeback is not implemented");
             Emit(OpCode::Pop, 0, source);
             break;
         case LValueRef::Kind::Index:

@@ -54,7 +54,11 @@ std::optional<int> NameMatchCost(std::string_view candidate, std::string_view re
 
 std::string FunctionSignature::Declaration() const {
     std::ostringstream out;
-    out << returnType.Name() << ' ' << name << '(';
+    if (returnReferenceConst) out << "const ";
+    out << returnType.Name();
+    if (returnsReference) out << " &";
+    else out << ' ';
+    out << name << '(';
     for (std::size_t i = 0; i < parameters.size(); ++i) {
         if (i) out << ", ";
         out << parameters[i].Name();
@@ -188,7 +192,8 @@ void TypeChecker::Predeclare(AstNode* root) {
             if (child->kind == NodeKind::FieldDecl) type.fields.push_back({child->token.lexeme, child->declaredType});
             else if (child->kind == NodeKind::FunctionDecl) {
                 FunctionSignature method{child->token.lexeme, child->declaredType, {}, false, {},
-                                         type.name, true, child->isConstructor, 0, {}, {}};
+                                         type.name, true, child->isConstructor, 0, {}, {},
+                                         child->returnsReference, child->returnReferenceConst};
                 for (AstNode* parameter = child->firstChild;
                      parameter && parameter->kind == NodeKind::Parameter; parameter = parameter->nextSibling) {
                     method.parameters.push_back(parameter->declaredType);
@@ -217,7 +222,9 @@ void TypeChecker::Predeclare(AstNode* root) {
                 for (const auto& method : type.methods) {
                     if (method.name == required.name && method.returnType == required.returnType &&
                         method.parameters == required.parameters &&
-                        method.parameterModes == required.parameterModes) found = true;
+                        method.parameterModes == required.parameterModes &&
+                        method.returnsReference == required.returnsReference &&
+                        method.returnReferenceConst == required.returnReferenceConst) found = true;
                 }
                 if (!found) Error(root, "class '" + type.name + "' does not implement " +
                                         interfaceName + "::" + required.Declaration());
@@ -226,7 +233,8 @@ void TypeChecker::Predeclare(AstNode* root) {
     }
     for (AstNode* node : TopLevelDeclarations(root)) {
         if (node->kind != NodeKind::FunctionDecl) continue;
-        FunctionSignature signature{node->token.lexeme, node->declaredType, {}, false, {}, {}, false, false, 0, {}, {}};
+        FunctionSignature signature{node->token.lexeme, node->declaredType, {}, false, {}, {}, false, false, 0, {}, {},
+                                    node->returnsReference, node->returnReferenceConst};
         for (AstNode* child = node->firstChild; child && child->kind == NodeKind::Parameter;
              child = child->nextSibling) {
             signature.parameters.push_back(child->declaredType);
@@ -258,7 +266,7 @@ void TypeChecker::PredeclareGlobals(AstNode* root) {
     }
     for (AstNode* declaration : declarations) {
         if (!declaration->isAuto)
-            Declare(declaration->token, declaration->declaredType, declaration->isConst);
+            Declare(declaration->token, declaration->declaredType, declaration->isConst, true);
     }
     for (AstNode* node : TopLevelDeclarations(root)) {
         std::vector<AstNode*> group;
@@ -281,7 +289,7 @@ void TypeChecker::PredeclareGlobals(AstNode* root) {
             if (!sharedAutoType.IsValid()) sharedAutoType = CheckExpression(declaration->firstChild);
             currentNamespace_ = previousNamespace;
             declaration->declaredType = sharedAutoType;
-            Declare(declaration->token, declaration->declaredType, declaration->isConst);
+            Declare(declaration->token, declaration->declaredType, declaration->isConst, true);
         }
     }
     for (AstNode* declaration : declarations) {
@@ -401,7 +409,10 @@ void TypeChecker::CheckNode(AstNode* node) {
     }
     case NodeKind::ReturnStmt: {
         DataType value = node->firstChild ? CheckExpression(node->firstChild) : DataType::Void();
-        if (!CanConvert(value, currentReturn_)) {
+        if (currentReturnsReference_) {
+            if (!node->firstChild || value != currentReturn_ || !CanReturnReference(node->firstChild))
+                Error(node, "return reference must name a global variable or a field with sufficient lifetime");
+        } else if (!CanConvert(value, currentReturn_)) {
             Error(node, "cannot return " + value.Name() + " from function returning " + currentReturn_.Name());
         }
         break;
@@ -442,10 +453,12 @@ void TypeChecker::CheckNode(AstNode* node) {
 
 void TypeChecker::CheckFunction(AstNode* node) {
     const DataType previousReturn = currentReturn_;
+    const bool previousReturnsReference = currentReturnsReference_;
     const std::string previousNamespace = currentNamespace_;
     currentNamespace_ = currentClass_ ? NamespaceOf(currentClass_->name)
                                       : NamespaceOf(node->token.lexeme);
     currentReturn_ = node->declaredType;
+    currentReturnsReference_ = node->returnsReference;
     scopes_.emplace_back();
     AstNode* child = node->firstChild;
     while (child && child->kind == NodeKind::Parameter) {
@@ -466,6 +479,7 @@ void TypeChecker::CheckFunction(AstNode* node) {
     if (child && child->kind == NodeKind::Block) CheckBlock(child, false);
     scopes_.pop_back();
     currentReturn_ = previousReturn;
+    currentReturnsReference_ = previousReturnsReference;
     currentNamespace_ = previousNamespace;
 }
 
@@ -540,17 +554,20 @@ DataType TypeChecker::CheckExpression(AstNode* node) {
     case NodeKind::Unary: result = CheckUnary(node); break;
     case NodeKind::Increment: {
         AstNode* operand = node->firstChild;
-        if (!operand || (operand->kind != NodeKind::Identifier && operand->kind != NodeKind::Member))
+        result = CheckExpression(operand);
+        if (!operand || (operand->kind != NodeKind::Identifier && operand->kind != NodeKind::Member &&
+                         !(operand->kind == NodeKind::Call && operand->returnsReference)))
             Error(operand, "increment operand is not assignable");
         if (IsReadOnlyLValue(operand)) Error(operand, "cannot modify const variable");
-        result = CheckExpression(operand);
         if (!result.IsNumeric()) Error(node, "increment operator requires a numeric operand");
         break;
     }
     case NodeKind::Call: result = CheckCall(node); break;
     case NodeKind::Assign: {
         const auto children = node->Children();
-        if (children[0]->kind != NodeKind::Identifier && children[0]->kind != NodeKind::Member) {
+        DataType target = CheckExpression(children[0]);
+        if (children[0]->kind != NodeKind::Identifier && children[0]->kind != NodeKind::Member &&
+            !(children[0]->kind == NodeKind::Call && children[0]->returnsReference)) {
             Error(children[0], "left side of assignment is not assignable");
         }
         if (children[0]->kind == NodeKind::Identifier && FindEnumConstant(children[0]->token.lexeme)) {
@@ -558,7 +575,6 @@ DataType TypeChecker::CheckExpression(AstNode* node) {
         } else if (IsReadOnlyLValue(children[0])) {
             Error(children[0], "cannot assign to const variable '" + children[0]->token.lexeme + "'");
         }
-        DataType target = CheckExpression(children[0]);
         DataType value = CheckExpression(children[1]);
         if (node->token.kind == TokenKind::Equal) {
             if (!CanConvert(value, target))
@@ -686,7 +702,11 @@ DataType TypeChecker::CheckCall(AstNode* node) {
         const DataType object = CheckExpression(callee->firstChild);
         const FunctionSignature* method = FindMethod(object, callee->token.lexeme, arguments, argumentNames);
         if (!method) Error(node, "no matching method for '" + callee->token.lexeme + "'");
-        else ValidateReferenceArguments(*method, argumentNodes, argumentNames);
+        else {
+            ValidateReferenceArguments(*method, argumentNodes, argumentNames);
+            node->returnsReference = method->returnsReference;
+            node->returnReferenceConst = method->returnReferenceConst;
+        }
         return method ? method->returnType : DataType::Invalid();
     }
     if (callee->kind != NodeKind::Identifier) {
@@ -697,6 +717,8 @@ DataType TypeChecker::CheckCall(AstNode* node) {
             DataType::Object(currentClass_->name, true), callee->token.lexeme, arguments, argumentNames);
         if (method) {
             ValidateReferenceArguments(*method, argumentNodes, argumentNames);
+            node->returnsReference = method->returnsReference;
+            node->returnReferenceConst = method->returnReferenceConst;
             return method->returnType;
         }
     }
@@ -714,6 +736,8 @@ DataType TypeChecker::CheckCall(AstNode* node) {
         return DataType::Invalid();
     }
     ValidateReferenceArguments(*best, argumentNodes, argumentNames);
+    node->returnsReference = best->returnsReference;
+    node->returnReferenceConst = best->returnReferenceConst;
     return best->returnType;
 }
 
@@ -833,6 +857,20 @@ bool TypeChecker::IsReadOnlyLValue(const AstNode* node) const {
         return symbol && symbol->isConst;
     }
     if (node->kind == NodeKind::Member) return IsReadOnlyLValue(node->firstChild);
+    if (node->kind == NodeKind::Call && node->returnsReference)
+        return node->returnReferenceConst;
+    return false;
+}
+
+bool TypeChecker::CanReturnReference(const AstNode* node) const {
+    if (!node) return false;
+    if (node->kind == NodeKind::Identifier) {
+        if (node->implicitThis) return true;
+        const auto symbol = Lookup(node->token.lexeme);
+        return symbol && symbol->returnableReference;
+    }
+    if (node->kind == NodeKind::Member) return CanReturnReference(node->firstChild);
+    if (node->kind == NodeKind::Call) return node->returnsReference;
     return false;
 }
 
@@ -842,11 +880,12 @@ const ClassSignature* TypeChecker::FindClass(std::string_view name) const {
     return nullptr;
 }
 
-void TypeChecker::Declare(const Token& name, const DataType& type, bool isConst) {
+void TypeChecker::Declare(const Token& name, const DataType& type, bool isConst,
+                          bool returnableReference) {
     auto& scope = scopes_.back();
     if (scope.find(name.lexeme) != scope.end()) {
         diagnostics_.Report(name.location, Severity::Error, "duplicate variable '" + name.lexeme + "'");
-    } else scope.emplace(name.lexeme, VariableSymbol{type, isConst});
+    } else scope.emplace(name.lexeme, VariableSymbol{type, isConst, returnableReference});
 }
 
 bool TypeChecker::CanConvert(const DataType& from, const DataType& to) const {

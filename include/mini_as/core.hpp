@@ -104,6 +104,17 @@ bool operator!=(const DataType& left, const DataType& right);
 
 DataType CommonNumericType(const DataType& left, const DataType& right);
 
+enum class ReferenceKind { Global, Field };
+
+struct ReferenceStorage {
+    ReferenceKind kind = ReferenceKind::Global;
+    DataType type = DataType::Invalid();
+    std::uint32_t slot = 0;
+    ObjectHandle object;
+};
+
+bool operator==(const ReferenceStorage& left, const ReferenceStorage& right);
+
 struct IntegerStorage {
     TypeKind kind = TypeKind::Int;
     std::uint64_t bits = 0;
@@ -115,7 +126,7 @@ bool operator==(const IntegerStorage& left, const IntegerStorage& right);
 class Value {
 public:
     using Storage = std::variant<std::monostate, bool, std::int32_t, IntegerStorage,
-                                 float, double, std::string, ObjectHandle>;
+                                 float, double, std::string, ObjectHandle, ReferenceStorage>;
 
     Value() = default;
     explicit Value(bool value);
@@ -125,11 +136,13 @@ public:
     explicit Value(std::string value);
     explicit Value(const char* value);
     explicit Value(ObjectHandle value);
+    explicit Value(ReferenceStorage value);
 
     static Value Integer(const DataType& type, std::uint64_t bits);
 
     DataType Type() const;
     bool IsVoid() const;
+    bool IsReference() const;
     std::int64_t SignedInteger() const;
     std::uint64_t UnsignedInteger() const;
     const Storage& Raw() const;

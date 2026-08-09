@@ -211,3 +211,18 @@ TEST_CASE(parser_preserves_in_out_and_inout_parameter_modes) {
     CHECK(parameters[3]->parameterMode == mini_as::ParameterMode::Value);
 }
 
+TEST_CASE(parser_preserves_mutable_and_const_reference_returns) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer lexer("parse",
+        "int &access() { return value; } const int &read() { return value; }",
+        diagnostics);
+    mini_as::Parser parser(lexer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    CHECK(!diagnostics.HasErrors());
+    const auto declarations = tree.root->Children();
+    CHECK(declarations[0]->returnsReference);
+    CHECK(!declarations[0]->returnReferenceConst);
+    CHECK(declarations[1]->returnsReference);
+    CHECK(declarations[1]->returnReferenceConst);
+}
+

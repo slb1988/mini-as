@@ -299,3 +299,24 @@ TEST_CASE(bytecode_materializes_and_dereferences_returned_storage_references) {
     CHECK(caller.find("LOAD_REF") != std::string::npos);
 }
 
+TEST_CASE(bytecode_links_script_destructors_by_stable_type_and_function_ids) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("destructor-bytecode",
+        "class Resource { ~Resource() {} } int main() { Resource@ value = Resource(); return 42; }",
+        diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    mini_as::TypeChecker checker(diagnostics);
+    CHECK(checker.Check(tree.root));
+    mini_as::BytecodeCompiler compiler(diagnostics);
+    auto module = compiler.Compile(tree.root, checker.Functions(), checker.Classes());
+    CHECK(!diagnostics.HasErrors());
+    CHECK(module.destructors.size() == 1);
+    const auto destructorId = module.FindDestructor(module.destructors[0].first);
+    CHECK(destructorId.IsValid());
+    const auto* destructor = module.FindFunction(destructorId);
+    CHECK(destructor != nullptr);
+    CHECK(destructor->signature.destructor);
+    CHECK(destructor->signature.Declaration() == "~Resource()");
+}
+

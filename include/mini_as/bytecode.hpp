@@ -78,10 +78,12 @@ struct BytecodeModule {
     std::vector<VirtualDispatchEntry> virtualDispatch;
     std::vector<std::pair<FunctionId, const RegisteredHostFunction*>> hostFunctions;
     std::vector<std::pair<TypeId, const TypeInfo*>> objectTypes;
+    std::vector<std::pair<TypeId, FunctionId>> destructors;
 
     const BytecodeFunction* FindFunction(FunctionId id) const;
     const RegisteredHostFunction* FindHostFunction(FunctionId id) const;
     const TypeInfo* FindType(TypeId id) const;
+    FunctionId FindDestructor(TypeId id) const;
     const CallableRef* FindCallable(std::size_t index) const;
     std::optional<std::size_t> FindGlobalIndex(GlobalId id) const;
     const BytecodeFunction* ResolveVirtual(TypeId concreteType, TypeId interfaceType,

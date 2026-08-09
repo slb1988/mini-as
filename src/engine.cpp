@@ -86,7 +86,11 @@ bool ScriptModule::Build() {
     for (const auto& global : candidate.globals)
         state->globals.push_back(DefaultGlobalValue(global.signature.type));
     VirtualMachine initializer;
+    auto finalizerModule = std::make_shared<BytecodeModule>(candidate);
+    initializer.SetFinalizerContext(&engine_, finalizerModule, state,
+                                    [this] { engine_.DrainFinalizers(); });
     const auto initialized = initializer.Execute(candidate.globalInitializer, {}, &candidate, state.get());
+    engine_.DrainFinalizers();
     if (initialized.state != ExecutionState::Finished) {
         diagnostics.Report(initialized.location, Severity::Error,
                            "global initialization failed: " + initialized.exception);
@@ -94,6 +98,7 @@ bool ScriptModule::Build() {
     }
     auto nextImage = std::make_shared<ModuleImage>();
     nextImage->bytecode = std::move(candidate);
+    nextImage->finalizerBytecode = std::move(finalizerModule);
     nextImage->state = std::move(state);
     engine_.RegisterModuleImage(nextImage);
     image_ = std::move(nextImage);
@@ -159,17 +164,25 @@ ExecutionState ScriptContext::Execute() {
         return result_.state;
     }
     if (result_.state == ExecutionState::Prepared) {
+        vm_.SetFinalizerContext(&engine_, image_->finalizerBytecode, image_->state,
+                                [this] { engine_.DrainFinalizers(); });
         if (!vm_.Prepare(*function_, arguments_, &image_->bytecode, image_->state.get())) {
             result_ = vm_.Continue();
+            engine_.DrainFinalizers();
             return result_.state;
         }
     }
     result_ = vm_.Continue();
+    engine_.DrainFinalizers();
     return result_.state;
 }
 
 void ScriptContext::Suspend() { vm_.RequestSuspend(); }
-void ScriptContext::Abort() { vm_.Abort(); result_.state = ExecutionState::Aborted; }
+void ScriptContext::Abort() {
+    vm_.Abort();
+    engine_.DrainFinalizers();
+    result_.state = ExecutionState::Aborted;
+}
 void ScriptContext::SetLineCallback(LineCallback callback) { lineCallback_ = std::move(callback); }
 ExecutionState ScriptContext::GetState() const { return result_.state; }
 const Value& ScriptContext::GetReturnValue() const { return result_.returnValue; }
@@ -212,6 +225,18 @@ bool ScriptContext::SetArgument(std::size_t index, Value value) {
 
 void ScriptEngine::SetMessageCallback(MessageCallback callback) { messageCallback_ = std::move(callback); }
 
+ScriptEngine::~ScriptEngine() {
+    for (auto& entry : modules_) {
+        if (!entry.second->image_ || !entry.second->image_->state) continue;
+        for (auto& global : entry.second->image_->state->globals) global = Value{};
+    }
+    DrainFinalizers();
+    garbageCollector_.Collect();
+    DrainFinalizers();
+    modules_.clear();
+    DrainFinalizers();
+}
+
 bool ScriptEngine::RegisterGlobalFunction(std::string declaration, GenericFunction callback) {
     DiagnosticSink diagnostics([this](const Diagnostic& diagnostic) { ForwardDiagnostic(diagnostic); });
     auto signature = ParseFunctionDeclaration(declaration, diagnostics);
@@ -249,7 +274,11 @@ const TypeInfo* ScriptEngine::GetTypeInfo(std::string_view name) const {
     return found == objectTypes_.end() ? nullptr : found->second.get();
 }
 
-std::size_t ScriptEngine::CollectGarbage() { return garbageCollector_.Collect(); }
+std::size_t ScriptEngine::CollectGarbage() {
+    const std::size_t collected = garbageCollector_.Collect();
+    DrainFinalizers();
+    return collected;
+}
 std::size_t ScriptEngine::GetTrackedObjectCount() const { return garbageCollector_.TrackedCount(); }
 
 const TypeInfo* ScriptEngine::RegisterScriptType(const ClassSignature& signature) {
@@ -345,6 +374,41 @@ std::shared_ptr<const ModuleImage> ScriptEngine::FindModuleImage(const BytecodeF
     auto image = found->second.lock();
     if (!image) moduleImages_.erase(found);
     return image;
+}
+
+void ScriptEngine::EnqueueFinalizer(ScriptObject* object) {
+    if (object) finalizerQueue_.push_back(object);
+}
+
+void ScriptEngine::DrainFinalizers() {
+    if (drainingFinalizers_) return;
+    drainingFinalizers_ = true;
+    while (!finalizerQueue_.empty()) {
+        ScriptObject* object = finalizerQueue_.front();
+        finalizerQueue_.pop_front();
+        const ScriptFinalizerBinding binding = object->Finalizer();
+        const BytecodeFunction* function = binding.module
+            ? binding.module->FindFunction(binding.function) : nullptr;
+        if (!function) {
+            ForwardDiagnostic({{"finalizer"}, Severity::Error,
+                               "script destructor target is unavailable"});
+            object->Release();
+            continue;
+        }
+        auto state = binding.state.lock();
+        VirtualMachine finalizer;
+        finalizer.SetFinalizerContext(this, binding.module, binding.state,
+                                      [this] { DrainFinalizers(); });
+        const ExecutionResult result = finalizer.Execute(
+            *function, {Value(ObjectHandle(object))}, binding.module.get(), state.get());
+        if (result.state != ExecutionState::Finished) {
+            ForwardDiagnostic({result.location, Severity::Error,
+                               "script destructor '" + function->signature.name +
+                               "' failed: " + result.exception});
+        }
+        object->Release();
+    }
+    drainingFinalizers_ = false;
 }
 
 std::unique_ptr<ScriptEngine> CreateScriptEngine() { return std::make_unique<ScriptEngine>(); }

@@ -52,3 +52,22 @@ TEST_CASE(gc_does_not_collect_graph_reachable_from_external_handle) {
     root = {};
     CHECK(engine->CollectGarbage() == 2);
 }
+
+TEST_CASE(gc_queues_each_script_destructor_once_for_cycles) {
+    auto engine = mini_as::CreateScriptEngine();
+    int finalized = 0;
+    CHECK(engine->RegisterGlobalFunction("void Finalized()",
+        [&](mini_as::GenericCall&) { ++finalized; }));
+    auto* module = engine->GetModule("gc-destructors");
+    module->AddScriptSection("gc-destructors",
+        "class Node { Node@ next; ~Node() { Finalized(); } } "
+        "Node@ makeCycle() { Node@ a = Node(); Node@ b = Node(); "
+        "a.next = b; b.next = a; return a; }");
+    CHECK(module->Build());
+    mini_as::ObjectHandle root = BuildCycle(*engine, *module);
+    root = {};
+    CHECK(engine->CollectGarbage() == 2);
+    CHECK(finalized == 2);
+    CHECK(engine->CollectGarbage() == 0);
+    CHECK(finalized == 2);
+}

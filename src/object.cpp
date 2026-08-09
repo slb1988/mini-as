@@ -35,13 +35,16 @@ RefObject::RefObject(const TypeInfo* type) : type_(type) {}
 RefObject::~RefObject() { if (type_ && type_->collector) type_->collector->Unregister(this); }
 void RefObject::AddRef() { refCount_.fetch_add(1, std::memory_order_relaxed); }
 void RefObject::Release() {
-    if (refCount_.fetch_sub(1, std::memory_order_acq_rel) == 1) delete this;
+    if (refCount_.fetch_sub(1, std::memory_order_acq_rel) == 1) OnZeroReferences();
 }
 std::size_t RefObject::RefCount() const { return refCount_.load(std::memory_order_relaxed); }
 const TypeInfo* RefObject::GetTypeInfo() const { return type_; }
 void RefObject::EnumerateReferences(const std::function<void(RefObject*)>&) const {}
+void RefObject::OnZeroReferences() { delete this; }
 
-ScriptObject::ScriptObject(const TypeInfo* type) : RefObject(type) {
+ScriptObject::ScriptObject(const TypeInfo* type, ObjectFinalizerQueue* finalizerQueue,
+                           ScriptFinalizerBinding finalizer)
+    : RefObject(type), finalizerQueue_(finalizerQueue), finalizer_(std::move(finalizer)) {
     if (type && type->collector) type->collector->Register(this);
     if (!type) return;
     fields_.reserve(type->fields.size());
@@ -90,6 +93,19 @@ void ScriptObject::ClearReferences() {
     for (auto& value : fields_) {
         if (value.Type().kind == TypeKind::Object) value = Value(ObjectHandle{});
     }
+}
+
+const ScriptFinalizerBinding& ScriptObject::Finalizer() const { return finalizer_; }
+
+void ScriptObject::OnZeroReferences() {
+    if (finalizerQueue_ && finalizer_.function.IsValid() && finalizer_.module &&
+        !finalizerQueued_) {
+        finalizerQueued_ = true;
+        AddRef();
+        finalizerQueue_->EnqueueFinalizer(this);
+        return;
+    }
+    delete this;
 }
 
 void GarbageCollector::Register(RefObject* object) { if (object) candidates_.insert(object); }

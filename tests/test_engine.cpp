@@ -1060,3 +1060,85 @@ TEST_CASE(return_reference_runtime_errors_report_the_return_location) {
     CHECK(context->GetExceptionLocation().row == 2);
 }
 
+TEST_CASE(script_destructors_run_once_at_vm_safe_points) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<int> finalized;
+    CHECK(engine->RegisterGlobalFunction("void Record(int value)",
+        [&](mini_as::GenericCall& call) { finalized.push_back(call.GetArgInt(0)); }));
+    auto* module = engine->GetModule("destructors");
+    module->AddScriptSection("destructors",
+        "class Resource { int id; Resource(int value) { id = value; } "
+        "~Resource() { Record(id); } } "
+        "void dispose() { Resource@ first = Resource(20); Resource@ second = Resource(22); } "
+        "int main() { dispose(); return 42; }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int main()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+    CHECK(finalized.size() == 2);
+    CHECK(finalized[0] + finalized[1] == 42);
+    CHECK(engine->CollectGarbage() == 0);
+    CHECK(finalized.size() == 2);
+}
+
+TEST_CASE(script_destructors_reject_parameters_and_report_runtime_failures) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    auto* invalid = engine->GetModule("bad-destructor");
+    invalid->AddScriptSection("bad-destructor", "class Resource { ~Resource(int value) {} }");
+    CHECK(!invalid->Build());
+    bool rejectedParameters = false;
+    for (const auto& diagnostic : diagnostics)
+        rejectedParameters = rejectedParameters ||
+            diagnostic.message.find("destructor cannot declare parameters") != std::string::npos;
+    CHECK(rejectedParameters);
+
+    diagnostics.clear();
+    auto* runtime = engine->GetModule("failing-destructor");
+    runtime->AddScriptSection("failing-destructor",
+        "class Broken {\n~Broken() { int value = 1 / 0; }\n}\n"
+        "int main() { Broken@ value = Broken(); return 42; }");
+    CHECK(runtime->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(runtime->GetFunctionByDecl("int main()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    bool finalizerFailure = false;
+    for (const auto& diagnostic : diagnostics) {
+        finalizerFailure = finalizerFailure ||
+            (diagnostic.location.row == 2 &&
+             diagnostic.message.find("script destructor '~Broken' failed: division by zero") !=
+                 std::string::npos);
+    }
+    CHECK(finalizerFailure);
+}
+
+TEST_CASE(script_destructors_keep_the_creating_module_bytecode_after_rebuild) {
+    auto engine = mini_as::CreateScriptEngine();
+    int finalizedVersion = 0;
+    CHECK(engine->RegisterGlobalFunction("void Record(int value)",
+        [&](mini_as::GenericCall& call) { finalizedVersion = call.GetArgInt(0); }));
+    auto* module = engine->GetModule("destructor-snapshot");
+    module->AddScriptSection("old-image",
+        "class Resource { ~Resource() { Record(1); } } "
+        "Resource@ make() { return Resource(); }");
+    CHECK(module->Build());
+    mini_as::ObjectHandle oldObject;
+    {
+        auto context = engine->CreateContext();
+        CHECK(context->Prepare(module->GetFunctionByDecl("Resource@ make()")));
+        CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+        oldObject = context->GetReturnValue().As<mini_as::ObjectHandle>();
+    }
+    module->AddScriptSection("new-image",
+        "class Resource { ~Resource() { Record(2); } } "
+        "Resource@ make() { return Resource(); }");
+    CHECK(module->Build());
+    oldObject = {};
+    CHECK(engine->CollectGarbage() == 0);
+    CHECK(finalizedVersion == 1);
+}
+

@@ -29,6 +29,10 @@ public:
     void RequestSuspend();
     void Abort();
     void SetLineCallback(std::function<void(const SourceLocation&)> callback);
+    void SetFinalizerContext(ObjectFinalizerQueue* queue,
+                             std::shared_ptr<const BytecodeModule> module,
+                             std::weak_ptr<ModuleState> state,
+                             std::function<void()> safePoint);
     ExecutionResult Execute(const BytecodeFunction& function,
                             const std::vector<Value>& arguments = {},
                             const BytecodeModule* module = nullptr, ModuleState* state = nullptr);
@@ -56,6 +60,10 @@ private:
     std::size_t pc_ = 0;
     bool suspendRequested_ = false;
     std::function<void(const SourceLocation&)> lineCallback_;
+    ObjectFinalizerQueue* finalizerQueue_ = nullptr;
+    std::shared_ptr<const BytecodeModule> finalizerModule_;
+    std::weak_ptr<ModuleState> finalizerState_;
+    std::function<void()> safePoint_;
     ExecutionResult result_;
 };
 

@@ -210,6 +210,18 @@ AstNode* Parser::ParseClass(bool isInterface) {
     }
     Consume(TokenKind::LeftBrace, "expected '{' before type body");
     while (!Check(TokenKind::RightBrace) && !Check(TokenKind::End)) {
+        if (Check(TokenKind::Tilde)) {
+            const Token tilde = Advance();
+            Token destructorName = Consume(TokenKind::Identifier, "expected destructor name after '~'");
+            if (isInterface) Error(tilde, "interfaces cannot declare destructors");
+            if (destructorName.lexeme != simpleName)
+                Error(destructorName, "destructor name must match class '" + simpleName + "'");
+            destructorName.lexeme = "~" + destructorName.lexeme;
+            AstNode* destructor = ParseFunction(DataType::Void(), std::move(destructorName));
+            destructor->isDestructor = true;
+            node->AppendChild(destructor);
+            continue;
+        }
         if (!isInterface && Check(TokenKind::Identifier) && Current().lexeme == simpleName &&
             current_ + 1 < tokens_.size() && tokens_[current_ + 1].kind == TokenKind::LeftParen) {
             Token constructorName = Advance();

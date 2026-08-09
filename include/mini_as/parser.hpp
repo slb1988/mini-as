@@ -30,6 +30,7 @@ struct AstNode {
     bool isPostfix = false;
     bool implicitThis = false;
     bool isConstructor = false;
+    bool isDestructor = false;
     bool returnsReference = false;
     bool returnReferenceConst = false;
     ParameterMode parameterMode = ParameterMode::Value;

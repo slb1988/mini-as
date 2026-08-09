@@ -21,6 +21,7 @@ class ScriptEngine;
 
 struct ModuleImage {
     BytecodeModule bytecode;
+    std::shared_ptr<const BytecodeModule> finalizerBytecode;
     std::shared_ptr<ModuleState> state;
 };
 
@@ -35,6 +36,7 @@ public:
     const BytecodeModule& Bytecode() const;
 
 private:
+    friend class ScriptEngine;
     struct Section { std::string name; std::string source; };
     ScriptEngine& engine_;
     std::string name_;
@@ -77,9 +79,11 @@ private:
     LineCallback lineCallback_;
 };
 
-class ScriptEngine {
+class ScriptEngine : private ObjectFinalizerQueue {
 public:
     using MessageCallback = std::function<void(const Diagnostic&)>;
+
+    ~ScriptEngine() override;
 
     void SetMessageCallback(MessageCallback callback);
     bool RegisterGlobalFunction(std::string declaration, GenericFunction callback);
@@ -102,6 +106,10 @@ private:
     GlobalId GetOrCreateGlobalId(std::string key);
     void RegisterModuleImage(const std::shared_ptr<const ModuleImage>& image);
     std::shared_ptr<const ModuleImage> FindModuleImage(const BytecodeFunction* function);
+    void EnqueueFinalizer(ScriptObject* object) override;
+    void DrainFinalizers();
+    std::deque<ScriptObject*> finalizerQueue_;
+    bool drainingFinalizers_ = false;
     MessageCallback messageCallback_;
     std::unordered_map<std::string, std::unique_ptr<ScriptModule>> modules_;
     std::deque<RegisteredHostFunction> hostFunctions_;

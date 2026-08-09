@@ -23,6 +23,7 @@ struct FunctionSignature {
     std::vector<ParameterMode> parameterModes;
     bool returnsReference = false;
     bool returnReferenceConst = false;
+    bool destructor = false;
 
     std::string Declaration() const;
 };

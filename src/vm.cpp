@@ -121,7 +121,8 @@ bool VirtualMachine::Prepare(const BytecodeFunction& function, const std::vector
     suspendRequested_ = false;
     result_ = {};
     result_.state = ExecutionState::Prepared;
-    if (arguments.size() != function.signature.parameters.size()) {
+    const std::size_t hiddenArguments = function.signature.method ? 1 : 0;
+    if (arguments.size() != function.signature.parameters.size() + hiddenArguments) {
         result_.state = ExecutionState::Exception;
         result_.exception = "argument count does not match function signature";
         return false;
@@ -147,14 +148,37 @@ ExecutionResult VirtualMachine::Continue() {
         catch (const std::exception& error) {
             Fail(function_->code[pc_ ? pc_ - 1 : 0], error.what());
         }
+        if (safePoint_) safePoint_();
+    }
+    if (result_.state == ExecutionState::Exception || result_.state == ExecutionState::Aborted) {
+        stack_.clear();
+        locals_.clear();
+        callStack_.clear();
+        if (safePoint_) safePoint_();
     }
     return result_;
 }
 
 void VirtualMachine::RequestSuspend() { suspendRequested_ = true; }
-void VirtualMachine::Abort() { result_.state = ExecutionState::Aborted; }
+void VirtualMachine::Abort() {
+    result_.state = ExecutionState::Aborted;
+    stack_.clear();
+    locals_.clear();
+    callStack_.clear();
+    if (safePoint_) safePoint_();
+}
 void VirtualMachine::SetLineCallback(std::function<void(const SourceLocation&)> callback) {
     lineCallback_ = std::move(callback);
+}
+
+void VirtualMachine::SetFinalizerContext(ObjectFinalizerQueue* queue,
+                                         std::shared_ptr<const BytecodeModule> module,
+                                         std::weak_ptr<ModuleState> state,
+                                         std::function<void()> safePoint) {
+    finalizerQueue_ = queue;
+    finalizerModule_ = std::move(module);
+    finalizerState_ = std::move(state);
+    safePoint_ = std::move(safePoint);
 }
 
 ExecutionResult VirtualMachine::Execute(const BytecodeFunction& function,
@@ -263,6 +287,8 @@ bool VirtualMachine::Step() {
         if (callStack_.empty()) {
             result_.returnValue = std::move(returnValue);
             result_.state = ExecutionState::Finished;
+            stack_.clear();
+            locals_.clear();
         } else {
             CallFrame frame = std::move(callStack_.back());
             callStack_.pop_back();
@@ -361,7 +387,13 @@ bool VirtualMachine::Step() {
         if (!module_ || instruction.operand < 0) throw std::runtime_error("object type is unavailable");
         const TypeInfo* type = module_->FindType(TypeId{static_cast<std::uint32_t>(instruction.operand)});
         if (!type) throw std::runtime_error("object type is unavailable");
-        Push(Value(ObjectHandle(new ScriptObject(type))));
+        ScriptFinalizerBinding finalizer;
+        if (finalizerQueue_ && finalizerModule_) {
+            finalizer.function = module_->FindDestructor(type->id);
+            finalizer.module = finalizerModule_;
+            finalizer.state = finalizerState_;
+        }
+        Push(Value(ObjectHandle(new ScriptObject(type, finalizerQueue_, std::move(finalizer)))));
         break;
     }
     case OpCode::LoadField: {

@@ -226,3 +226,16 @@ TEST_CASE(parser_preserves_mutable_and_const_reference_returns) {
     CHECK(declarations[1]->returnReferenceConst);
 }
 
+TEST_CASE(parser_marks_script_destructors) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer lexer("parse", "class Resource { ~Resource() {} }", diagnostics);
+    mini_as::Parser parser(lexer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    CHECK(!diagnostics.HasErrors());
+    auto* destructor = tree.root->firstChild->firstChild;
+    CHECK(destructor->kind == mini_as::NodeKind::FunctionDecl);
+    CHECK(destructor->token.lexeme == "~Resource");
+    CHECK(destructor->isDestructor);
+    CHECK(destructor->declaredType == mini_as::DataType::Void());
+}
+

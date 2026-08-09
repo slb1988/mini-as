@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <functional>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -15,6 +16,21 @@
 namespace mini_as {
 
 class GarbageCollector;
+struct BytecodeModule;
+struct ModuleState;
+class ScriptObject;
+
+struct ScriptFinalizerBinding {
+    FunctionId function;
+    std::shared_ptr<const BytecodeModule> module;
+    std::weak_ptr<ModuleState> state;
+};
+
+class ObjectFinalizerQueue {
+public:
+    virtual ~ObjectFinalizerQueue() = default;
+    virtual void EnqueueFinalizer(ScriptObject* object) = 0;
+};
 
 struct TypeInfo {
     std::string name;
@@ -37,6 +53,7 @@ public:
 
 protected:
     virtual ~RefObject();
+    virtual void OnZeroReferences();
 
 private:
     std::atomic<std::size_t> refCount_{0};
@@ -45,7 +62,8 @@ private:
 
 class ScriptObject final : public RefObject {
 public:
-    explicit ScriptObject(const TypeInfo* type);
+    explicit ScriptObject(const TypeInfo* type, ObjectFinalizerQueue* finalizerQueue = nullptr,
+                          ScriptFinalizerBinding finalizer = {});
     const Value& GetField(std::size_t index) const;
     void SetField(std::size_t index, Value value);
     std::size_t FieldCount() const;
@@ -54,10 +72,15 @@ public:
                                        std::string_view declaration) const;
     void EnumerateReferences(const std::function<void(RefObject*)>& visitor) const override;
     void ClearReferences();
+    const ScriptFinalizerBinding& Finalizer() const;
 
 private:
     ~ScriptObject() override = default;
+    void OnZeroReferences() override;
     std::vector<Value> fields_;
+    ObjectFinalizerQueue* finalizerQueue_ = nullptr;
+    ScriptFinalizerBinding finalizer_;
+    bool finalizerQueued_ = false;
 };
 
 class GarbageCollector {

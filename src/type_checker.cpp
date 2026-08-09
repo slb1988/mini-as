@@ -54,6 +54,7 @@ std::optional<int> NameMatchCost(std::string_view candidate, std::string_view re
 
 std::string FunctionSignature::Declaration() const {
     std::ostringstream out;
+    if (destructor) return name + "()";
     if (returnReferenceConst) out << "const ";
     out << returnType.Name();
     if (returnsReference) out << " &";
@@ -193,7 +194,8 @@ void TypeChecker::Predeclare(AstNode* root) {
             else if (child->kind == NodeKind::FunctionDecl) {
                 FunctionSignature method{child->token.lexeme, child->declaredType, {}, false, {},
                                          type.name, true, child->isConstructor, 0, {}, {},
-                                         child->returnsReference, child->returnReferenceConst};
+                                         child->returnsReference, child->returnReferenceConst,
+                                         child->isDestructor};
                 for (AstNode* parameter = child->firstChild;
                      parameter && parameter->kind == NodeKind::Parameter; parameter = parameter->nextSibling) {
                     method.parameters.push_back(parameter->declaredType);
@@ -204,9 +206,16 @@ void TypeChecker::Predeclare(AstNode* root) {
                 bool duplicate = false;
                 for (const auto& existing : type.methods) {
                     if (existing.name == method.name && existing.parameters == method.parameters &&
-                        existing.constructor == method.constructor) duplicate = true;
+                        existing.constructor == method.constructor &&
+                        existing.destructor == method.destructor) duplicate = true;
                 }
                 if (duplicate) Error(child, "duplicate method or constructor '" + method.Declaration() + "'");
+                if (method.destructor && !method.parameters.empty())
+                    Error(child, "destructor cannot declare parameters");
+                AstNode* body = child->firstChild;
+                while (body && body->kind == NodeKind::Parameter) body = body->nextSibling;
+                if (method.destructor && (!body || body->kind != NodeKind::Block))
+                    Error(child, "destructor must have a body");
                 type.methods.push_back(std::move(method));
             }
         }
@@ -234,7 +243,7 @@ void TypeChecker::Predeclare(AstNode* root) {
     for (AstNode* node : TopLevelDeclarations(root)) {
         if (node->kind != NodeKind::FunctionDecl) continue;
         FunctionSignature signature{node->token.lexeme, node->declaredType, {}, false, {}, {}, false, false, 0, {}, {},
-                                    node->returnsReference, node->returnReferenceConst};
+                                    node->returnsReference, node->returnReferenceConst, false};
         for (AstNode* child = node->firstChild; child && child->kind == NodeKind::Parameter;
              child = child->nextSibling) {
             signature.parameters.push_back(child->declaredType);
@@ -767,7 +776,7 @@ const FunctionSignature* TypeChecker::FindMethod(
     const FunctionSignature* best = nullptr;
     int bestCost = 1000000;
     for (const auto& method : type->methods) {
-        if (method.constructor || method.name != name) continue;
+        if (method.constructor || method.destructor || method.name != name) continue;
         const auto cost = MatchArguments(method, arguments, argumentNames);
         if (cost && *cost < bestCost) { best = &method; bestCost = *cost; }
     }

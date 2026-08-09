@@ -144,6 +144,11 @@ const TypeInfo* BytecodeModule::FindType(TypeId id) const {
     return nullptr;
 }
 
+FunctionId BytecodeModule::FindDestructor(TypeId id) const {
+    for (const auto& target : destructors) if (target.first == id) return target.second;
+    return {};
+}
+
 const CallableRef* BytecodeModule::FindCallable(std::size_t index) const {
     return index < callables.size() ? &callables[index] : nullptr;
 }
@@ -211,6 +216,13 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
     for (auto& type : classes_) {
         if (!type.id.IsValid()) type.id = TypeId{nextTypeId++};
         classIds_[type.name] = type.id;
+        for (const auto& method : type.methods) {
+            if (!method.destructor) continue;
+            for (const auto& signature : signatures_) {
+                if (FunctionKey(signature) == FunctionKey(method))
+                    module_.destructors.push_back({type.id, signature.id});
+            }
+        }
     }
     if (!root) return module_;
     for (AstNode* node : TopLevelDeclarations(root))
@@ -218,7 +230,7 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
     for (AstNode* node : TopLevelDeclarations(root)) {
         if (node->kind == NodeKind::FunctionDecl) {
             FunctionSignature signature{node->token.lexeme, node->declaredType, {}, false, {}, {}, false, false, 0, {}, {},
-                                        node->returnsReference, node->returnReferenceConst};
+                                        node->returnsReference, node->returnReferenceConst, false};
             for (AstNode* parameter = node->firstChild;
                  parameter && parameter->kind == NodeKind::Parameter; parameter = parameter->nextSibling) {
                 signature.parameters.push_back(parameter->declaredType);
@@ -233,7 +245,8 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
                 if (methodNode->kind != NodeKind::FunctionDecl) continue;
                 FunctionSignature method{methodNode->token.lexeme, methodNode->declaredType, {}, false, {},
                                          node->token.lexeme, true, methodNode->isConstructor, 0, {}, {},
-                                         methodNode->returnsReference, methodNode->returnReferenceConst};
+                                         methodNode->returnsReference, methodNode->returnReferenceConst,
+                                         methodNode->isDestructor};
                 for (AstNode* parameter = methodNode->firstChild;
                      parameter && parameter->kind == NodeKind::Parameter; parameter = parameter->nextSibling) {
                     method.parameters.push_back(parameter->declaredType);
@@ -273,7 +286,8 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
             for (std::size_t slot = 0; slot < interfaceType->methods.size(); ++slot) {
                 const auto& required = interfaceType->methods[slot];
                 for (const auto& implementation : concrete.methods) {
-                    if (implementation.constructor || implementation.name != required.name ||
+                    if (implementation.constructor || implementation.destructor ||
+                        implementation.name != required.name ||
                         implementation.returnType != required.returnType ||
                         implementation.parameters != required.parameters ||
                         implementation.parameterModes != required.parameterModes ||
@@ -290,7 +304,7 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
     for (AstNode* node : TopLevelDeclarations(root)) {
         if (node->kind != NodeKind::FunctionDecl) continue;
         FunctionSignature astSignature{node->token.lexeme, node->declaredType, {}, false, {}, {}, false, false, 0, {}, {},
-                                       node->returnsReference, node->returnReferenceConst};
+                                       node->returnsReference, node->returnReferenceConst, false};
         for (AstNode* child = node->firstChild; child && child->kind == NodeKind::Parameter; child = child->nextSibling) {
             astSignature.parameters.push_back(child->declaredType);
             astSignature.parameterModes.push_back(child->parameterMode);
@@ -304,7 +318,8 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
             if (methodNode->kind != NodeKind::FunctionDecl || !methodNode->firstChild) continue;
             FunctionSignature method{methodNode->token.lexeme, methodNode->declaredType, {}, false, {},
                                      typeNode->token.lexeme, true, methodNode->isConstructor, 0, {}, {},
-                                     methodNode->returnsReference, methodNode->returnReferenceConst};
+                                     methodNode->returnsReference, methodNode->returnReferenceConst,
+                                     methodNode->isDestructor};
             for (AstNode* parameter = methodNode->firstChild;
                  parameter && parameter->kind == NodeKind::Parameter; parameter = parameter->nextSibling) {
                 method.parameters.push_back(parameter->declaredType);
@@ -1058,7 +1073,7 @@ void BytecodeCompiler::CompileCall(AstNode* node, bool dereferenceResult) {
     const std::string receiverType = explicitMethod
         ? callee->firstChild->inferredType.objectName : currentObjectType_;
     for (const auto& signature : signatures_) {
-        if (signature.constructor) continue;
+        if (signature.constructor || signature.destructor) continue;
         const auto ordered = OrderArguments(signature, arguments);
         if (!ordered) continue;
         std::optional<int> nameCost;

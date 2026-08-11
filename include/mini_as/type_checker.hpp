@@ -128,6 +128,7 @@ private:
     void CheckBlock(AstNode* node, bool createScope = true);
     DataType CheckExpression(AstNode* node, std::optional<DataType> expected = std::nullopt);
     DataType CheckMember(AstNode* node, bool writing = false, bool compound = false);
+    DataType CheckIndex(AstNode* node, bool writing = false);
     DataType CheckImplicitProperty(AstNode* node, bool writing = false, bool compound = false);
     DataType CheckBinary(AstNode* node);
     DataType CheckUnary(AstNode* node, std::optional<DataType> expected = std::nullopt);

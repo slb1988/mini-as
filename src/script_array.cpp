@@ -144,9 +144,11 @@ bool RegisterScriptArray(ScriptEngine& engine, std::string name) {
                     call.SetReturn(RequireArray(call)->Get(ArrayIndex(call, 0)));
                 });
             ok = ok && target.RegisterObjectMethod(typeName,
-                "void set(uint index, " + elementType.Name() + " value)",
+                elementType.Name() + " set(uint index, " + elementType.Name() + " value)",
                 [](GenericCall& call) {
-                    RequireArray(call)->Set(ArrayIndex(call, 0), call.GetArg(1));
+                    const Value value = call.GetArg(1);
+                    RequireArray(call)->Set(ArrayIndex(call, 0), value);
+                    call.SetReturn(value);
                 });
             ok = ok && target.RegisterObjectMethod(typeName,
                 elementType.Name() + " removeLast()",

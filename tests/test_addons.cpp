@@ -176,3 +176,61 @@ TEST_CASE(initialization_lists_reject_missing_targets_and_incompatible_elements)
     CHECK(target);
     CHECK(element);
 }
+
+TEST_CASE(indexing_expressions_read_write_compound_and_increment_array_elements) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    CHECK(mini_as::addons::RegisterScriptArray(*engine));
+    auto* module = engine->GetModule("array-indexing");
+    module->AddScriptSection("array-indexing",
+        "int calls = 0; int next() { calls += 1; return 0; } "
+        "int run() { array<int>@ values = {10, 20}; int old = values[next()]++; "
+        "values[next()] += 9; values[1] = 10; "
+        "return old + values[0] + values[1] + calls; }");
+    if (!module->Build()) {
+        std::string message;
+        for (const auto& diagnostic : diagnostics)
+            message += (message.empty() ? std::string{} : " | ") + diagnostic.message;
+        throw std::runtime_error(message);
+    }
+    const auto* function = module->GetFunctionByDecl("int run()");
+    CHECK(function != nullptr);
+    std::size_t hostCalls = 0;
+    for (const auto& instruction : function->code)
+        if (instruction.opcode == mini_as::OpCode::CallHost) ++hostCalls;
+    CHECK(hostCalls >= 9);
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(function));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+}
+
+TEST_CASE(indexing_expressions_report_invalid_targets_and_bounds_locations) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    CHECK(mini_as::addons::RegisterScriptArray(*engine));
+    auto* invalid = engine->GetModule("invalid-index-target");
+    invalid->AddScriptSection("invalid-index-target", "int run() { return 42[0]; }");
+    CHECK(!invalid->Build());
+    bool target = false;
+    for (const auto& diagnostic : diagnostics)
+        target = target || diagnostic.message.find("is not indexable") != std::string::npos;
+    CHECK(target);
+
+    auto* bounds = engine->GetModule("index-bounds");
+    bounds->AddScriptSection("index-bounds",
+        "int run() {\n  array<int>@ values = {1};\n  return values[2];\n}\n");
+    CHECK(bounds->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(bounds->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Exception);
+    CHECK(context->GetExceptionString().find("array index is out of range") !=
+          std::string::npos);
+    CHECK(context->GetExceptionLocation().row == 3);
+}

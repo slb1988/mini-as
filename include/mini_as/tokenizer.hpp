@@ -27,7 +27,8 @@ enum class TokenKind {
     AmpEqual, PipeEqual, CaretEqual, ShiftLeftEqual, ShiftRightEqual, ShiftRightArithmeticEqual,
     Bang, BangEqual, Equal, EqualEqual,
     Less, LessEqual, Greater, GreaterEqual,
-    AndAnd, OrOr
+    AndAnd, OrOr,
+    LeftBracket, RightBracket
 };
 
 struct Token {

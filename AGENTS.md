@@ -149,11 +149,9 @@ Do not stage generated build directories or unrelated user changes. Inspect
 
 The completed stage notes are authoritative. The latest alignment stage is:
 
-- Stage 73 host default/module namespaces, registration access masks, and
-  pointer-stable removable configuration groups.
+- Stage 77 protocol-based indexing expressions and lvalue lowering.
 
-The next planned item is the v0.5 embedding compatibility matrix, followed by
-v0.6 indexing expressions.
+The next planned item is Stage 78, the v0.6 foreach operator protocol.
 Confirm the latest
 git history and `docs/stages/` before choosing the next stage number.
 
@@ -241,6 +239,9 @@ git history and `docs/stages/` before choosing the next stage number.
 - Initialization lists are contextual expressions lowered through a zero-arg
   host factory plus `insertLast(T)`. Preserve this registered-type protocol and
   ordinary `CallHost` lowering; do not add array-specific VM instructions.
+- Indexing uses registered `get(uint)` / value-returning `set(uint,T)` methods.
+  `LValueRef::Index` caches receiver and index for compound/increment lowering
+  so side effects run once; preserve ordinary assignment and postfix results.
 - Preserve the last successful module image on parser, type-check, bytecode, or
   global-initializer failure.
 - Do not edit compatibility expectations merely to make mini and official

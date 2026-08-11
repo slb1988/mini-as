@@ -146,6 +146,7 @@ private:
         GlobalId global;
         std::uint32_t field = 0;
         AstNode* receiver = nullptr;
+        AstNode* index = nullptr;
     };
 
     struct ControlFlowContext {
@@ -168,6 +169,11 @@ private:
     void CompileLogical(AstNode* node);
     void CompileCall(AstNode* node, bool dereferenceResult = true);
     void CompileInitializationList(AstNode* node);
+    void CompileIndexLoad(AstNode* node);
+    void CompileIndexStore(const LValueRef& target, AstNode* value, const AstNode* source);
+    void CompileIndexCompound(const LValueRef& target, AstNode* value,
+                              TokenKind operation, const AstNode* source);
+    void CompileIndexIncrement(AstNode* node, const LValueRef& target);
     void CompileReferenceTarget(AstNode* expression, const AstNode* source);
     void CompileCallArgument(const FunctionSignature& signature, std::size_t index,
                              AstNode* expression, ReferenceReceiverMap& receivers);

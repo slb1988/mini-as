@@ -718,6 +718,12 @@ AstNode* Parser::ParseCall() {
                             Consume(TokenKind::Identifier, "expected member name"));
             member->AppendChild(expression);
             expression = member;
+        } else if (Match(TokenKind::LeftBracket)) {
+            AstNode* index = arena_->Make(NodeKind::Index, Previous());
+            index->AppendChild(expression);
+            index->AppendChild(ParseExpression());
+            Consume(TokenKind::RightBracket, "expected ']' after index expression");
+            expression = index;
         } else if (MatchAny({TokenKind::PlusPlus, TokenKind::MinusMinus})) {
             AstNode* increment = arena_->Make(NodeKind::Increment, Previous());
             increment->isPostfix = true;

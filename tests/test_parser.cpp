@@ -516,3 +516,16 @@ TEST_CASE(parser_builds_initialization_list_expressions) {
     CHECK(variable->firstChild->Children().size() == 3);
 }
 
+TEST_CASE(parser_builds_chained_index_expressions) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("index",
+        "int run() { array<array<int>@>@ rows; return rows[0][1]; }", diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    parser.RegisterTemplateType("array", 1);
+    auto tree = parser.Parse();
+    CHECK(!diagnostics.HasErrors());
+    auto* returned = tree.root->firstChild->firstChild->firstChild->nextSibling;
+    CHECK(returned->firstChild->kind == mini_as::NodeKind::Index);
+    CHECK(returned->firstChild->firstChild->kind == mini_as::NodeKind::Index);
+}
+

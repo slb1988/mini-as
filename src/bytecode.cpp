@@ -779,6 +779,7 @@ void BytecodeCompiler::CompileExpression(AstNode* node) {
         else CompileLValueLoad(*target, node);
         break;
     }
+    case NodeKind::Index: CompileIndexLoad(node); break;
     case NodeKind::Conditional: {
         const auto children = node->Children();
         CompileExpression(children[0]);
@@ -918,6 +919,183 @@ void BytecodeCompiler::CompileInitializationList(AstNode* node) {
     }
 }
 
+void BytecodeCompiler::CompileIndexLoad(AstNode* node) {
+    const auto children = node ? node->Children() : std::vector<AstNode*>{};
+    if (children.size() != 2) { Error(node, "invalid index expression"); return; }
+    const ClassSignature* type = FindClass(children[0]->inferredType.objectName);
+    const FunctionSignature* getter = nullptr;
+    if (type)
+        for (const auto& method : type->methods)
+            if (method.name == "get" && method.parameters.size() == 1 &&
+                method.returnType == node->inferredType) getter = &method;
+    const auto host = getter ? hostIds_.find(FunctionKey(*getter)) : hostIds_.end();
+    if (!type || !getter || host == hostIds_.end()) {
+        Error(node, "index getter is not linked");
+        return;
+    }
+    CompileExpression(children[0]);
+    CompileExpression(children[1]);
+    EmitConversion(children[1]->inferredType, getter->parameters[0], children[1]);
+    Emit(OpCode::CallHost,
+         AddCallable({CallableKind::HostMethod, host->second, type->id, 0, 1}), node);
+}
+
+void BytecodeCompiler::CompileIndexStore(const LValueRef& target, AstNode* value,
+                                         const AstNode* source) {
+    const auto children = target.receiver ? target.receiver->Children() : std::vector<AstNode*>{};
+    if (children.size() != 2) { Error(source, "invalid index assignment"); return; }
+    const ClassSignature* type = FindClass(children[0]->inferredType.objectName);
+    const FunctionSignature* setter = nullptr;
+    if (type)
+        for (const auto& method : type->methods)
+            if (method.name == "set" && method.parameters.size() == 2 &&
+                method.parameters[1] == target.type && method.returnType == target.type)
+                setter = &method;
+    const auto host = setter ? hostIds_.find(FunctionKey(*setter)) : hostIds_.end();
+    if (!type || !setter || host == hostIds_.end()) {
+        Error(source, "index setter is not linked");
+        return;
+    }
+    CompileExpression(children[0]);
+    CompileExpression(children[1]);
+    EmitConversion(children[1]->inferredType, setter->parameters[0], children[1]);
+    CompileExpression(value);
+    EmitConversion(value->inferredType, setter->parameters[1], value);
+    Emit(OpCode::CallHost,
+         AddCallable({CallableKind::HostMethod, host->second, type->id, 0, 2}), source);
+}
+
+void BytecodeCompiler::CompileIndexCompound(const LValueRef& target, AstNode* value,
+                                            TokenKind operation, const AstNode* source) {
+    const auto children = target.receiver ? target.receiver->Children() : std::vector<AstNode*>{};
+    if (children.size() != 2) { Error(source, "invalid compound index assignment"); return; }
+    const ClassSignature* type = FindClass(children[0]->inferredType.objectName);
+    const FunctionSignature* getter = nullptr;
+    const FunctionSignature* setter = nullptr;
+    if (type) for (const auto& method : type->methods) {
+        if (method.name == "get" && method.parameters.size() == 1 &&
+            method.returnType == target.type) getter = &method;
+        if (method.name == "set" && method.parameters.size() == 2 &&
+            method.parameters[1] == target.type && method.returnType == target.type) setter = &method;
+    }
+    const auto getterId = getter ? hostIds_.find(FunctionKey(*getter)) : hostIds_.end();
+    const auto setterId = setter ? hostIds_.find(FunctionKey(*setter)) : hostIds_.end();
+    if (!type || !getter || !setter || getterId == hostIds_.end() || setterId == hostIds_.end()) {
+        Error(source, "compound index callbacks are not linked");
+        return;
+    }
+    const VariableId receiverSlot{nextLocal_++};
+    const VariableId indexSlot{nextLocal_++};
+    CompileExpression(children[0]);
+    Emit(OpCode::StoreLocal, static_cast<std::int32_t>(receiverSlot.value), source);
+    CompileExpression(children[1]);
+    EmitConversion(children[1]->inferredType, getter->parameters[0], children[1]);
+    Emit(OpCode::StoreLocal, static_cast<std::int32_t>(indexSlot.value), source);
+    Emit(OpCode::LoadLocal, static_cast<std::int32_t>(receiverSlot.value), source);
+    Emit(OpCode::LoadLocal, static_cast<std::int32_t>(indexSlot.value), source);
+    Emit(OpCode::CallHost,
+         AddCallable({CallableKind::HostMethod, getterId->second, type->id, 0, 1}), source);
+
+    const bool stringConcat = operation == TokenKind::PlusEqual && target.type == DataType::String();
+    const bool bitwise = operation == TokenKind::AmpEqual || operation == TokenKind::PipeEqual ||
+        operation == TokenKind::CaretEqual || operation == TokenKind::ShiftLeftEqual ||
+        operation == TokenKind::ShiftRightEqual || operation == TokenKind::ShiftRightArithmeticEqual;
+    const DataType operationType = stringConcat ? DataType::String()
+        : bitwise ? target.type : CommonNumericType(target.type, value->inferredType);
+    const bool floating = operationType == DataType::Float();
+    const bool doublePrecision = operationType == DataType::Double();
+    if (!stringConcat) EmitConversion(target.type, operationType, source);
+    CompileExpression(value);
+    if (stringConcat && value->inferredType != DataType::String()) Emit(OpCode::ToString, 0, source);
+    if (!stringConcat) EmitConversion(value->inferredType, operationType, source);
+    OpCode opcode = OpCode::Nop;
+    if (operation == TokenKind::PlusEqual)
+        opcode = stringConcat ? OpCode::Concat : doublePrecision ? OpCode::AddDouble
+                                                : floating ? OpCode::AddFloat : OpCode::AddInt;
+    else if (operation == TokenKind::MinusEqual)
+        opcode = doublePrecision ? OpCode::SubDouble : floating ? OpCode::SubFloat : OpCode::SubInt;
+    else if (operation == TokenKind::StarEqual)
+        opcode = doublePrecision ? OpCode::MulDouble : floating ? OpCode::MulFloat : OpCode::MulInt;
+    else if (operation == TokenKind::SlashEqual)
+        opcode = doublePrecision ? OpCode::DivDouble : floating ? OpCode::DivFloat : OpCode::DivInt;
+    else if (operation == TokenKind::PercentEqual) opcode = OpCode::ModInt;
+    else if (operation == TokenKind::StarStarEqual)
+        opcode = doublePrecision ? OpCode::PowDouble : floating ? OpCode::PowFloat : OpCode::PowInt;
+    else if (operation == TokenKind::AmpEqual) opcode = OpCode::BitAnd;
+    else if (operation == TokenKind::PipeEqual) opcode = OpCode::BitOr;
+    else if (operation == TokenKind::CaretEqual) opcode = OpCode::BitXor;
+    else if (operation == TokenKind::ShiftLeftEqual) opcode = OpCode::ShiftLeft;
+    else if (operation == TokenKind::ShiftRightEqual) opcode = OpCode::ShiftRight;
+    else if (operation == TokenKind::ShiftRightArithmeticEqual) opcode = OpCode::ShiftRightArithmetic;
+    else { Error(source, "compound index operator cannot be compiled"); return; }
+    Emit(opcode, 0, source);
+    if (!stringConcat) EmitConversion(operationType, target.type, source);
+    const VariableId resultSlot{nextLocal_++};
+    Emit(OpCode::StoreLocal, static_cast<std::int32_t>(resultSlot.value), source);
+    Emit(OpCode::LoadLocal, static_cast<std::int32_t>(receiverSlot.value), source);
+    Emit(OpCode::LoadLocal, static_cast<std::int32_t>(indexSlot.value), source);
+    Emit(OpCode::LoadLocal, static_cast<std::int32_t>(resultSlot.value), source);
+    Emit(OpCode::CallHost,
+         AddCallable({CallableKind::HostMethod, setterId->second, type->id, 0, 2}), source);
+}
+
+void BytecodeCompiler::CompileIndexIncrement(AstNode* node, const LValueRef& target) {
+    const auto children = target.receiver ? target.receiver->Children() : std::vector<AstNode*>{};
+    if (children.size() != 2) { Error(node, "invalid indexed increment"); return; }
+    const ClassSignature* type = FindClass(children[0]->inferredType.objectName);
+    const FunctionSignature* getter = nullptr;
+    const FunctionSignature* setter = nullptr;
+    if (type) for (const auto& method : type->methods) {
+        if (method.name == "get" && method.parameters.size() == 1 &&
+            method.returnType == target.type) getter = &method;
+        if (method.name == "set" && method.parameters.size() == 2 &&
+            method.parameters[1] == target.type && method.returnType == target.type) setter = &method;
+    }
+    const auto getterId = getter ? hostIds_.find(FunctionKey(*getter)) : hostIds_.end();
+    const auto setterId = setter ? hostIds_.find(FunctionKey(*setter)) : hostIds_.end();
+    if (!type || !getter || !setter || getterId == hostIds_.end() || setterId == hostIds_.end()) {
+        Error(node, "indexed increment callbacks are not linked");
+        return;
+    }
+    const VariableId receiverSlot{nextLocal_++};
+    const VariableId indexSlot{nextLocal_++};
+    CompileExpression(children[0]);
+    Emit(OpCode::StoreLocal, static_cast<std::int32_t>(receiverSlot.value), node);
+    CompileExpression(children[1]);
+    EmitConversion(children[1]->inferredType, getter->parameters[0], children[1]);
+    Emit(OpCode::StoreLocal, static_cast<std::int32_t>(indexSlot.value), node);
+    Emit(OpCode::LoadLocal, static_cast<std::int32_t>(receiverSlot.value), node);
+    Emit(OpCode::LoadLocal, static_cast<std::int32_t>(indexSlot.value), node);
+    Emit(OpCode::CallHost,
+         AddCallable({CallableKind::HostMethod, getterId->second, type->id, 0, 1}), node);
+    std::optional<VariableId> original;
+    if (node->isPostfix) {
+        original = VariableId{nextLocal_++};
+        Emit(OpCode::Dup, 0, node);
+        Emit(OpCode::StoreLocal, static_cast<std::int32_t>(original->value), node);
+    }
+    const bool floating = target.type == DataType::Float();
+    const bool doublePrecision = target.type == DataType::Double();
+    Emit(OpCode::PushConst,
+         AddConstant(doublePrecision ? Value(1.0) : floating ? Value(1.0f)
+             : Value::Integer(target.type, 1)), node);
+    Emit(node->token.kind == TokenKind::PlusPlus
+             ? (doublePrecision ? OpCode::AddDouble : floating ? OpCode::AddFloat : OpCode::AddInt)
+             : (doublePrecision ? OpCode::SubDouble : floating ? OpCode::SubFloat : OpCode::SubInt),
+         0, node);
+    const VariableId resultSlot{nextLocal_++};
+    Emit(OpCode::StoreLocal, static_cast<std::int32_t>(resultSlot.value), node);
+    Emit(OpCode::LoadLocal, static_cast<std::int32_t>(receiverSlot.value), node);
+    Emit(OpCode::LoadLocal, static_cast<std::int32_t>(indexSlot.value), node);
+    Emit(OpCode::LoadLocal, static_cast<std::int32_t>(resultSlot.value), node);
+    Emit(OpCode::CallHost,
+         AddCallable({CallableKind::HostMethod, setterId->second, type->id, 0, 2}), node);
+    if (original) {
+        Emit(OpCode::Pop, 0, node);
+        Emit(OpCode::LoadLocal, static_cast<std::int32_t>(original->value), node);
+    }
+}
+
 std::optional<BytecodeCompiler::LValueRef> BytecodeCompiler::ResolveLValue(AstNode* expression) const {
     if (!expression) return std::nullopt;
     if (expression->kind == NodeKind::Unary && expression->token.kind == TokenKind::At)
@@ -980,6 +1158,13 @@ std::optional<BytecodeCompiler::LValueRef> BytecodeCompiler::ResolveLValue(AstNo
         result.receiver = expression;
         return result;
     }
+    if (expression->kind == NodeKind::Index) {
+        LValueRef result;
+        result.kind = LValueRef::Kind::Index;
+        result.type = expression->inferredType;
+        result.receiver = expression;
+        return result;
+    }
     return std::nullopt;
 }
 
@@ -1004,13 +1189,17 @@ void BytecodeCompiler::CompileLValueLoad(const LValueRef& target, const AstNode*
         Emit(OpCode::LoadReference, 0, source);
         break;
     case LValueRef::Kind::Index:
-        Error(source, "lvalue kind is not implemented");
+        CompileIndexLoad(target.receiver);
         break;
     }
 }
 
 void BytecodeCompiler::CompileLValueStore(const LValueRef& target, AstNode* value,
                                           const AstNode* source) {
+    if (target.kind == LValueRef::Kind::Index) {
+        CompileIndexStore(target, value, source);
+        return;
+    }
     if (target.kind == LValueRef::Kind::Dynamic) {
         CompileCall(target.receiver, false);
         CompileExpression(value);
@@ -1041,14 +1230,16 @@ void BytecodeCompiler::CompileLValueStore(const LValueRef& target, AstNode* valu
         Emit(OpCode::StoreGlobal, static_cast<std::int32_t>(target.global.value), source);
         break;
     case LValueRef::Kind::Dynamic: break;
-    case LValueRef::Kind::Index:
-        Error(source, "lvalue kind is not implemented");
-        break;
+    case LValueRef::Kind::Index: break;
     }
 }
 
 void BytecodeCompiler::CompileCompoundAssignment(const LValueRef& target, AstNode* value,
                                                  TokenKind operation, const AstNode* source) {
+    if (target.kind == LValueRef::Kind::Index) {
+        CompileIndexCompound(target, value, operation, source);
+        return;
+    }
     if (target.kind == LValueRef::Kind::Dynamic) {
         CompileCall(target.receiver, false);
         Emit(OpCode::Dup, 0, source);
@@ -1114,9 +1305,7 @@ void BytecodeCompiler::CompileCompoundAssignment(const LValueRef& target, AstNod
     case LValueRef::Kind::Dynamic:
         Emit(OpCode::StoreReference, 0, source);
         break;
-    case LValueRef::Kind::Index:
-        Error(source, "lvalue kind is not implemented");
-        break;
+    case LValueRef::Kind::Index: break;
     }
 }
 
@@ -1127,6 +1316,10 @@ void BytecodeCompiler::CompileIncrement(AstNode* node) {
     }
     const auto target = ResolveLValue(node ? node->firstChild : nullptr);
     if (!target) { Error(node, "increment target cannot be compiled"); return; }
+    if (target->kind == LValueRef::Kind::Index) {
+        CompileIndexIncrement(node, *target);
+        return;
+    }
     if (target->kind == LValueRef::Kind::Dynamic) {
         CompileCall(target->receiver, false);
         Emit(OpCode::Dup, 0, node);

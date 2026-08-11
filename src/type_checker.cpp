@@ -972,6 +972,7 @@ DataType TypeChecker::CheckExpression(AstNode* node, std::optional<DataType> exp
         break;
     }
     case NodeKind::Member: result = CheckMember(node); break;
+    case NodeKind::Index: result = CheckIndex(node); break;
     case NodeKind::Conditional: {
         const auto children = node->Children();
         if (CheckExpression(children[0]) != DataType::Bool())
@@ -989,7 +990,9 @@ DataType TypeChecker::CheckExpression(AstNode* node, std::optional<DataType> exp
     case NodeKind::Unary: result = CheckUnary(node, expected); break;
     case NodeKind::Increment: {
         AstNode* operand = node->firstChild;
-        result = CheckExpression(operand);
+        result = operand && operand->kind == NodeKind::Index
+            ? CheckIndex(operand, true) : CheckExpression(operand);
+        if (operand && operand->kind == NodeKind::Index) operand->inferredType = result;
         if (operand && (!operand->propertyGetter.empty() || !operand->propertySetter.empty())) {
             Error(node, "increment and decrement are not supported for property accessors");
             result = DataType::Invalid();
@@ -1011,6 +1014,7 @@ DataType TypeChecker::CheckExpression(AstNode* node, std::optional<DataType> exp
             break;
         }
         if (!operand || (operand->kind != NodeKind::Identifier && operand->kind != NodeKind::Member &&
+                         operand->kind != NodeKind::Index &&
                          !(operand->kind == NodeKind::Call && operand->returnsReference)))
             Error(operand, "increment operand is not assignable");
         if (IsReadOnlyLValue(operand)) Error(operand, "cannot modify const variable");
@@ -1098,7 +1102,9 @@ DataType TypeChecker::CheckExpression(AstNode* node, std::optional<DataType> exp
     case NodeKind::Assign: {
         const auto children = node->Children();
         DataType target;
-        if (children[0]->kind == NodeKind::Member) {
+        if (children[0]->kind == NodeKind::Index) {
+            target = CheckIndex(children[0], true);
+        } else if (children[0]->kind == NodeKind::Member) {
             target = CheckMember(children[0], true, node->token.kind != TokenKind::Equal);
         } else if (children[0]->kind == NodeKind::Identifier && currentClass_ &&
                    !Lookup(children[0]->token.lexeme)) {
@@ -1114,6 +1120,7 @@ DataType TypeChecker::CheckExpression(AstNode* node, std::optional<DataType> exp
         if (target.kind == TypeKind::Function && !explicitHandleTarget)
             Error(children[0], "function handle assignment requires explicit '@' on the target");
         if (children[0]->kind != NodeKind::Identifier && children[0]->kind != NodeKind::Member &&
+            children[0]->kind != NodeKind::Index &&
             !explicitHandleTarget &&
             !(children[0]->kind == NodeKind::Call && children[0]->returnsReference)) {
             Error(children[0], "left side of assignment is not assignable");
@@ -1247,6 +1254,35 @@ DataType TypeChecker::CheckMember(AstNode* node, bool writing, bool compound) {
     if (setter && writing)
         CheckAccess(node, setter->access, setter->objectType, "property setter", node->token.lexeme);
     return getter ? getter->returnType : setter->parameters[0];
+}
+
+DataType TypeChecker::CheckIndex(AstNode* node, bool writing) {
+    const auto children = node ? node->Children() : std::vector<AstNode*>{};
+    if (children.size() != 2) return DataType::Invalid();
+    const DataType object = CheckExpression(children[0]);
+    const ClassSignature* type = FindClass(object.objectName);
+    if (!type) {
+        Error(node, "type '" + object.Name() + "' is not indexable");
+        return DataType::Invalid();
+    }
+    const FunctionSignature* getter = nullptr;
+    const FunctionSignature* setter = nullptr;
+    for (const auto& method : type->methods) {
+        if (method.name == "get" && method.parameters.size() == 1 &&
+            method.returnType != DataType::Void()) getter = &method;
+        if (method.name == "set" && method.parameters.size() == 2 &&
+            method.returnType != DataType::Void()) setter = &method;
+    }
+    if (!getter || (writing && !setter) ||
+        (setter && getter->returnType != setter->parameters[1])) {
+        Error(node, "type '" + object.Name() + "' does not provide a compatible index protocol");
+        return DataType::Invalid();
+    }
+    const DataType index = CheckExpression(children[1], getter->parameters[0]);
+    if (!CanConvert(index, getter->parameters[0]))
+        Error(children[1], "index expression cannot convert " + index.Name() + " to " +
+                           getter->parameters[0].Name());
+    return getter->returnType;
 }
 
 DataType TypeChecker::CheckImplicitProperty(AstNode* node, bool writing, bool compound) {

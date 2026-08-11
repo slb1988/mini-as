@@ -60,9 +60,10 @@ std::string_view TokenName(TokenKind kind) {
         "+=", "-=", "*=", "**=", "/=", "%=",
         "&", "|", "^", "~", "<<", ">>", ">>>",
         "&=", "|=", "^=", "<<=", ">>=", ">>>=",
-        "!", "!=", "=", "==", "<", "<=", ">", ">=", "&&", "||"
+        "!", "!=", "=", "==", "<", "<=", ">", ">=", "&&", "||", "[", "]"
     };
-    static_assert(sizeof(names) / sizeof(names[0]) == static_cast<std::size_t>(TokenKind::OrOr) + 1,
+    static_assert(sizeof(names) / sizeof(names[0]) ==
+                      static_cast<std::size_t>(TokenKind::RightBracket) + 1,
                   "token name table must match TokenKind");
     return names[static_cast<std::size_t>(kind)];
 }
@@ -112,6 +113,8 @@ void Tokenizer::ScanToken() {
     case ')': Add(TokenKind::RightParen, start, location); return;
     case '{': Add(TokenKind::LeftBrace, start, location); return;
     case '}': Add(TokenKind::RightBrace, start, location); return;
+    case '[': Add(TokenKind::LeftBracket, start, location); return;
+    case ']': Add(TokenKind::RightBracket, start, location); return;
     case ',': Add(TokenKind::Comma, start, location); return;
     case '.':
         if (std::isdigit(static_cast<unsigned char>(Peek()))) ScanNumber(start, location);

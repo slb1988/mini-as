@@ -168,3 +168,12 @@ TEST_CASE(tokenizer_recognizes_anonymous_function_keyword) {
     CHECK(tokens[0].kind == mini_as::TokenKind::KwFunction);
 }
 
+TEST_CASE(tokenizer_recognizes_index_brackets) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("index", "values[2]", diagnostics);
+    const auto tokens = tokenizer.ScanAll();
+    CHECK(!diagnostics.HasErrors());
+    CHECK(tokens[1].kind == mini_as::TokenKind::LeftBracket);
+    CHECK(tokens[3].kind == mini_as::TokenKind::RightBracket);
+}
+

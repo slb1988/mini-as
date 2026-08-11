@@ -187,3 +187,14 @@ TEST_CASE(tokenizer_recognizes_index_brackets) {
     CHECK(tokens[3].kind == mini_as::TokenKind::RightBracket);
 }
 
+TEST_CASE(tokenizer_recognizes_import_keyword_but_keeps_from_contextual) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("import", "import int answer(int) from \"math\";", diagnostics);
+    const auto tokens = tokenizer.ScanAll();
+    CHECK(!diagnostics.HasErrors());
+    CHECK(tokens[0].kind == mini_as::TokenKind::KwImport);
+    CHECK(tokens[6].kind == mini_as::TokenKind::Identifier);
+    CHECK(tokens[6].lexeme == "from");
+    CHECK(tokens[7].kind == mini_as::TokenKind::String);
+}
+

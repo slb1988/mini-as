@@ -145,10 +145,19 @@ int main(int argc, char** argv) {
             if (!value) { call.SetException("invalid HostRef receiver"); return; }
             call.SetReturnInt(value->value);
         })) return 12;
+    const bool importedFunctions =
+        std::string(argv[1]).find("imported_functions") != std::string::npos;
+    if (importedFunctions) {
+        auto* source = engine->GetModule("math", mini_as::ModulePolicy::AlwaysCreate);
+        source->AddScriptSection("math.as",
+            "int total = 40; int Add(int value) { total += value; return total; }");
+        if (!source->Build()) return 13;
+    }
     auto* module = engine->GetModule("compat", mini_as::ModulePolicy::AlwaysCreate);
     if (hostControls) module->SetAccessMask(0x1u);
     module->AddScriptSection("compat.as", ReadFile(argv[1]));
     if (!module->Build()) return 13;
+    if (importedFunctions && !module->BindAllImportedFunctions()) return 13;
     if (hostControls && engine->RemoveConfigGroup("runtime")) return 13;
     if (std::string(argv[1]).find("registered_named_types") != std::string::npos) {
         const auto* selected = module->GetGlobalMetadataByDecl("HostColor selected");

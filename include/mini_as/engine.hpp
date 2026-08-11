@@ -93,6 +93,14 @@ public:
     const GlobalMetadata* GetGlobalMetadataById(GlobalId id) const;
     const GlobalMetadata* GetGlobalMetadataByName(std::string_view name) const;
     const GlobalMetadata* GetGlobalMetadataByDecl(std::string_view declaration) const;
+    std::size_t GetImportedFunctionCount() const;
+    std::string GetImportedFunctionDeclaration(std::size_t index) const;
+    std::string_view GetImportedFunctionSourceModule(std::size_t index) const;
+    bool BindImportedFunction(std::size_t index, const BytecodeFunction* function);
+    bool BindImportedFunction(std::size_t index, const FunctionMetadata* function);
+    bool BindAllImportedFunctions();
+    bool UnbindImportedFunction(std::size_t index);
+    void UnbindAllImportedFunctions();
     const BytecodeModule& Bytecode() const;
     std::uint32_t SetAccessMask(std::uint32_t accessMask);
     std::uint32_t GetAccessMask() const;
@@ -236,6 +244,7 @@ private:
     GlobalId GetOrCreateGlobalId(std::string key);
     void RegisterModuleImage(const std::shared_ptr<const ModuleImage>& image);
     std::shared_ptr<const ModuleImage> FindModuleImage(const BytecodeFunction* function);
+    std::optional<ResolvedScriptFunction> ResolveScriptFunction(FunctionId function);
     void EnqueueFinalizer(ScriptObject* object) override;
     void DrainFinalizers();
     std::deque<ScriptObject*> finalizerQueue_;

@@ -40,6 +40,8 @@ struct AstNode {
     bool returnsReference = false;
     bool returnReferenceConst = false;
     bool propertyAccessor = false;
+    bool isImported = false;
+    std::string sourceModule;
     std::string operatorMethod;
     bool operatorReversed = false;
     std::string propertyGetter;
@@ -93,7 +95,7 @@ private:
     AstNode* ParseTypedef();
     AstNode* ParseFuncdef(std::string_view parentType = {});
     AstNode* ParseFunction(DataType returnType, Token name, bool returnsReference = false,
-                           bool returnReferenceConst = false);
+                           bool returnReferenceConst = false, bool imported = false);
     AstNode* ParseBlock();
     AstNode* ParseStatement();
     AstNode* ParseVariableDeclaration();

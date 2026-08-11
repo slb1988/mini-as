@@ -28,6 +28,8 @@ struct FunctionSignature {
     bool propertyAccessor = false;
     bool factory = false;
     bool readOnlyMethod = false;
+    bool imported = false;
+    std::string sourceModule;
 
     std::string Declaration() const;
 };

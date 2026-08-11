@@ -258,6 +258,8 @@ bool ScriptModule::Build() {
         state->globals.push_back(global.host && global.host->storage
             ? *global.host->storage : DefaultGlobalValue(global.signature.type, engine_));
     }
+    for (const auto& imported : candidate.imports)
+        state->BindImportedFunction(imported.signature.id, {});
     VirtualMachine initializer;
     auto finalizerModule = std::make_shared<BytecodeModule>(candidate);
     initializer.SetFinalizerContext(&engine_, finalizerModule, state,
@@ -290,7 +292,8 @@ bool ScriptModule::Build() {
         if (!host) engine_.PublishFuncdefMetadata(type, false);
     }
     for (const auto& function : functions)
-        if (!function.host) engine_.PublishFunctionMetadata(function, name_);
+        if (!function.host && !function.imported)
+            engine_.PublishFunctionMetadata(function, name_);
     for (const auto& type : classes)
         if (!type.host)
             for (const auto& method : type.methods)
@@ -341,6 +344,83 @@ const BytecodeFunction* ScriptModule::GetFunctionByName(std::string_view name) c
         if (function.signature.name == requested) return &function;
     }
     return nullptr;
+}
+
+std::size_t ScriptModule::GetImportedFunctionCount() const {
+    return image_->bytecode.imports.size();
+}
+
+std::string ScriptModule::GetImportedFunctionDeclaration(std::size_t index) const {
+    return index < image_->bytecode.imports.size()
+        ? image_->bytecode.imports[index].signature.Declaration() : std::string{};
+}
+
+std::string_view ScriptModule::GetImportedFunctionSourceModule(std::size_t index) const {
+    return index < image_->bytecode.imports.size()
+        ? std::string_view(image_->bytecode.imports[index].sourceModule)
+        : std::string_view{};
+}
+
+bool ScriptModule::BindImportedFunction(std::size_t index,
+                                        const BytecodeFunction* function) {
+    if (index >= image_->bytecode.imports.size() || !function ||
+        function->signature.method || function->signature.host ||
+        function->signature.imported) return false;
+    const auto compatible = [](const FunctionSignature& imported,
+                               const FunctionSignature& target) {
+        return imported.returnType == target.returnType &&
+               imported.parameters == target.parameters &&
+               imported.parameterModes == target.parameterModes &&
+               imported.returnsReference == target.returnsReference &&
+               imported.returnReferenceConst == target.returnReferenceConst;
+    };
+    if (!engine_.FindModuleImage(function) ||
+        !compatible(image_->bytecode.imports[index].signature,
+                    function->signature)) return false;
+    image_->state->BindImportedFunction(
+        image_->bytecode.imports[index].signature.id, function->signature.id);
+    return true;
+}
+
+bool ScriptModule::BindImportedFunction(std::size_t index,
+                                        const FunctionMetadata* function) {
+    if (index >= image_->bytecode.imports.size() || !function ||
+        function->signature.method || function->signature.factory ||
+        function->signature.constructor || function->signature.destructor ||
+        function->signature.imported) return false;
+    const auto& imported = image_->bytecode.imports[index].signature;
+    const auto& target = function->signature;
+    if (imported.returnType != target.returnType ||
+        imported.parameters != target.parameters ||
+        imported.parameterModes != target.parameterModes ||
+        imported.returnsReference != target.returnsReference ||
+        imported.returnReferenceConst != target.returnReferenceConst) return false;
+    if (!target.host && !engine_.ResolveScriptFunction(function->id)) return false;
+    image_->state->BindImportedFunction(imported.id, function->id);
+    return true;
+}
+
+bool ScriptModule::BindAllImportedFunctions() {
+    for (std::size_t index = 0; index < image_->bytecode.imports.size(); ++index) {
+        const auto& imported = image_->bytecode.imports[index];
+        ScriptModule* source = engine_.GetModule(
+            imported.sourceModule, ModulePolicy::OnlyIfExists);
+        const BytecodeFunction* function = source
+            ? source->GetFunctionByDecl(imported.signature.Declaration()) : nullptr;
+        if (!BindImportedFunction(index, function)) return false;
+    }
+    return true;
+}
+
+bool ScriptModule::UnbindImportedFunction(std::size_t index) {
+    if (index >= image_->bytecode.imports.size()) return false;
+    image_->state->BindImportedFunction(image_->bytecode.imports[index].signature.id, {});
+    return true;
+}
+
+void ScriptModule::UnbindAllImportedFunctions() {
+    for (std::size_t index = 0; index < image_->bytecode.imports.size(); ++index)
+        UnbindImportedFunction(index);
 }
 
 const FunctionMetadata* ScriptModule::GetFunctionMetadataByDecl(
@@ -642,6 +722,8 @@ bool ScriptModule::LoadBytecode(std::istream& input) {
     for (auto& type : archive.environment.classes)
         for (auto& method : type.methods) remapFunction(method);
     for (auto& function : archive.bytecode.functions) remapFunction(function.signature);
+    for (auto& imported : archive.bytecode.imports)
+        remapFunction(imported.signature);
 
     const auto remapType = [&](TypeId& id, std::string_view name, bool host) {
         if (!id.IsValid()) return;
@@ -868,6 +950,8 @@ bool ScriptModule::LoadBytecode(std::istream& input) {
         state->globals.push_back(global.host && global.host->storage
             ? *global.host->storage : DefaultGlobalValue(global.signature.type, engine_));
     }
+    for (const auto& imported : archive.bytecode.imports)
+        state->BindImportedFunction(imported.signature.id, {});
     VirtualMachine initializer;
     auto finalizerModule = std::make_shared<BytecodeModule>(archive.bytecode);
     initializer.SetFinalizerContext(&engine_, finalizerModule, state,
@@ -899,7 +983,8 @@ bool ScriptModule::LoadBytecode(std::istream& input) {
         if (!host) engine_.PublishFuncdefMetadata(type, false);
     }
     for (const auto& function : archive.environment.functions)
-        if (!function.host) engine_.PublishFunctionMetadata(function, name_);
+        if (!function.host && !function.imported)
+            engine_.PublishFunctionMetadata(function, name_);
     for (const auto& type : archive.environment.classes)
         if (!type.host) for (const auto& method : type.methods)
             engine_.PublishFunctionMetadata(method, name_);
@@ -961,6 +1046,9 @@ ScriptContext::ScriptContext(ScriptEngine& engine) : engine_(engine) {
     vm_.SetLineCallback([this](const SourceLocation& location) {
         if (lineCallback_) lineCallback_(*this, location);
     });
+    vm_.SetScriptFunctionResolver([this](FunctionId function) {
+        return engine_.ResolveScriptFunction(function);
+    });
 }
 
 bool ScriptContext::Prepare(const BytecodeFunction* function) {
@@ -1006,6 +1094,7 @@ ExecutionState ScriptContext::Execute() {
     if (result_.state == ExecutionState::Prepared) {
         vm_.SetFinalizerContext(&engine_, image_->finalizerBytecode, image_->state,
                                 [this] { engine_.DrainFinalizers(); });
+        vm_.SetModuleOwner(image_);
         if (!vm_.Prepare(*function_, arguments_, &image_->bytecode, image_->state.get())) {
             result_ = vm_.Continue();
             engine_.DrainFinalizers();
@@ -2120,6 +2209,25 @@ std::shared_ptr<const ModuleImage> ScriptEngine::FindModuleImage(const BytecodeF
     return image;
 }
 
+std::optional<ResolvedScriptFunction> ScriptEngine::ResolveScriptFunction(FunctionId function) {
+    if (!function.IsValid()) return std::nullopt;
+    const auto resolve = [function](const std::shared_ptr<const ModuleImage>& image)
+        -> std::optional<ResolvedScriptFunction> {
+        if (!image) return std::nullopt;
+        const BytecodeFunction* target = image->bytecode.FindFunction(function);
+        if (!target) return std::nullopt;
+        return ResolvedScriptFunction{target, &image->bytecode, image->state.get(), image,
+                                      image->finalizerBytecode, image->state};
+    };
+    for (const auto& entry : modules_) {
+        if (auto result = resolve(entry.second->image_)) return result;
+        for (auto image = entry.second->dynamicImages_.rbegin();
+             image != entry.second->dynamicImages_.rend(); ++image)
+            if (auto result = resolve(*image)) return result;
+    }
+    return std::nullopt;
+}
+
 void ScriptEngine::EnqueueFinalizer(ScriptObject* object) {
     if (object) finalizerQueue_.push_back(object);
 }
@@ -2143,6 +2251,10 @@ void ScriptEngine::DrainFinalizers() {
             VirtualMachine finalizer;
             finalizer.SetFinalizerContext(this, binding.module, binding.state,
                                           [this] { DrainFinalizers(); });
+            finalizer.SetModuleOwner(binding.module);
+            finalizer.SetScriptFunctionResolver([this](FunctionId target) {
+                return ResolveScriptFunction(target);
+            });
             const ExecutionResult result = finalizer.Execute(
                 *function, {Value(ObjectHandle(object))}, binding.module.get(), state.get());
             if (result.state != ExecutionState::Finished) {

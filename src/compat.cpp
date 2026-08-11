@@ -27,6 +27,42 @@ const BytecodeFunction* ScriptModule::GetFunctionByDecl(const char* declaration)
 const BytecodeFunction* ScriptModule::GetFunctionByName(const char* name) const {
     return name ? module_->GetFunctionByName(name) : nullptr;
 }
+std::size_t ScriptModule::GetImportedFunctionCount() const {
+    return module_->GetImportedFunctionCount();
+}
+int ScriptModule::GetImportedFunctionIndexByDecl(const char* declaration) const {
+    if (!declaration) return asINVALID_ARG;
+    for (std::size_t index = 0; index < module_->GetImportedFunctionCount(); ++index)
+        if (module_->GetImportedFunctionDeclaration(index) == declaration)
+            return static_cast<int>(index);
+    return asNO_FUNCTION;
+}
+const char* ScriptModule::GetImportedFunctionDeclaration(std::size_t index) const {
+    if (index >= module_->GetImportedFunctionCount()) return nullptr;
+    importScratch_ = module_->GetImportedFunctionDeclaration(index);
+    return importScratch_.c_str();
+}
+const char* ScriptModule::GetImportedFunctionSourceModule(std::size_t index) const {
+    if (index >= module_->GetImportedFunctionCount()) return nullptr;
+    importScratch_ = module_->GetImportedFunctionSourceModule(index);
+    return importScratch_.c_str();
+}
+int ScriptModule::BindImportedFunction(std::size_t index,
+                                       const BytecodeFunction* function) {
+    if (index >= module_->GetImportedFunctionCount()) return asINVALID_ARG;
+    if (!function) return asNO_FUNCTION;
+    return module_->BindImportedFunction(index, function) ? asSUCCESS : asINVALID_INTERFACE;
+}
+int ScriptModule::BindAllImportedFunctions() {
+    return module_->BindAllImportedFunctions() ? asSUCCESS : asCANT_BIND_ALL_FUNCTIONS;
+}
+int ScriptModule::UnbindImportedFunction(std::size_t index) {
+    return module_->UnbindImportedFunction(index) ? asSUCCESS : asINVALID_ARG;
+}
+int ScriptModule::UnbindAllImportedFunctions() {
+    module_->UnbindAllImportedFunctions();
+    return asSUCCESS;
+}
 
 int ScriptModule::CompileFunction(const char* sectionName, const char* source, int lineOffset,
                                   std::uint32_t flags, const BytecodeFunction** output) {

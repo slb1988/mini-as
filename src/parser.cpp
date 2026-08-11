@@ -183,6 +183,14 @@ SyntaxTree Parser::Parse() {
 }
 
 AstNode* Parser::ParseTopLevel() {
+    if (Match(TokenKind::KwImport)) {
+        const bool returnConst = Match(TokenKind::KwConst);
+        DataType type = ParseType(true);
+        const bool returnsReference = Match(TokenKind::Amp);
+        Token name = Consume(TokenKind::Identifier, "expected imported function name");
+        name.lexeme = QualifyDeclaration(name.lexeme);
+        return ParseFunction(type, std::move(name), returnsReference, returnConst, true);
+    }
     if (Match(TokenKind::KwNamespace)) return ParseNamespace();
     if (Match(TokenKind::KwClass)) return ParseClass(false);
     if (Match(TokenKind::KwInterface)) return ParseClass(true);
@@ -410,11 +418,12 @@ AstNode* Parser::ParseClass(bool isInterface) {
 }
 
 AstNode* Parser::ParseFunction(DataType returnType, Token name, bool returnsReference,
-                               bool returnReferenceConst) {
+                               bool returnReferenceConst, bool imported) {
     AstNode* function = arena_->Make(NodeKind::FunctionDecl, name);
     function->declaredType = std::move(returnType);
     function->returnsReference = returnsReference;
     function->returnReferenceConst = returnReferenceConst;
+    function->isImported = imported;
     Consume(TokenKind::LeftParen, "expected '(' after function name");
     bool sawDefault = false;
     if (!Check(TokenKind::RightParen)) {
@@ -428,7 +437,13 @@ AstNode* Parser::ParseFunction(DataType returnType, Token name, bool returnsRefe
                 else if (Match(TokenKind::KwInOut)) mode = ParameterMode::InOut;
                 else mode = ParameterMode::InOut;
             }
-            Token paramName = Consume(TokenKind::Identifier, "expected parameter name");
+            Token paramName;
+            if (Check(TokenKind::Identifier)) paramName = Advance();
+            else if (imported && (Check(TokenKind::Comma) || Check(TokenKind::RightParen))) {
+                paramName = Current();
+                paramName.kind = TokenKind::Identifier;
+                paramName.lexeme = "$arg" + std::to_string(function->Children().size());
+            } else paramName = Consume(TokenKind::Identifier, "expected parameter name");
             AstNode* parameter = arena_->Make(NodeKind::Parameter, paramName);
             parameter->declaredType = std::move(type);
             parameter->parameterMode = mode;
@@ -443,6 +458,16 @@ AstNode* Parser::ParseFunction(DataType returnType, Token name, bool returnsRefe
         } while (Match(TokenKind::Comma));
     }
     Consume(TokenKind::RightParen, "expected ')' after parameters");
+    if (imported) {
+        if (!Check(TokenKind::Identifier) || Current().lexeme != "from")
+            Error(Current(), "expected 'from' after imported function declaration");
+        else Advance();
+        Token moduleName = Consume(TokenKind::String, "expected source module string");
+        if (moduleName.lexeme.size() >= 2)
+            function->sourceModule = moduleName.lexeme.substr(1, moduleName.lexeme.size() - 2);
+        Consume(TokenKind::Semicolon, "expected ';' after imported function declaration");
+        return function;
+    }
     while (Check(TokenKind::KwConst) ||
            (Check(TokenKind::Identifier) &&
             (Current().lexeme == "property" || Current().lexeme == "delete"))) {

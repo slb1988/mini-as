@@ -66,7 +66,8 @@ enum class CallableKind {
     ScriptMethod,
     HostMethod,
     VirtualMethod,
-    FunctionHandle
+    FunctionHandle,
+    ImportedFunction
 };
 
 struct CallableRef {
@@ -96,8 +97,17 @@ struct GlobalBinding {
     const RegisteredHostProperty* host = nullptr;
 };
 
+struct ImportedFunction {
+    FunctionSignature signature;
+    std::string sourceModule;
+};
+
 struct ModuleState {
     std::vector<Value> globals;
+    std::vector<std::pair<FunctionId, FunctionId>> importedFunctions;
+
+    FunctionId FindImportedFunction(FunctionId declaration) const;
+    void BindImportedFunction(FunctionId declaration, FunctionId target);
 };
 
 struct BytecodeModule {
@@ -110,6 +120,7 @@ struct BytecodeModule {
     std::vector<std::pair<TypeId, const TypeInfo*>> objectTypes;
     std::vector<std::pair<TypeId, FunctionId>> destructors;
     std::vector<FuncdefSignature> funcdefs;
+    std::vector<ImportedFunction> imports;
 
     const BytecodeFunction* FindFunction(FunctionId id) const;
     const RegisteredHostFunction* FindHostFunction(FunctionId id) const;

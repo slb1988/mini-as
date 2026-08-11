@@ -29,7 +29,7 @@ enum class TokenKind {
     Less, LessEqual, Greater, GreaterEqual,
     AndAnd, OrOr,
     LeftBracket, RightBracket,
-    KwForeach
+    KwForeach, KwImport
 };
 
 struct Token {

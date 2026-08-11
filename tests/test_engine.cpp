@@ -2984,3 +2984,129 @@ TEST_CASE(delete_rejects_non_default_operations_implementations_and_conflicts) {
     CHECK(globalFunction);
 }
 
+TEST_CASE(imported_functions_bind_unbind_and_preserve_module_state) {
+    auto engine = mini_as::CreateScriptEngine();
+    CHECK(engine->RegisterGlobalFunction("int HostAdd(int value)",
+        [](mini_as::GenericCall& call) {
+            call.SetReturnInt(call.GetArgInt(0) + 40);
+        }));
+    const mini_as::FunctionMetadata* hostAdd = nullptr;
+    for (std::size_t index = 0; index < engine->GetFunctionMetadataCount(); ++index) {
+        const auto* candidate = engine->GetFunctionMetadataByIndex(index);
+        if (candidate && candidate->signature.name == "HostAdd") hostAdd = candidate;
+    }
+    CHECK(hostAdd != nullptr);
+    auto* source = engine->GetModule("math");
+    source->AddScriptSection("math",
+        "int total = 40; int Add(int value) { total += value; return total; } "
+        "int Wrong() { return 0; }");
+    CHECK(source->Build());
+
+    auto* consumer = engine->GetModule("consumer");
+    consumer->AddScriptSection("consumer",
+        "import int Add(int value) from \"math\";\n"
+        "int main() { return Add(2); }");
+    CHECK(consumer->Build());
+    CHECK(consumer->GetImportedFunctionCount() == 1);
+    CHECK(consumer->GetImportedFunctionDeclaration(0) == "int Add(int)");
+    CHECK(consumer->GetImportedFunctionSourceModule(0) == "math");
+    CHECK(!consumer->BindImportedFunction(0, source->GetFunctionByDecl("int Wrong()")));
+
+    const auto* main = consumer->GetFunctionByDecl("int main()");
+    CHECK(main != nullptr);
+    bool importedCall = false;
+    for (const auto& instruction : main->code) {
+        if (instruction.opcode != mini_as::OpCode::Call || instruction.operand < 0) continue;
+        const auto* callable = consumer->Bytecode().FindCallable(
+            static_cast<std::size_t>(instruction.operand));
+        importedCall = importedCall ||
+            (callable && callable->kind == mini_as::CallableKind::ImportedFunction);
+    }
+    CHECK(importedCall);
+
+    auto unbound = engine->CreateContext();
+    CHECK(unbound->Prepare(main));
+    CHECK(unbound->Execute() == mini_as::ExecutionState::Exception);
+    CHECK(unbound->GetExceptionString().find("not bound") != std::string::npos);
+    CHECK(unbound->GetExceptionLocation().row == 2);
+
+    CHECK(consumer->BindImportedFunction(0, hostAdd));
+    auto hostBound = engine->CreateContext();
+    CHECK(hostBound->Prepare(main));
+    CHECK(hostBound->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(hostBound->GetReturnInt() == 42);
+    consumer->UnbindAllImportedFunctions();
+
+    CHECK(consumer->BindAllImportedFunctions());
+    auto bound = engine->CreateContext();
+    CHECK(bound->Prepare(main));
+    CHECK(bound->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(bound->GetReturnInt() == 42);
+    CHECK(consumer->UnbindImportedFunction(0));
+    auto rebound = engine->CreateContext();
+    CHECK(rebound->Prepare(main));
+    CHECK(rebound->Execute() == mini_as::ExecutionState::Exception);
+
+    std::stringstream archive(std::ios::in | std::ios::out | std::ios::binary);
+    CHECK(consumer->SaveBytecode(archive));
+    archive.seekg(0);
+    auto* loaded = engine->GetModule("consumer-loaded");
+    CHECK(loaded->LoadBytecode(archive));
+    CHECK(loaded->GetImportedFunctionCount() == 1);
+    CHECK(loaded->BindAllImportedFunctions());
+    auto loadedContext = engine->CreateContext();
+    CHECK(loadedContext->Prepare(loaded->GetFunctionByDecl("int main()")));
+    CHECK(loadedContext->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(loadedContext->GetReturnInt() == 44);
+}
+
+TEST_CASE(imported_functions_support_circular_modules_and_cross_module_exceptions) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* left = engine->GetModule("left");
+    left->AddScriptSection("left",
+        "import int FromRight(int value) from \"right\";\n"
+        "int FromLeft(int value) { return value == 0 ? 40 : FromRight(value - 1); }\n"
+        "int main() { return FromRight(2); }");
+    CHECK(left->Build());
+    auto* right = engine->GetModule("right");
+    right->AddScriptSection("right",
+        "import int FromLeft(int value) from \"left\";\n"
+        "int FromRight(int value) { return value == 0 ? 42 : FromLeft(value - 1); }\n"
+        "int Fail(int value) { return 1 / value; }");
+    CHECK(right->Build());
+    CHECK(left->BindAllImportedFunctions());
+    CHECK(right->BindAllImportedFunctions());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(left->GetFunctionByDecl("int main()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+
+    auto* failing = engine->GetModule("failing");
+    failing->AddScriptSection("failing",
+        "import int Fail(int value) from \"right\";\n"
+        "int main() { return Fail(0); }");
+    CHECK(failing->Build());
+    CHECK(failing->BindAllImportedFunctions());
+    auto failed = engine->CreateContext();
+    CHECK(failed->Prepare(failing->GetFunctionByDecl("int main()")));
+    CHECK(failed->Execute() == mini_as::ExecutionState::Exception);
+    CHECK(failed->GetExceptionString().find("division by zero") != std::string::npos);
+    CHECK(failed->GetExceptionLocation().section == "right");
+    CHECK(failed->GetCallStack().size() == 2);
+}
+
+TEST_CASE(imported_function_syntax_reports_missing_source_clause) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    auto* module = engine->GetModule("bad-import");
+    module->AddScriptSection("bad-import", "import int Missing(int value); int main() { return 0; }");
+    CHECK(!module->Build());
+    bool missingFrom = false;
+    for (const auto& diagnostic : diagnostics)
+        missingFrom = missingFrom || diagnostic.message.find("expected 'from'") != std::string::npos;
+    CHECK(missingFrom);
+}
+

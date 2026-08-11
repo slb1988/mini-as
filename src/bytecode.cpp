@@ -161,6 +161,21 @@ const BytecodeFunction* BytecodeModule::FindFunction(FunctionId id) const {
     return nullptr;
 }
 
+FunctionId ModuleState::FindImportedFunction(FunctionId declaration) const {
+    for (const auto& binding : importedFunctions)
+        if (binding.first == declaration) return binding.second;
+    return {};
+}
+
+void ModuleState::BindImportedFunction(FunctionId declaration, FunctionId target) {
+    for (auto& binding : importedFunctions) {
+        if (binding.first != declaration) continue;
+        binding.second = target;
+        return;
+    }
+    importedFunctions.push_back({declaration, target});
+}
+
 const RegisteredHostFunction* BytecodeModule::FindHostFunction(FunctionId id) const {
     for (const auto& target : hostFunctions) if (target.first == id) return target.second;
     return nullptr;
@@ -279,7 +294,8 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
                 FunctionSignature signature{
                     node->token.lexeme, node->declaredType, {}, false, {}, {}, false,
                     false, 0, {}, {}, node->returnsReference,
-                    node->returnReferenceConst, false};
+                    node->returnReferenceConst, false, MemberAccess::Public,
+                    false, false, false, false, {}};
                 for (AstNode* parameter = node->firstChild;
                      parameter && parameter->kind == NodeKind::Parameter;
                      parameter = parameter->nextSibling) {
@@ -299,7 +315,8 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
                         methodNode->token.lexeme, methodNode->declaredType, {}, false, {},
                         node->token.lexeme, true, methodNode->isConstructor, 0, {}, {},
                         methodNode->returnsReference, methodNode->returnReferenceConst,
-                        methodNode->isDestructor};
+                        methodNode->isDestructor, MemberAccess::Public,
+                        false, false, false, false, {}};
                     for (AstNode* parameter = methodNode->firstChild;
                          parameter && parameter->kind == NodeKind::Parameter;
                          parameter = parameter->nextSibling) {
@@ -318,6 +335,11 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
     for (const auto& signature : signatures_) {
         if (signature.host) {
             hostIds_[FunctionKey(signature)] = signature.id;
+            continue;
+        }
+        if (signature.imported) {
+            module_.imports.push_back({signature, signature.sourceModule});
+            functionIds_[FunctionKey(signature)] = signature.id;
             continue;
         }
         bool interfaceMethod = false;
@@ -369,7 +391,8 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
     for (AstNode* node : TopLevelDeclarations(root)) {
         if (node->kind != NodeKind::FunctionDecl || node->isDeleted) continue;
         FunctionSignature astSignature{node->token.lexeme, node->declaredType, {}, false, {}, {}, false, false, 0, {}, {},
-                                       node->returnsReference, node->returnReferenceConst, false};
+                                       node->returnsReference, node->returnReferenceConst, false,
+                                       MemberAccess::Public, false, false, false, false, {}};
         for (AstNode* child = node->firstChild; child && child->kind == NodeKind::Parameter; child = child->nextSibling) {
             astSignature.parameters.push_back(child->declaredType);
             astSignature.parameterModes.push_back(child->parameterMode);
@@ -385,7 +408,8 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
             FunctionSignature method{methodNode->token.lexeme, methodNode->declaredType, {}, false, {},
                                      typeNode->token.lexeme, true, methodNode->isConstructor, 0, {}, {},
                                      methodNode->returnsReference, methodNode->returnReferenceConst,
-                                     methodNode->isDestructor};
+                                     methodNode->isDestructor, MemberAccess::Public,
+                                     false, false, false, false, {}};
             for (AstNode* parameter = methodNode->firstChild;
                  parameter && parameter->kind == NodeKind::Parameter; parameter = parameter->nextSibling) {
                 method.parameters.push_back(parameter->declaredType);
@@ -2233,8 +2257,9 @@ void BytecodeCompiler::CompileCall(AstNode* node, bool dereferenceResult) {
         if (target->method) {
             for (const auto& type : classes_) if (type.name == target->objectType) owner = type.id;
         }
-        Emit(OpCode::Call, AddCallable({target->method ? CallableKind::ScriptMethod
-                                                      : CallableKind::ScriptFunction,
+        Emit(OpCode::Call, AddCallable({target->imported ? CallableKind::ImportedFunction
+                                                        : target->method ? CallableKind::ScriptMethod
+                                                                         : CallableKind::ScriptFunction,
                                        found->second, owner, 0,
                                        static_cast<std::uint32_t>(target->parameters.size())}), node);
     }

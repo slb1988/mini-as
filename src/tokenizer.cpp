@@ -34,6 +34,7 @@ const std::unordered_map<std::string, TokenKind> kKeywords = {
     {"in", TokenKind::KwIn}, {"out", TokenKind::KwOut}, {"inout", TokenKind::KwInOut},
     {"is", TokenKind::KwIs},
     {"null", TokenKind::KwNull},
+    {"import", TokenKind::KwImport},
 };
 
 bool IsIdentifierStart(char ch) {
@@ -61,10 +62,10 @@ std::string_view TokenName(TokenKind kind) {
         "+=", "-=", "*=", "**=", "/=", "%=",
         "&", "|", "^", "~", "<<", ">>", ">>>",
         "&=", "|=", "^=", "<<=", ">>=", ">>>=",
-        "!", "!=", "=", "==", "<", "<=", ">", ">=", "&&", "||", "[", "]", "foreach"
+        "!", "!=", "=", "==", "<", "<=", ">", ">=", "&&", "||", "[", "]", "foreach", "import"
     };
     static_assert(sizeof(names) / sizeof(names[0]) ==
-                      static_cast<std::size_t>(TokenKind::KwForeach) + 1,
+                      static_cast<std::size_t>(TokenKind::KwImport) + 1,
                   "token name table must match TokenKind");
     return names[static_cast<std::size_t>(kind)];
 }

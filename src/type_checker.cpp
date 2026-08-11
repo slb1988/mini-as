@@ -230,7 +230,8 @@ void TypeChecker::PredeclareFuncdefs(AstNode* root) {
         }
         FunctionSignature signature{node->token.lexeme, node->declaredType, {}, false, {}, {}, false,
                                     false, 0, {}, {}, node->returnsReference,
-                                    node->returnReferenceConst, false};
+                                    node->returnReferenceConst, false, MemberAccess::Public,
+                                    false, false, false, false, {}};
         for (AstNode* parameter = node->firstChild; parameter; parameter = parameter->nextSibling) {
             signature.parameters.push_back(parameter->declaredType);
             signature.parameterNames.push_back(parameter->token.lexeme);
@@ -385,7 +386,8 @@ void TypeChecker::Predeclare(AstNode* root) {
                 FunctionSignature method{child->token.lexeme, child->declaredType, {}, false, {},
                                          type.name, true, child->isConstructor, 0, {}, {},
                                          child->returnsReference, child->returnReferenceConst,
-                                         child->isDestructor};
+                                         child->isDestructor, MemberAccess::Public,
+                                         false, false, false, false, {}};
                 method.access = child->memberAccess;
                 method.propertyAccessor = child->propertyAccessor;
                 for (AstNode* parameter = child->firstChild;
@@ -591,7 +593,10 @@ void TypeChecker::Predeclare(AstNode* root) {
             continue;
         }
         FunctionSignature signature{node->token.lexeme, node->declaredType, {}, false, {}, {}, false, false, 0, {}, {},
-                                    node->returnsReference, node->returnReferenceConst, false};
+                                    node->returnsReference, node->returnReferenceConst, false,
+                                    MemberAccess::Public, false, false, false, false, {}};
+        signature.imported = node->isImported;
+        signature.sourceModule = node->sourceModule;
         for (AstNode* child = node->firstChild; child && child->kind == NodeKind::Parameter;
              child = child->nextSibling) {
             signature.parameters.push_back(child->declaredType);

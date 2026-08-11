@@ -280,6 +280,15 @@ void VirtualMachine::SetFinalizerContext(ObjectFinalizerQueue* queue,
     safePoint_ = std::move(safePoint);
 }
 
+void VirtualMachine::SetModuleOwner(std::shared_ptr<const void> owner) {
+    moduleOwner_ = std::move(owner);
+}
+
+void VirtualMachine::SetScriptFunctionResolver(
+    std::function<std::optional<ResolvedScriptFunction>(FunctionId)> resolver) {
+    scriptFunctionResolver_ = std::move(resolver);
+}
+
 std::size_t VirtualMachine::GetCallStackSize() const {
     if (result_.state == ExecutionState::Exception) return result_.callStack.size();
     if (!function_ || (result_.state != ExecutionState::Prepared &&
@@ -482,6 +491,11 @@ bool VirtualMachine::Step() {
             locals_ = std::move(frame.locals);
             stackBase_ = frame.stackBase;
             captures_ = std::move(frame.captures);
+            module_ = frame.module;
+            moduleState_ = frame.state;
+            moduleOwner_ = std::move(frame.owner);
+            finalizerModule_ = std::move(frame.finalizerModule);
+            finalizerState_ = std::move(frame.finalizerState);
             Push(std::move(returnValue));
             for (auto& output : outputArguments) Push(std::move(output));
         }
@@ -505,14 +519,58 @@ bool VirtualMachine::Step() {
         if (callStack_.size() >= 1024) throw std::runtime_error("script call stack overflow");
         const CallableRef* callable = module_->FindCallable(static_cast<std::size_t>(instruction.operand));
         if (!callable || (callable->kind != CallableKind::ScriptFunction &&
-                          callable->kind != CallableKind::ScriptMethod))
+                          callable->kind != CallableKind::ScriptMethod &&
+                          callable->kind != CallableKind::ImportedFunction))
             throw std::runtime_error("call descriptor kind does not match opcode");
-        const BytecodeFunction* target = module_->FindFunction(callable->function);
+        const BytecodeFunction* target = nullptr;
+        std::optional<ResolvedScriptFunction> resolved;
+        if (callable->kind == CallableKind::ImportedFunction) {
+            if (!moduleState_) throw std::runtime_error("imported function state is unavailable");
+            const FunctionId bound = moduleState_->FindImportedFunction(callable->function);
+            if (!bound.IsValid()) throw std::runtime_error("imported function is not bound");
+            if (const auto* hostTarget = module_->FindHostFunction(bound)) {
+                std::vector<Value> hostArguments(hostTarget->signature.parameters.size());
+                for (std::size_t i = hostArguments.size(); i > 0; --i)
+                    hostArguments[i - 1] = Pop();
+                GenericCall call(hostArguments);
+                try { hostTarget->callback(call); }
+                catch (const std::exception& error) {
+                    throw std::runtime_error(std::string("host exception: ") + error.what());
+                }
+                if (!call.Exception().empty()) throw std::runtime_error(call.Exception());
+                if (call.ReturnValue().Type() != hostTarget->signature.returnType)
+                    throw std::runtime_error("host function returned " +
+                        call.ReturnValue().Type().Name() + " but declared " +
+                        hostTarget->signature.returnType.Name());
+                Push(call.ReturnValue());
+                for (std::size_t index = 0;
+                     index < hostTarget->signature.parameters.size(); ++index) {
+                    const ParameterMode mode = ParameterModeAt(hostTarget->signature, index);
+                    if (mode == ParameterMode::Out || mode == ParameterMode::InOut)
+                        Push(std::move(hostArguments[index]));
+                }
+                break;
+            }
+            if (!scriptFunctionResolver_)
+                throw std::runtime_error("imported function resolver is unavailable");
+            resolved = scriptFunctionResolver_(bound);
+            if (!resolved || !resolved->function || !resolved->module || !resolved->state)
+                throw std::runtime_error("bound imported function is unavailable");
+            target = resolved->function;
+        } else target = module_->FindFunction(callable->function);
         if (!target) throw std::runtime_error("call target is unavailable");
         const std::size_t hiddenArguments = callable->kind == CallableKind::ScriptMethod ? 1 : 0;
         std::vector<Value> arguments(target->signature.parameters.size() + hiddenArguments);
         for (std::size_t i = arguments.size(); i > 0; --i) arguments[i - 1] = Pop();
-        callStack_.push_back({function_, pc_, std::move(locals_), stackBase_, std::move(captures_)});
+        callStack_.push_back({function_, pc_, std::move(locals_), stackBase_, std::move(captures_),
+                              module_, moduleState_, moduleOwner_, finalizerModule_, finalizerState_});
+        if (resolved) {
+            module_ = resolved->module;
+            moduleState_ = resolved->state;
+            moduleOwner_ = std::move(resolved->owner);
+            finalizerModule_ = std::move(resolved->finalizerModule);
+            finalizerState_ = std::move(resolved->finalizerState);
+        }
         function_ = target;
         pc_ = 0;
         stackBase_ = stack_.size();
@@ -590,7 +648,8 @@ bool VirtualMachine::Step() {
         const BytecodeFunction* target = module_->ResolveVirtual(
             receiver.Get()->GetTypeInfo()->id, callable->objectType, callable->virtualSlot);
         if (!target) throw std::runtime_error("virtual method implementation is unavailable");
-        callStack_.push_back({function_, pc_, std::move(locals_), stackBase_, std::move(captures_)});
+        callStack_.push_back({function_, pc_, std::move(locals_), stackBase_, std::move(captures_),
+                              module_, moduleState_, moduleOwner_, finalizerModule_, finalizerState_});
         function_ = target;
         pc_ = 0;
         stackBase_ = stack_.size();
@@ -637,6 +696,7 @@ bool VirtualMachine::Step() {
         }
         if (callStack_.size() >= 1024) throw std::runtime_error("script call stack overflow");
         const BytecodeFunction* target = nullptr;
+        std::optional<ResolvedScriptFunction> resolved;
         if (handle.virtualMethod) {
             if (!handle.object || !handle.object.Get()->GetTypeInfo())
                 throw std::runtime_error("null delegate object");
@@ -644,12 +704,24 @@ bool VirtualMachine::Step() {
                                              handle.dispatchType, handle.virtualSlot);
         } else {
             target = module_->FindFunction(handle.function);
+            if (!target && scriptFunctionResolver_) {
+                resolved = scriptFunctionResolver_(handle.function);
+                if (resolved) target = resolved->function;
+            }
         }
         if (!target) throw std::runtime_error("script function handle target is unavailable");
         if (target->signature.parameters.size() != arguments.size())
             throw std::runtime_error("function handle argument count mismatch");
         if (handle.virtualMethod) arguments.insert(arguments.begin(), Value(handle.object));
-        callStack_.push_back({function_, pc_, std::move(locals_), stackBase_, std::move(captures_)});
+        callStack_.push_back({function_, pc_, std::move(locals_), stackBase_, std::move(captures_),
+                              module_, moduleState_, moduleOwner_, finalizerModule_, finalizerState_});
+        if (resolved) {
+            module_ = resolved->module;
+            moduleState_ = resolved->state;
+            moduleOwner_ = std::move(resolved->owner);
+            finalizerModule_ = std::move(resolved->finalizerModule);
+            finalizerState_ = std::move(resolved->finalizerState);
+        }
         function_ = target;
         pc_ = 0;
         stackBase_ = stack_.size();
@@ -908,6 +980,11 @@ bool VirtualMachine::HandleException(const Instruction& instruction, std::string
         pc_ = frame.pc;
         locals_ = std::move(frame.locals);
         stackBase_ = frame.stackBase;
+        module_ = frame.module;
+        moduleState_ = frame.state;
+        moduleOwner_ = std::move(frame.owner);
+        finalizerModule_ = std::move(frame.finalizerModule);
+        finalizerState_ = std::move(frame.finalizerState);
         captures_ = std::move(frame.captures);
     }
     stack_.resize(stackBase_);

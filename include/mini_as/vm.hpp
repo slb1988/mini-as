@@ -3,6 +3,8 @@
 #include "mini_as/bytecode.hpp"
 
 #include <string>
+#include <memory>
+#include <optional>
 
 namespace mini_as {
 
@@ -34,6 +36,15 @@ struct ExecutionResult {
     std::vector<StackFrameInfo> callStack;
 };
 
+struct ResolvedScriptFunction {
+    const BytecodeFunction* function = nullptr;
+    const BytecodeModule* module = nullptr;
+    ModuleState* state = nullptr;
+    std::shared_ptr<const void> owner;
+    std::shared_ptr<const BytecodeModule> finalizerModule;
+    std::weak_ptr<ModuleState> finalizerState;
+};
+
 class VirtualMachine {
 public:
     bool Prepare(const BytecodeFunction& function, const std::vector<Value>& arguments = {},
@@ -46,6 +57,9 @@ public:
                              std::shared_ptr<const BytecodeModule> module,
                              std::weak_ptr<ModuleState> state,
                              std::function<void()> safePoint);
+    void SetModuleOwner(std::shared_ptr<const void> owner);
+    void SetScriptFunctionResolver(
+        std::function<std::optional<ResolvedScriptFunction>(FunctionId)> resolver);
     std::size_t GetCallStackSize() const;
     const BytecodeFunction* GetFunction(std::size_t stackLevel = 0) const;
     SourceLocation GetInstructionLocation(std::size_t stackLevel = 0) const;
@@ -58,15 +72,26 @@ private:
     struct CallFrame {
         CallFrame(const BytecodeFunction* function = nullptr, std::size_t pc = 0,
                   std::vector<Value> locals = {}, std::size_t stackBase = 0,
-                  std::vector<CapturedCellHandle> captures = {})
+                  std::vector<CapturedCellHandle> captures = {},
+                  const BytecodeModule* module = nullptr, ModuleState* state = nullptr,
+                  std::shared_ptr<const void> owner = {},
+                  std::shared_ptr<const BytecodeModule> finalizerModule = {},
+                  std::weak_ptr<ModuleState> finalizerState = {})
             : function(function), pc(pc), locals(std::move(locals)), stackBase(stackBase),
-              captures(std::move(captures)) {}
+              captures(std::move(captures)), module(module), state(state),
+              owner(std::move(owner)), finalizerModule(std::move(finalizerModule)),
+              finalizerState(std::move(finalizerState)) {}
 
         const BytecodeFunction* function = nullptr;
         std::size_t pc = 0;
         std::vector<Value> locals;
         std::size_t stackBase = 0;
         std::vector<CapturedCellHandle> captures;
+        const BytecodeModule* module = nullptr;
+        ModuleState* state = nullptr;
+        std::shared_ptr<const void> owner;
+        std::shared_ptr<const BytecodeModule> finalizerModule;
+        std::weak_ptr<ModuleState> finalizerState;
     };
 
     bool Step();
@@ -94,6 +119,8 @@ private:
     std::shared_ptr<const BytecodeModule> finalizerModule_;
     std::weak_ptr<ModuleState> finalizerState_;
     std::function<void()> safePoint_;
+    std::shared_ptr<const void> moduleOwner_;
+    std::function<std::optional<ResolvedScriptFunction>(FunctionId)> scriptFunctionResolver_;
     ExecutionResult result_;
 };
 

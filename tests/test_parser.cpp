@@ -549,3 +549,21 @@ TEST_CASE(parser_builds_chained_index_expressions) {
     CHECK(returned->firstChild->firstChild->kind == mini_as::NodeKind::Index);
 }
 
+TEST_CASE(parser_builds_imported_function_declarations) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("import",
+        "namespace API { import int answer(int, const string &in label) from \"math\"; }",
+        diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    CHECK(!diagnostics.HasErrors());
+    auto* declaration = tree.root->firstChild->firstChild;
+    CHECK(declaration->kind == mini_as::NodeKind::FunctionDecl);
+    CHECK(declaration->token.lexeme == "API::answer");
+    CHECK(declaration->isImported);
+    CHECK(declaration->sourceModule == "math");
+    CHECK(declaration->Children().size() == 2);
+    CHECK(declaration->firstChild->token.lexeme == "$arg0");
+    CHECK(declaration->firstChild->nextSibling->parameterMode == mini_as::ParameterMode::In);
+}
+

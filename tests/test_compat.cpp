@@ -167,3 +167,28 @@ TEST_CASE(host_namespaces_access_masks_and_configuration_groups_control_modules)
     CHECK(removed->AddScriptSection("removed.as", "int main() { return Temporary(); }") == asSUCCESS);
     CHECK(removed->Build() == asERROR);
 }
+
+TEST_CASE(official_style_facade_exposes_import_binding_controls) {
+    using namespace mini_as::compat;
+    auto engine = CreateScriptEngine();
+    auto* source = engine->GetModule("facade-source", asGM_ALWAYS_CREATE);
+    CHECK(source->AddScriptSection("source.as",
+        "int Add(int value) { return value + 2; }") == asSUCCESS);
+    CHECK(source->Build() == asSUCCESS);
+    auto* consumer = engine->GetModule("facade-consumer", asGM_ALWAYS_CREATE);
+    CHECK(consumer->AddScriptSection("consumer.as",
+        "import int Add(int value) from \"facade-source\"; "
+        "int main() { return Add(40); }") == asSUCCESS);
+    CHECK(consumer->Build() == asSUCCESS);
+    CHECK(consumer->GetImportedFunctionCount() == 1);
+    CHECK(consumer->GetImportedFunctionIndexByDecl("int Add(int)") == 0);
+    CHECK(std::string(consumer->GetImportedFunctionDeclaration(0)) == "int Add(int)");
+    CHECK(std::string(consumer->GetImportedFunctionSourceModule(0)) == "facade-source");
+    CHECK(consumer->BindImportedFunction(0, source->GetFunctionByName("Add")) == asSUCCESS);
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(consumer->GetFunctionByName("main")) == asSUCCESS);
+    CHECK(context->Execute() == asEXECUTION_FINISHED);
+    CHECK(context->GetReturnDWord() == 42);
+    CHECK(consumer->UnbindAllImportedFunctions() == asSUCCESS);
+    CHECK(consumer->BindAllImportedFunctions() == asSUCCESS);
+}

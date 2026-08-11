@@ -265,11 +265,25 @@ int main(int argc, char** argv) {
         engine->ShutDownAndRelease();
         return 7;
     }
+    const bool importedFunctions =
+        std::string(argv[1]).find("imported_functions") != std::string::npos;
+    if (importedFunctions) {
+        asIScriptModule* sourceModule = engine->GetModule("math", asGM_ALWAYS_CREATE);
+        const char* sourceCode =
+            "int total = 40; int Add(int value) { total += value; return total; }";
+        sourceModule->AddScriptSection("math.as", sourceCode);
+        if (sourceModule->Build() < 0) {
+            engine->ShutDownAndRelease(); return 8;
+        }
+    }
     asIScriptModule* module = engine->GetModule("compat", asGM_ALWAYS_CREATE);
     if (hostControls) module->SetAccessMask(0x1u);
     const std::string source = ReadFile(argv[1]);
     module->AddScriptSection("compat.as", source.c_str(), source.size());
     if (module->Build() < 0) { engine->ShutDownAndRelease(); return 8; }
+    if (importedFunctions && module->BindAllImportedFunctions() < 0) {
+        engine->ShutDownAndRelease(); return 8;
+    }
     if (hostControls && engine->RemoveConfigGroup("runtime") != asCONFIG_GROUP_IS_IN_USE) {
         engine->ShutDownAndRelease(); return 8;
     }

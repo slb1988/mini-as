@@ -68,6 +68,14 @@ public:
     int Build();
     const BytecodeFunction* GetFunctionByDecl(const char* declaration) const;
     const BytecodeFunction* GetFunctionByName(const char* name) const;
+    std::size_t GetImportedFunctionCount() const;
+    int GetImportedFunctionIndexByDecl(const char* declaration) const;
+    const char* GetImportedFunctionDeclaration(std::size_t index) const;
+    const char* GetImportedFunctionSourceModule(std::size_t index) const;
+    int BindImportedFunction(std::size_t index, const BytecodeFunction* function);
+    int BindAllImportedFunctions();
+    int UnbindImportedFunction(std::size_t index);
+    int UnbindAllImportedFunctions();
     int CompileFunction(const char* sectionName, const char* source, int lineOffset,
                         std::uint32_t flags, const BytecodeFunction** output);
     int RemoveFunction(const BytecodeFunction* function);
@@ -84,6 +92,7 @@ private:
     friend class ScriptEngine;
     explicit ScriptModule(mini_as::ScriptModule& module);
     mini_as::ScriptModule* module_ = nullptr;
+    mutable std::string importScratch_;
 };
 
 class ScriptContext {

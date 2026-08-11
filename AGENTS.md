@@ -149,9 +149,9 @@ Do not stage generated build directories or unrelated user changes. Inspect
 
 The completed stage notes are authoritative. The latest alignment stage is:
 
-- Stage 84 mixin classes.
+- Stage 85 incremental cycle detection.
 
-The next planned item is Stage 85, incremental cycle detection.
+The next planned item is Stage 86, GC statistics and circular-reference callbacks.
 Confirm the latest
 git history and `docs/stages/` before choosing the next stage number.
 
@@ -286,6 +286,11 @@ git history and `docs/stages/` before choosing the next stage number.
   locations, and compile copied methods in the target class context. Explicit
   class members win; mixin methods override base methods; conflicting inherited
   fields and their initializers are omitted.
+- Incremental GC detection is generation guarded. Every tracked-object
+  registration, removal, `AddRef`, and `Release` invalidates an in-progress
+  graph classification; collector-owned temporary holds suppress those
+  notifications. Keep garbage destruction atomic after the four budgeted
+  detection phases so clearing one cycle edge cannot invalidate raw candidates.
 - Preserve the last successful module image on parser, type-check, bytecode, or
   global-initializer failure.
 - Do not edit compatibility expectations merely to make mini and official

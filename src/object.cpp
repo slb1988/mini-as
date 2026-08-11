@@ -2,6 +2,7 @@
 
 #include <utility>
 #include <algorithm>
+#include <limits>
 #include <unordered_set>
 
 namespace mini_as {
@@ -81,8 +82,12 @@ RefObject::~RefObject() {
     }
     if (type_ && type_->collector) type_->collector->Unregister(this);
 }
-void RefObject::AddRef() { refCount_.fetch_add(1, std::memory_order_relaxed); }
+void RefObject::AddRef() {
+    refCount_.fetch_add(1, std::memory_order_relaxed);
+    if (type_ && type_->collector) type_->collector->NotifyReferenceChange();
+}
 void RefObject::Release() {
+    if (type_ && type_->collector) type_->collector->NotifyReferenceChange();
     bool destroy = false;
     {
         std::lock_guard<std::mutex> guard(weakRefState_->mutex);
@@ -184,44 +189,103 @@ void ScriptObject::OnZeroReferences() {
     delete this;
 }
 
-void GarbageCollector::Register(RefObject* object) { if (object) candidates_.insert(object); }
-void GarbageCollector::Unregister(RefObject* object) { candidates_.erase(object); }
+void GarbageCollector::Register(RefObject* object) {
+    if (object && candidates_.insert(object).second && !suppressNotifications_)
+        ++mutationGeneration_;
+}
+void GarbageCollector::Unregister(RefObject* object) {
+    if (candidates_.erase(object) != 0 && !suppressNotifications_)
+        ++mutationGeneration_;
+}
+void GarbageCollector::NotifyReferenceChange() {
+    if (!suppressNotifications_) ++mutationGeneration_;
+}
 std::size_t GarbageCollector::TrackedCount() const { return candidates_.size(); }
 
-std::size_t GarbageCollector::Collect() {
-    std::vector<RefObject*> candidates(candidates_.begin(), candidates_.end());
-    std::unordered_map<RefObject*, std::size_t> internalIncoming;
-    for (auto* object : candidates) internalIncoming[object] = 0;
-    for (auto* object : candidates) {
-        object->EnumerateReferences([&](RefObject* target) {
-            const auto found = internalIncoming.find(target);
-            if (found != internalIncoming.end()) ++found->second;
-        });
-    }
+void GarbageCollector::BeginCycle() {
+    snapshot_.assign(candidates_.begin(), candidates_.end());
+    internalIncoming_.clear();
+    reachable_.clear();
+    work_.clear();
+    garbage_.clear();
+    for (auto* object : snapshot_) internalIncoming_[object] = 0;
+    cursor_ = 0;
+    cycleGeneration_ = mutationGeneration_;
+    phase_ = snapshot_.empty() ? Phase::Idle : Phase::CountIncoming;
+}
 
-    std::unordered_set<RefObject*> reachable;
-    std::vector<RefObject*> work;
-    for (auto* object : candidates) {
-        if (object->RefCount() > internalIncoming[object]) {
-            reachable.insert(object);
-            work.push_back(object);
+void GarbageCollector::ResetCycle() {
+    phase_ = Phase::Idle;
+    snapshot_.clear();
+    internalIncoming_.clear();
+    reachable_.clear();
+    work_.clear();
+    garbage_.clear();
+    cursor_ = 0;
+}
+
+std::size_t GarbageCollector::DestroyGarbage() {
+    suppressNotifications_ = true;
+    for (auto* object : garbage_) object->AddRef();
+    for (auto* object : garbage_) object->ClearReferences();
+    for (auto* object : garbage_) object->Release();
+    suppressNotifications_ = false;
+    const std::size_t destroyed = garbage_.size();
+    ++mutationGeneration_;
+    ResetCycle();
+    return destroyed;
+}
+
+std::size_t GarbageCollector::CollectStep(std::size_t workBudget) {
+    if (workBudget == 0) return 0;
+    if (phase_ != Phase::Idle && cycleGeneration_ != mutationGeneration_) ResetCycle();
+    if (phase_ == Phase::Idle) BeginCycle();
+    while (phase_ != Phase::Idle && workBudget > 0) {
+        if (phase_ == Phase::CountIncoming) {
+            RefObject* object = snapshot_[cursor_++];
+            object->EnumerateReferences([&](RefObject* target) {
+                const auto found = internalIncoming_.find(target);
+                if (found != internalIncoming_.end()) ++found->second;
+            });
+            --workBudget;
+            if (cursor_ == snapshot_.size()) { cursor_ = 0; phase_ = Phase::SeedRoots; }
+            continue;
         }
+        if (phase_ == Phase::SeedRoots) {
+            RefObject* object = snapshot_[cursor_++];
+            if (object->RefCount() > internalIncoming_[object] && reachable_.insert(object).second)
+                work_.push_back(object);
+            --workBudget;
+            if (cursor_ == snapshot_.size()) { cursor_ = 0; phase_ = Phase::MarkReachable; }
+            continue;
+        }
+        if (phase_ == Phase::MarkReachable) {
+            if (work_.empty()) { cursor_ = 0; phase_ = Phase::SelectGarbage; continue; }
+            RefObject* object = work_.back();
+            work_.pop_back();
+            object->EnumerateReferences([&](RefObject* target) {
+                if (internalIncoming_.find(target) != internalIncoming_.end() &&
+                    reachable_.insert(target).second) work_.push_back(target);
+            });
+            --workBudget;
+            continue;
+        }
+        RefObject* object = snapshot_[cursor_++];
+        if (reachable_.find(object) == reachable_.end()) garbage_.push_back(object);
+        --workBudget;
+        if (cursor_ == snapshot_.size()) return DestroyGarbage();
     }
-    while (!work.empty()) {
-        RefObject* object = work.back();
-        work.pop_back();
-        object->EnumerateReferences([&](RefObject* target) {
-            if (internalIncoming.find(target) != internalIncoming.end() && reachable.insert(target).second)
-                work.push_back(target);
-        });
-    }
+    return 0;
+}
 
-    std::vector<RefObject*> garbage;
-    for (auto* object : candidates) if (reachable.find(object) == reachable.end()) garbage.push_back(object);
-    for (auto* object : garbage) object->AddRef();
-    for (auto* object : garbage) object->ClearReferences();
-    for (auto* object : garbage) object->Release();
-    return garbage.size();
+bool GarbageCollector::CycleInProgress() const { return phase_ != Phase::Idle; }
+
+std::size_t GarbageCollector::Collect() {
+    std::size_t collected = 0;
+    do {
+        collected += CollectStep(std::numeric_limits<std::size_t>::max());
+    } while (CycleInProgress());
+    return collected;
 }
 
 } // namespace mini_as

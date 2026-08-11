@@ -108,11 +108,28 @@ class GarbageCollector {
 public:
     void Register(RefObject* object);
     void Unregister(RefObject* object);
+    void NotifyReferenceChange();
     std::size_t Collect();
+    std::size_t CollectStep(std::size_t workBudget = 1);
+    bool CycleInProgress() const;
     std::size_t TrackedCount() const;
 
 private:
+    enum class Phase { Idle, CountIncoming, SeedRoots, MarkReachable, SelectGarbage };
+    void BeginCycle();
+    void ResetCycle();
+    std::size_t DestroyGarbage();
     std::unordered_set<RefObject*> candidates_;
+    Phase phase_ = Phase::Idle;
+    std::vector<RefObject*> snapshot_;
+    std::unordered_map<RefObject*, std::size_t> internalIncoming_;
+    std::unordered_set<RefObject*> reachable_;
+    std::vector<RefObject*> work_;
+    std::vector<RefObject*> garbage_;
+    std::size_t cursor_ = 0;
+    std::uint64_t mutationGeneration_ = 0;
+    std::uint64_t cycleGeneration_ = 0;
+    bool suppressNotifications_ = false;
 };
 
 template <typename T, typename... Args>

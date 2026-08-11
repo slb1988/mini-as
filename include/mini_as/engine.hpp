@@ -207,6 +207,8 @@ public:
     const FunctionMetadata* GetFunctionMetadataByIndex(std::size_t index) const;
     const FunctionMetadata* GetFunctionMetadataById(FunctionId id) const;
     std::size_t CollectGarbage();
+    std::size_t CollectGarbageStep(std::size_t workBudget = 1);
+    bool IsGarbageCollectionInProgress() const;
     std::size_t GetTrackedObjectCount() const;
     ScriptModule* GetModule(std::string name = {},
                             ModulePolicy policy = ModulePolicy::CreateIfMissing);

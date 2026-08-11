@@ -2155,6 +2155,16 @@ std::vector<ClassSignature> ScriptEngine::HostTypeSignatures(std::uint32_t acces
     return signatures;
 }
 
+std::size_t ScriptEngine::CollectGarbageStep(std::size_t workBudget) {
+    const std::size_t collected = garbageCollector_.CollectStep(workBudget);
+    DrainFinalizers();
+    return collected;
+}
+
+bool ScriptEngine::IsGarbageCollectionInProgress() const {
+    return garbageCollector_.CycleInProgress();
+}
+
 std::vector<std::pair<std::string, std::size_t>> ScriptEngine::HostTemplateTypes(
     std::uint32_t accessMask) const {
     std::vector<std::pair<std::string, std::size_t>> result;

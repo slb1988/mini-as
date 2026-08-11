@@ -152,3 +152,61 @@ TEST_CASE(weakref_fields_do_not_create_gc_edges_or_keep_objects_alive) {
     CHECK(engine->GetTrackedObjectCount() == 0);
     CHECK(engine->CollectGarbage() == 0);
 }
+
+TEST_CASE(gc_cycle_detection_advances_with_a_bounded_work_budget) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("gc-incremental");
+    module->AddScriptSection("gc-incremental",
+        "class Node { Node@ next; } "
+        "Node@ makeCycle() { Node@ a = Node(); Node@ b = Node(); "
+        "a.next = b; b.next = a; return a; }");
+    CHECK(module->Build());
+    auto root = BuildCycle(*engine, *module);
+    root = {};
+
+    CHECK(engine->CollectGarbageStep(0) == 0);
+    CHECK(!engine->IsGarbageCollectionInProgress());
+    CHECK(engine->CollectGarbageStep(1) == 0);
+    CHECK(engine->IsGarbageCollectionInProgress());
+    CHECK(engine->GetTrackedObjectCount() == 2);
+
+    std::size_t collected = 0;
+    std::size_t steps = 1;
+    while (engine->GetTrackedObjectCount() != 0 && steps < 32) {
+        collected += engine->CollectGarbageStep(1);
+        ++steps;
+    }
+    CHECK(steps >= 6);
+    CHECK(collected == 2);
+    CHECK(engine->GetTrackedObjectCount() == 0);
+    CHECK(!engine->IsGarbageCollectionInProgress());
+}
+
+TEST_CASE(gc_incremental_cycle_restarts_when_reference_counts_change) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("gc-incremental-mutation");
+    module->AddScriptSection("gc-incremental-mutation",
+        "class Node { Node@ next; } "
+        "Node@ makeCycle() { Node@ a = Node(); Node@ b = Node(); "
+        "a.next = b; b.next = a; return a; }");
+    CHECK(module->Build());
+    auto root = BuildCycle(*engine, *module);
+    mini_as::WeakObjectHandle observer(root, "Node", false);
+    root = {};
+    CHECK(engine->CollectGarbageStep(1) == 0);
+    CHECK(engine->IsGarbageCollectionInProgress());
+
+    auto rescued = observer.Lock();
+    CHECK(rescued);
+    std::size_t collected = 0;
+    for (int step = 0; step < 16; ++step)
+        collected += engine->CollectGarbageStep(1);
+    CHECK(collected == 0);
+    CHECK(engine->GetTrackedObjectCount() == 2);
+
+    rescued = {};
+    for (int step = 0; step < 32 && engine->GetTrackedObjectCount() != 0; ++step)
+        collected += engine->CollectGarbageStep(1);
+    CHECK(collected == 2);
+    CHECK(engine->GetTrackedObjectCount() == 0);
+}

@@ -52,6 +52,7 @@ struct AstNode {
     std::string propertySetter;
     std::string delegateObjectType;
     std::vector<std::string> captureNames;
+    std::vector<DataType> templateArguments;
     MemberAccess memberAccess = MemberAccess::Public;
     ParameterMode parameterMode = ParameterMode::Value;
     AstNode* firstChild = nullptr;
@@ -82,6 +83,12 @@ struct TemplateTypeUse {
     SourceLocation location;
 };
 
+struct TemplateFunctionUse {
+    std::string functionName;
+    std::vector<DataType> subTypes;
+    SourceLocation location;
+};
+
 class Parser {
 public:
     Parser(std::vector<Token> tokens, DiagnosticSink& diagnostics);
@@ -89,7 +96,9 @@ public:
     void RegisterTypedefType(std::string name, DataType underlyingType);
     void RegisterFuncdefType(std::string name);
     void RegisterTemplateType(std::string name, std::size_t subtypeCount);
+    void RegisterTemplateFunction(std::string name, std::size_t subtypeCount);
     const std::vector<TemplateTypeUse>& TemplateTypeUses() const;
+    const std::vector<TemplateFunctionUse>& TemplateFunctionUses() const;
     SyntaxTree Parse();
 
 private:
@@ -128,6 +137,7 @@ private:
     AstNode* ParsePower();
     AstNode* ParseUnary();
     AstNode* ParseCall();
+    void ParseTemplateFunctionArguments(AstNode* function, std::string resolvedName);
     AstNode* ParsePrimary();
     AstNode* ParseAnonymousFunction();
     DataType ParseType(bool allowVoid = false);
@@ -135,6 +145,7 @@ private:
     Token ParseQualifiedIdentifier(const char* message);
     std::string QualifyDeclaration(std::string_view name) const;
     std::string ResolveTypeName(std::string_view name) const;
+    std::string ResolveTemplateFunctionName(std::string_view name) const;
 
     bool IsTypeStart(bool allowIdentifier = true) const;
     bool IsVariableDeclarationStart() const;
@@ -160,6 +171,8 @@ private:
     std::unordered_map<std::string, DataType> typedefTypes_;
     std::unordered_map<std::string, std::size_t> templateTypes_;
     std::vector<TemplateTypeUse> templateTypeUses_;
+    std::unordered_map<std::string, std::unordered_set<std::size_t>> templateFunctions_;
+    std::vector<TemplateFunctionUse> templateFunctionUses_;
     std::string currentNamespace_;
     std::string currentTypeName_;
     bool pendingExternal_ = false;

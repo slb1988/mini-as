@@ -95,15 +95,23 @@ DataType ReadType(const std::vector<Token>& tokens, std::size_t& index,
 } // namespace
 
 GenericCall::GenericCall(std::vector<Value>& arguments, Value object,
-                         std::vector<DataType> argumentTypes)
+                         std::vector<DataType> argumentTypes,
+                         std::vector<DataType> templateArguments)
     : arguments_(arguments), object_(std::move(object)),
-      argumentTypes_(std::move(argumentTypes)) {}
+      argumentTypes_(std::move(argumentTypes)),
+      templateArguments_(std::move(templateArguments)) {}
 std::size_t GenericCall::GetArgCount() const { return arguments_.size(); }
 const ObjectHandle& GenericCall::GetObject() const { return object_.As<ObjectHandle>(); }
 const Value& GenericCall::GetObjectValue() const { return object_; }
 const Value& GenericCall::GetArg(std::size_t index) const { return arguments_.at(index); }
 DataType GenericCall::GetArgType(std::size_t index) const {
     return index < argumentTypes_.size() ? argumentTypes_[index] : GetArg(index).Type();
+}
+std::size_t GenericCall::GetTemplateArgCount() const {
+    return templateArguments_.size();
+}
+DataType GenericCall::GetTemplateArgType(std::size_t index) const {
+    return templateArguments_.at(index);
 }
 std::int32_t GenericCall::GetArgInt(std::size_t index) const { return GetArg(index).As<std::int32_t>(); }
 float GenericCall::GetArgFloat(std::size_t index) const { return GetArg(index).As<float>(); }
@@ -157,6 +165,36 @@ std::optional<FunctionSignature> ParseFunctionDeclaration(
     }
     signature.name = tokens[index++].lexeme;
     signature.host = true;
+    if (index < tokens.size() && tokens[index].kind == TokenKind::Less) {
+        ++index;
+        while (index < tokens.size() && tokens[index].kind != TokenKind::Greater) {
+            if (tokens[index].kind == TokenKind::KwClass) ++index;
+            if (index >= tokens.size() || tokens[index].kind != TokenKind::Identifier) {
+                diagnostics.Report(tokens[std::min(index, tokens.size() - 1)].location,
+                                   Severity::Error,
+                                   "expected template function parameter name");
+                return std::nullopt;
+            }
+            const std::string parameter = tokens[index++].lexeme;
+            if (std::find(signature.templateParameters.begin(),
+                          signature.templateParameters.end(), parameter) !=
+                signature.templateParameters.end()) {
+                diagnostics.Report(tokens[index - 1].location, Severity::Error,
+                                   "duplicate template function parameter '" + parameter + "'");
+                return std::nullopt;
+            }
+            signature.templateParameters.push_back(parameter);
+            if (index < tokens.size() && tokens[index].kind == TokenKind::Comma) ++index;
+            else break;
+        }
+        if (signature.templateParameters.empty() || index >= tokens.size() ||
+            tokens[index++].kind != TokenKind::Greater) {
+            diagnostics.Report(tokens[std::min(index, tokens.size() - 1)].location,
+                               Severity::Error, "invalid template function parameter list");
+            return std::nullopt;
+        }
+        signature.templateFunction = true;
+    }
     if (index >= tokens.size() || tokens[index++].kind != TokenKind::LeftParen) {
         diagnostics.Report(tokens[std::min(index, tokens.size() - 1)].location, Severity::Error, "expected '('");
         return std::nullopt;

@@ -242,9 +242,14 @@ private:
     std::vector<FuncdefSignature> HostFuncdefs(std::uint32_t accessMask) const;
     std::vector<std::pair<std::string, std::size_t>> HostTemplateTypes(
         std::uint32_t accessMask) const;
+    std::vector<std::pair<std::string, std::size_t>> HostTemplateFunctions(
+        std::uint32_t accessMask) const;
     bool InstantiateTemplateTypes(const std::vector<TemplateTypeUse>& uses,
                                   std::uint32_t accessMask,
                                   DiagnosticSink& diagnostics);
+    bool InstantiateTemplateFunctions(const std::vector<TemplateFunctionUse>& uses,
+                                      std::uint32_t accessMask,
+                                      DiagnosticSink& diagnostics);
     DataType ResolveRegisteredType(DataType type) const;
     void ResolveRegisteredTypes(FunctionSignature& signature) const;
     bool HasRegisteredType(std::string_view name) const;

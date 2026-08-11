@@ -138,7 +138,23 @@ std::string FunctionSignature::Declaration() const {
     out << returnType.Name();
     if (returnsReference) out << " &";
     else out << ' ';
-    out << name << '(';
+    out << name;
+    if (templateFunction) {
+        out << '<';
+        if (!templateArguments.empty()) {
+            for (std::size_t index = 0; index < templateArguments.size(); ++index) {
+                if (index) out << ',';
+                out << templateArguments[index].Name();
+            }
+        } else {
+            for (std::size_t index = 0; index < templateParameters.size(); ++index) {
+                if (index) out << ',';
+                out << templateParameters[index];
+            }
+        }
+        out << '>';
+    }
+    out << '(';
     for (std::size_t i = 0; i < parameters.size(); ++i) {
         if (i) out << ", ";
         out << parameters[i].Name();
@@ -267,7 +283,8 @@ void TypeChecker::PredeclareFuncdefs(AstNode* root) {
         FunctionSignature signature{node->token.lexeme, node->declaredType, {}, false, {}, {}, false,
                                     false, 0, {}, {}, node->returnsReference,
                                     node->returnReferenceConst, false, MemberAccess::Public,
-                                    false, false, false, false, {}};
+                                    false, false, false, false, {},
+                                    false, false, false, false, {}, {}};
         signature.shared = node->isShared;
         for (AstNode* parameter = node->firstChild; parameter; parameter = parameter->nextSibling) {
             signature.parameters.push_back(parameter->declaredType);
@@ -450,7 +467,8 @@ void TypeChecker::Predeclare(AstNode* root) {
                                          type.name, true, child->isConstructor, 0, {}, {},
                                          child->returnsReference, child->returnReferenceConst,
                                          child->isDestructor, MemberAccess::Public,
-                                         false, false, false, false, {}};
+                                         false, false, false, false, {},
+                                         false, false, false, false, {}, {}};
                 method.access = child->memberAccess;
                 method.propertyAccessor = child->propertyAccessor;
                 method.shared = type.shared;
@@ -664,7 +682,8 @@ void TypeChecker::Predeclare(AstNode* root) {
         }
         FunctionSignature signature{node->token.lexeme, node->declaredType, {}, false, {}, {}, false, false, 0, {}, {},
                                     node->returnsReference, node->returnReferenceConst, false,
-                                    MemberAccess::Public, false, false, false, false, {}};
+                                    MemberAccess::Public, false, false, false, false, {},
+                                    false, false, false, false, {}, {}};
         signature.imported = node->isImported;
         signature.sourceModule = node->sourceModule;
         signature.shared = node->isShared;
@@ -1950,7 +1969,9 @@ DataType TypeChecker::CheckCall(AstNode* node) {
     }
     if (callee->kind == NodeKind::Member) {
         const DataType object = CheckExpression(callee->firstChild);
-        const FunctionSignature* method = FindMethod(object, callee->token.lexeme, arguments, argumentNames);
+        const FunctionSignature* method = FindMethod(
+            object, callee->token.lexeme, arguments, argumentNames,
+            callee->templateArguments);
         if (!method) Error(node, "no matching method for '" + callee->token.lexeme + "'");
         else {
             ValidateReferenceArguments(*method, argumentNodes, argumentNames);
@@ -1981,7 +2002,8 @@ DataType TypeChecker::CheckCall(AstNode* node) {
         const std::string methodName = callee->token.lexeme.substr(scope + 2);
         const ClassSignature* owner = FindClass(ownerName);
         if (owner && !owner->interfaceType && IsDerivedFrom(currentClass_->name, owner->name)) {
-            const FunctionSignature* method = FindMethodInClass(owner, methodName, arguments, argumentNames);
+            const FunctionSignature* method = FindMethodInClass(
+                owner, methodName, arguments, argumentNames, callee->templateArguments);
             if (!method) Error(node, "no matching base method for '" + callee->token.lexeme + "'");
             else {
                 ValidateReferenceArguments(*method, argumentNodes, argumentNames);
@@ -1995,7 +2017,8 @@ DataType TypeChecker::CheckCall(AstNode* node) {
     }
     if (currentClass_) {
         const FunctionSignature* method = FindMethod(
-            DataType::Object(currentClass_->name, true), callee->token.lexeme, arguments, argumentNames);
+            DataType::Object(currentClass_->name, true), callee->token.lexeme, arguments,
+            argumentNames, callee->templateArguments);
         if (method) {
             ValidateReferenceArguments(*method, argumentNodes, argumentNames);
             CheckAccess(node, method->access, method->objectType, "method", method->name);
@@ -2008,6 +2031,9 @@ DataType TypeChecker::CheckCall(AstNode* node) {
     int bestCost = 1000000;
     for (const auto& function : functions_) {
         if (function.factory) continue;
+        if (function.templateFunction &&
+            function.templateArguments != callee->templateArguments) continue;
+        if (!function.templateFunction && !callee->templateArguments.empty()) continue;
         const auto nameCost = NameMatchCost(function.name, callee->token.lexeme, currentNamespace_);
         const auto argumentCost = MatchArguments(function, arguments, argumentNames);
         if (!nameCost || !argumentCost) continue;
@@ -2139,24 +2165,29 @@ std::optional<Value> TypeChecker::FindEnumConstant(std::string_view name) const 
 
 const FunctionSignature* TypeChecker::FindMethod(
     const DataType& object, std::string_view name, const std::vector<DataType>& arguments,
-    const std::vector<std::string>& argumentNames) const {
+    const std::vector<std::string>& argumentNames,
+    const std::vector<DataType>& templateArguments) const {
     const ClassSignature* type = FindClass(object.objectName);
-    return FindMethodInClass(type, name, arguments, argumentNames);
+    return FindMethodInClass(type, name, arguments, argumentNames, templateArguments);
 }
 
 const FunctionSignature* TypeChecker::FindMethodInClass(
     const ClassSignature* type, std::string_view name, const std::vector<DataType>& arguments,
-    const std::vector<std::string>& argumentNames) const {
+    const std::vector<std::string>& argumentNames,
+    const std::vector<DataType>& templateArguments) const {
     if (!type) return nullptr;
     const FunctionSignature* best = nullptr;
     int bestCost = 1000000;
     for (const auto& method : type->methods) {
         if (method.constructor || method.destructor || method.name != name) continue;
+        if (method.templateFunction && method.templateArguments != templateArguments) continue;
+        if (!method.templateFunction && !templateArguments.empty()) continue;
         const auto cost = MatchArguments(method, arguments, argumentNames);
         if (cost && *cost < bestCost) { best = &method; bestCost = *cost; }
     }
     if (best || type->baseClass.empty()) return best;
-    return FindMethodInClass(FindClass(type->baseClass), name, arguments, argumentNames);
+    return FindMethodInClass(
+        FindClass(type->baseClass), name, arguments, argumentNames, templateArguments);
 }
 
 const FunctionSignature* TypeChecker::FindExactMethod(
@@ -2357,6 +2388,9 @@ const FunctionSignature* TypeChecker::ResolveFunctionAddress(
     bool ambiguous = false;
     for (const auto& function : functions_) {
         if (function.method || function.constructor || function.destructor || function.factory) continue;
+        if (function.templateFunction &&
+            function.templateArguments != node->firstChild->templateArguments) continue;
+        if (!function.templateFunction && !node->firstChild->templateArguments.empty()) continue;
         const auto nameCost = NameMatchCost(function.name, node->firstChild->token.lexeme,
                                             currentNamespace_);
         if (!nameCost) continue;

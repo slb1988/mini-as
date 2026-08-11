@@ -93,6 +93,16 @@ int main(int argc, char** argv) {
                     total += call.GetArgInt(index);
                 call.SetReturnInt(total);
             })) return 3;
+    if (std::string(argv[1]).find("template_functions") != std::string::npos &&
+        !engine->RegisterGlobalFunction(
+            "T Identity<T>(T value)", [](mini_as::GenericCall& call) {
+                if (call.GetTemplateArgCount() != 1 ||
+                    call.GetTemplateArgType(0) != mini_as::DataType::Int()) {
+                    call.SetException("unexpected template argument");
+                    return;
+                }
+                call.SetReturn(call.GetArg(0));
+            })) return 3;
     mini_as::Value hostCounter(std::int32_t{40});
     engine->SetMessageCallback([](const mini_as::Diagnostic& diagnostic) {
         std::cerr << diagnostic.location.row << ':' << diagnostic.location.column

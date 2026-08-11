@@ -190,8 +190,16 @@ void Parser::RegisterTemplateType(std::string name, std::size_t subtypeCount) {
     templateTypes_[std::move(name)] = subtypeCount;
 }
 
+void Parser::RegisterTemplateFunction(std::string name, std::size_t subtypeCount) {
+    templateFunctions_[std::move(name)].insert(subtypeCount);
+}
+
 const std::vector<TemplateTypeUse>& Parser::TemplateTypeUses() const {
     return templateTypeUses_;
+}
+
+const std::vector<TemplateFunctionUse>& Parser::TemplateFunctionUses() const {
+    return templateFunctionUses_;
 }
 
 SyntaxTree Parser::Parse() {
@@ -943,6 +951,9 @@ AstNode* Parser::ParseCall() {
             AstNode* member = arena_->Make(NodeKind::Member,
                             Consume(TokenKind::Identifier, "expected member name"));
             member->AppendChild(expression);
+            const std::string templateName = ResolveTemplateFunctionName(member->token.lexeme);
+            if (!templateName.empty() && Check(TokenKind::Less))
+                ParseTemplateFunctionArguments(member, templateName);
             expression = member;
         } else if (Match(TokenKind::LeftBracket)) {
             AstNode* index = arena_->Make(NodeKind::Index, Previous());
@@ -1008,8 +1019,14 @@ AstNode* Parser::ParsePrimary() {
         identifier->declaredType = type;
         return identifier;
     }
-    if (Check(TokenKind::Identifier))
-        return arena_->Make(NodeKind::Identifier, ParseQualifiedIdentifier("expected identifier"));
+    if (Check(TokenKind::Identifier)) {
+        AstNode* identifier = arena_->Make(
+            NodeKind::Identifier, ParseQualifiedIdentifier("expected identifier"));
+        const std::string templateName = ResolveTemplateFunctionName(identifier->token.lexeme);
+        if (!templateName.empty() && Check(TokenKind::Less))
+            ParseTemplateFunctionArguments(identifier, templateName);
+        return identifier;
+    }
     if (Match(TokenKind::LeftParen)) {
         AstNode* expression = ParseExpression();
         Consume(TokenKind::RightParen, "expected ')' after expression");
@@ -1100,6 +1117,32 @@ DataType Parser::ParseType(bool allowVoid) {
         else type.isHandle = true;
     }
     return type;
+}
+
+void Parser::ParseTemplateFunctionArguments(AstNode* function,
+                                            std::string resolvedName) {
+    Consume(TokenKind::Less, "expected '<' before template function arguments");
+    std::vector<DataType> arguments;
+    if (!Check(TokenKind::Greater) && !Check(TokenKind::ShiftRight) &&
+        !Check(TokenKind::ShiftRightArithmetic)) {
+        do {
+            DataType argument = ParseType(false);
+            if (!argument.IsValid() || argument == DataType::Void())
+                Error(function->token, "template function argument must be a valid non-void type");
+            arguments.push_back(std::move(argument));
+        } while (Match(TokenKind::Comma));
+    }
+    ConsumeTemplateClose();
+    const auto registered = templateFunctions_.find(resolvedName);
+    if (registered == templateFunctions_.end() ||
+        registered->second.find(arguments.size()) == registered->second.end()) {
+        Error(function->token, "template function '" + resolvedName +
+              "' does not accept " + std::to_string(arguments.size()) +
+              " template argument(s)");
+    }
+    function->templateArguments = arguments;
+    templateFunctionUses_.push_back(
+        {std::move(resolvedName), std::move(arguments), function->token.location});
 }
 
 AstNode* Parser::ParseForeach() {
@@ -1263,6 +1306,23 @@ std::string Parser::ResolveTypeName(std::string_view name) const {
         scope = separator == std::string::npos ? std::string{} : scope.substr(0, separator);
     }
     return std::string(name);
+}
+
+std::string Parser::ResolveTemplateFunctionName(std::string_view name) const {
+    if (name.find("::") != std::string_view::npos) {
+        const std::string qualified(name);
+        return templateFunctions_.find(qualified) != templateFunctions_.end()
+            ? qualified : std::string{};
+    }
+    std::string scope = currentNamespace_;
+    for (;;) {
+        const std::string candidate = JoinName(scope, name);
+        if (templateFunctions_.find(candidate) != templateFunctions_.end()) return candidate;
+        if (scope.empty()) break;
+        const auto separator = scope.rfind("::");
+        scope = separator == std::string::npos ? std::string{} : scope.substr(0, separator);
+    }
+    return {};
 }
 
 AstNode* Parser::ParseConditional() {

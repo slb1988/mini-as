@@ -342,7 +342,8 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
                     node->token.lexeme, node->declaredType, {}, false, {}, {}, false,
                     false, 0, {}, {}, node->returnsReference,
                     node->returnReferenceConst, false, MemberAccess::Public,
-                    false, false, false, false, {}};
+                    false, false, false, false, {},
+                    false, false, false, false, {}, {}};
                 for (AstNode* parameter = node->firstChild;
                      parameter && parameter->kind == NodeKind::Parameter;
                      parameter = parameter->nextSibling) {
@@ -363,7 +364,8 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
                         node->token.lexeme, true, methodNode->isConstructor, 0, {}, {},
                         methodNode->returnsReference, methodNode->returnReferenceConst,
                         methodNode->isDestructor, MemberAccess::Public,
-                        false, false, false, false, {}};
+                        false, false, false, false, {},
+                        false, false, false, false, {}, {}};
                     for (AstNode* parameter = methodNode->firstChild;
                          parameter && parameter->kind == NodeKind::Parameter;
                          parameter = parameter->nextSibling) {
@@ -443,7 +445,8 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
         if (node->kind != NodeKind::FunctionDecl || node->isDeleted) continue;
         FunctionSignature astSignature{node->token.lexeme, node->declaredType, {}, false, {}, {}, false, false, 0, {}, {},
                                        node->returnsReference, node->returnReferenceConst, false,
-                                       MemberAccess::Public, false, false, false, false, {}};
+                                       MemberAccess::Public, false, false, false, false, {},
+                                       false, false, false, false, {}, {}};
         for (AstNode* child = node->firstChild; child && child->kind == NodeKind::Parameter; child = child->nextSibling) {
             astSignature.parameters.push_back(child->declaredType);
             astSignature.parameterModes.push_back(child->parameterMode);
@@ -460,7 +463,8 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
                                      typeNode->token.lexeme, true, methodNode->isConstructor, 0, {}, {},
                                      methodNode->returnsReference, methodNode->returnReferenceConst,
                                      methodNode->isDestructor, MemberAccess::Public,
-                                     false, false, false, false, {}};
+                                     false, false, false, false, {},
+                                     false, false, false, false, {}, {}};
             for (AstNode* parameter = methodNode->firstChild;
                  parameter && parameter->kind == NodeKind::Parameter; parameter = parameter->nextSibling) {
                 method.parameters.push_back(parameter->declaredType);
@@ -2191,6 +2195,9 @@ void BytecodeCompiler::CompileCall(AstNode* node, bool dereferenceResult) {
     for (const auto& signature : signatures_) {
         if (signature.factory) continue;
         if (signature.constructor || signature.destructor) continue;
+        if (signature.templateFunction &&
+            signature.templateArguments != callee->templateArguments) continue;
+        if (!signature.templateFunction && !callee->templateArguments.empty()) continue;
         const auto ordered = OrderArguments(signature, arguments);
         if (!ordered) continue;
         std::optional<int> nameCost;

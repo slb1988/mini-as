@@ -154,6 +154,29 @@ bool UsesCallableDescriptor(OpCode opcode) {
            opcode == OpCode::MakeDelegate || opcode == OpCode::MakeClosure;
 }
 
+std::optional<DataType> SubstituteTemplateType(
+    DataType pattern, const std::vector<std::string>& parameters,
+    const std::vector<DataType>& arguments) {
+    for (std::size_t index = 0; index < parameters.size(); ++index) {
+        if (pattern.kind != TypeKind::Object || pattern.objectName != parameters[index])
+            continue;
+        DataType result = arguments[index];
+        if (pattern.isHandle) {
+            if (result.kind != TypeKind::Object && result.kind != TypeKind::Function)
+                return std::nullopt;
+            result.isHandle = true;
+        }
+        return result;
+    }
+    if (pattern.kind == TypeKind::Object) {
+        for (const auto& parameter : parameters)
+            if (pattern.objectName.find("<" + parameter) != std::string::npos ||
+                pattern.objectName.find("," + parameter) != std::string::npos)
+                return std::nullopt;
+    }
+    return pattern;
+}
+
 } // namespace
 
 static void AppendAstFingerprint(const AstNode* node, std::string& result);
@@ -188,15 +211,21 @@ bool ScriptModule::Build() {
     const auto hostTypedefs = engine_.HostTypedefs(accessMask_);
     const auto hostFuncdefs = engine_.HostFuncdefs(accessMask_);
     const auto hostTemplates = engine_.HostTemplateTypes(accessMask_);
+    const auto hostTemplateFunctions = engine_.HostTemplateFunctions(accessMask_);
     for (const auto& type : hostEnums) parser.RegisterEnumType(type.name);
     for (const auto& type : hostTypedefs)
         parser.RegisterTypedefType(type.name, type.underlyingType);
     for (const auto& type : hostFuncdefs) parser.RegisterFuncdefType(type.name);
     for (const auto& type : hostTemplates) parser.RegisterTemplateType(type.first, type.second);
+    for (const auto& function : hostTemplateFunctions)
+        parser.RegisterTemplateFunction(function.first, function.second);
     auto tree = parser.Parse();
     if (!diagnostics.HasErrors() &&
         !engine_.InstantiateTemplateTypes(parser.TemplateTypeUses(), accessMask_, diagnostics))
         return false;
+    if (!diagnostics.HasErrors() &&
+        !engine_.InstantiateTemplateFunctions(
+            parser.TemplateFunctionUses(), accessMask_, diagnostics)) return false;
     TypeChecker checker(diagnostics);
     for (const auto& signature : engine_.HostSignatures(accessMask_)) checker.RegisterFunction(signature);
     for (const auto& signature : engine_.HostPropertySignatures(accessMask_))
@@ -493,6 +522,10 @@ static void AppendAstFingerprint(const AstNode* node, std::string& result) {
     result += node->returnsReference ? "r" : "-";
     result += node->returnReferenceConst ? "k" : "-";
     result += std::to_string(static_cast<int>(node->parameterMode)) + "[";
+    result += "<";
+    for (const auto& argument : node->templateArguments)
+        result += argument.Name() + ",";
+    result += ">";
     for (const AstNode* child = node->firstChild; child; child = child->nextSibling)
         AppendAstFingerprint(child, result);
     result += "]";
@@ -648,10 +681,20 @@ const BytecodeFunction* ScriptModule::CompileFunction(std::string sectionName,
     for (const auto& type : base.funcdefs) parser.RegisterFuncdefType(type.name);
     for (const auto& type : engine_.HostTemplateTypes(accessMask_))
         parser.RegisterTemplateType(type.first, type.second);
+    for (const auto& function : engine_.HostTemplateFunctions(accessMask_))
+        parser.RegisterTemplateFunction(function.first, function.second);
     auto tree = parser.Parse();
     if (!diagnostics.HasErrors() &&
         !engine_.InstantiateTemplateTypes(parser.TemplateTypeUses(), accessMask_, diagnostics))
         return nullptr;
+    if (!diagnostics.HasErrors() &&
+        !engine_.InstantiateTemplateFunctions(
+            parser.TemplateFunctionUses(), accessMask_, diagnostics)) return nullptr;
+    for (const auto& function : engine_.HostSignatures(accessMask_)) {
+        const bool known = std::any_of(base.functions.begin(), base.functions.end(),
+            [&](const FunctionSignature& existing) { return existing.id == function.id; });
+        if (!known) base.functions.push_back(function);
+    }
     for (const auto& type : engine_.HostTypeSignatures(accessMask_)) {
         const bool known = std::any_of(base.classes.begin(), base.classes.end(),
             [&](const ClassSignature& existing) { return existing.name == type.name; });
@@ -897,6 +940,29 @@ bool ScriptModule::LoadBytecode(std::istream& input) {
                 parser.TemplateTypeUses(), accessMask_, diagnostics)) {
             engine_.ForwardDiagnostic({{"bytecode"}, Severity::Error,
                 "bytecode load failed: template object types do not match"});
+            return false;
+        }
+    }
+
+    std::vector<TemplateFunctionUse> archivedTemplateFunctions;
+    const auto rememberTemplateFunction = [&](const FunctionSignature& signature) {
+        if (signature.host && signature.templateFunction &&
+            !signature.templateArguments.empty())
+            archivedTemplateFunctions.push_back(
+                {signature.name, signature.templateArguments, {"bytecode-template"}});
+    };
+    for (const auto& signature : archive.environment.functions)
+        rememberTemplateFunction(signature);
+    for (const auto& type : archive.environment.classes)
+        for (const auto& method : type.methods) rememberTemplateFunction(method);
+    if (!archivedTemplateFunctions.empty()) {
+        DiagnosticSink diagnostics([this](const Diagnostic& diagnostic) {
+            engine_.ForwardDiagnostic(diagnostic);
+        });
+        if (!engine_.InstantiateTemplateFunctions(
+                archivedTemplateFunctions, accessMask_, diagnostics)) {
+            engine_.ForwardDiagnostic({{"bytecode"}, Severity::Error,
+                "bytecode load failed: template functions do not match"});
             return false;
         }
     }
@@ -1564,13 +1630,17 @@ bool ScriptEngine::RegisterGlobalFunction(std::string declaration, GenericFuncti
         if (existing.signature.factory || existing.signature.method) continue;
         if (existing.signature.name == signature->name &&
             existing.signature.parameters == signature->parameters &&
-            existing.signature.variadic == signature->variadic) {
+            existing.signature.variadic == signature->variadic &&
+            existing.signature.templateFunction == signature->templateFunction &&
+            existing.signature.templateParameters == signature->templateParameters) {
             diagnostics.Report({"registration"}, Severity::Error,
                                "duplicate global function '" + signature->Declaration() + "'");
             return false;
         }
     }
-    signature->id = GetOrCreateFunctionId("$host\n" + signature->Declaration());
+    signature->id = GetOrCreateFunctionId(
+        std::string(signature->templateFunction ? "$host-template\n" : "$host\n") +
+        signature->Declaration());
     hostFunctions_.push_back({std::move(*signature), std::move(callback),
                               defaultAccessMask_, currentConfigGroup_, true});
     PublishFunctionMetadata(hostFunctions_.back().signature);
@@ -1759,7 +1829,7 @@ bool ScriptEngine::RegisterFuncdef(std::string declaration) {
     signature->name = QualifyName(defaultNamespace_, std::move(signature->name));
     ResolveRegisteredTypes(*signature);
     if (signature->name.empty() || HasRegisteredType(signature->name) ||
-        signature->readOnlyMethod) {
+        signature->readOnlyMethod || signature->templateFunction) {
         diagnostics.Report({"registration"}, Severity::Error,
                            "duplicate or invalid registered funcdef '" + signature->name + "'");
         return false;
@@ -1798,7 +1868,8 @@ bool ScriptEngine::RegisterObjectFactory(std::string typeName, std::string decla
     ResolveRegisteredTypes(*signature);
     const DataType expected = DataType::Object(typeName, true);
     if (signature->name != "f" || signature->returnType != expected ||
-        signature->returnsReference || signature->readOnlyMethod) {
+        signature->returnsReference || signature->readOnlyMethod ||
+        signature->templateFunction) {
         diagnostics.Report({"registration"}, Severity::Error,
                            "factory declaration must have the form '" + typeName + "@ f(...)'");
         return false;
@@ -1857,15 +1928,19 @@ bool ScriptEngine::RegisterObjectMethod(std::string typeName, std::string declar
         if (!existing.signature.method || existing.signature.objectType != typeName ||
             existing.signature.name != signature->name ||
             existing.signature.parameters != signature->parameters ||
-            existing.signature.variadic != signature->variadic) continue;
+            existing.signature.variadic != signature->variadic ||
+            existing.signature.templateFunction != signature->templateFunction ||
+            existing.signature.templateParameters != signature->templateParameters) continue;
         diagnostics.Report({"registration"}, Severity::Error,
                            "duplicate object method '" + typeName + "::" + declaration + "'");
         return false;
     }
     signature->method = true;
     signature->objectType = typeName;
-    signature->id = GetOrCreateFunctionId("$host-method\n" + typeName + "\n" +
-                                          signature->Declaration());
+    signature->id = GetOrCreateFunctionId(
+        std::string(signature->templateFunction ? "$host-template-method\n"
+                                                : "$host-method\n") +
+        typeName + "\n" + signature->Declaration());
     hostFunctions_.push_back({std::move(*signature), std::move(callback),
                               defaultAccessMask_, currentConfigGroup_, true});
     PublishFunctionMetadata(hostFunctions_.back().signature);
@@ -2155,7 +2230,9 @@ std::vector<FunctionSignature> ScriptEngine::HostSignatures(std::uint32_t access
     std::vector<FunctionSignature> signatures;
     signatures.reserve(hostFunctions_.size());
     for (const auto& host : hostFunctions_)
-        if (host.active && !host.signature.method && IsVisible(host.accessMask, accessMask))
+        if (host.active && !host.signature.method &&
+            (!host.signature.templateFunction || !host.signature.templateArguments.empty()) &&
+            IsVisible(host.accessMask, accessMask))
             signatures.push_back(host.signature);
     return signatures;
 }
@@ -2186,7 +2263,9 @@ std::vector<ClassSignature> ScriptEngine::HostTypeSignatures(std::uint32_t acces
                 signature.fields.push_back(property->signature);
         for (const auto& function : hostFunctions_)
             if (function.active && IsVisible(function.accessMask, accessMask) &&
-                function.signature.method && function.signature.objectType == signature.name)
+                function.signature.method && function.signature.objectType == signature.name &&
+                (!function.signature.templateFunction ||
+                 !function.signature.templateArguments.empty()))
                 signature.methods.push_back(function.signature);
         signatures.push_back(std::move(signature));
     }
@@ -2222,6 +2301,105 @@ std::vector<std::pair<std::string, std::size_t>> ScriptEngine::HostTemplateTypes
         result.emplace_back(registered.name, registered.parameters.size());
     }
     return result;
+}
+
+std::vector<std::pair<std::string, std::size_t>> ScriptEngine::HostTemplateFunctions(
+    std::uint32_t accessMask) const {
+    std::vector<std::pair<std::string, std::size_t>> result;
+    for (const auto& registered : hostFunctions_) {
+        if (!registered.active || !registered.signature.templateFunction ||
+            !registered.signature.templateArguments.empty() ||
+            !IsVisible(registered.accessMask, accessMask)) continue;
+        result.emplace_back(registered.signature.name,
+                            registered.signature.templateParameters.size());
+    }
+    return result;
+}
+
+bool ScriptEngine::InstantiateTemplateFunctions(
+    const std::vector<TemplateFunctionUse>& uses, std::uint32_t accessMask,
+    DiagnosticSink& diagnostics) {
+    for (const auto& use : uses) {
+        bool foundDefinition = false;
+        const std::size_t definitionCount = hostFunctions_.size();
+        for (std::size_t definitionIndex = 0;
+             definitionIndex < definitionCount; ++definitionIndex) {
+            const auto& definition = hostFunctions_[definitionIndex];
+            if (!definition.active || !definition.signature.templateFunction ||
+                !definition.signature.templateArguments.empty() ||
+                definition.signature.name != use.functionName ||
+                definition.signature.templateParameters.size() != use.subTypes.size() ||
+                !IsVisible(definition.accessMask, accessMask)) continue;
+            foundDefinition = true;
+            FunctionSignature instance = definition.signature;
+            instance.id = {};
+            instance.templateArguments = use.subTypes;
+            const auto returnType = SubstituteTemplateType(
+                instance.returnType, instance.templateParameters, use.subTypes);
+            if (!returnType) {
+                diagnostics.Report(use.location, Severity::Error,
+                    "template function '" + use.functionName +
+                    "' cannot apply the selected type arguments to its return type");
+                continue;
+            }
+            instance.returnType = *returnType;
+            bool valid = true;
+            for (auto& parameter : instance.parameters) {
+                const auto substituted = SubstituteTemplateType(
+                    parameter, instance.templateParameters, use.subTypes);
+                if (!substituted) { valid = false; break; }
+                parameter = *substituted;
+            }
+            if (!valid) {
+                diagnostics.Report(use.location, Severity::Error,
+                    "template function '" + use.functionName +
+                    "' uses an unsupported nested or handle type pattern");
+                continue;
+            }
+            ResolveRegisteredTypes(instance);
+            const bool existing = std::any_of(hostFunctions_.begin(), hostFunctions_.end(),
+                [&](const RegisteredHostFunction& candidate) {
+                    const auto& signature = candidate.signature;
+                    return candidate.active && signature.templateFunction &&
+                        signature.objectType == instance.objectType &&
+                        signature.method == instance.method &&
+                        signature.name == instance.name &&
+                        signature.templateArguments == instance.templateArguments &&
+                        signature.parameters == instance.parameters &&
+                        signature.parameterModes == instance.parameterModes &&
+                        signature.returnType == instance.returnType &&
+                        signature.returnsReference == instance.returnsReference &&
+                        signature.returnReferenceConst == instance.returnReferenceConst &&
+                        signature.readOnlyMethod == instance.readOnlyMethod;
+                });
+            if (existing) continue;
+            const bool conflicts = std::any_of(hostFunctions_.begin(), hostFunctions_.end(),
+                [&](const RegisteredHostFunction& candidate) {
+                    return candidate.active && !candidate.signature.templateFunction &&
+                        candidate.signature.method == instance.method &&
+                        candidate.signature.objectType == instance.objectType &&
+                        candidate.signature.name == instance.name &&
+                        candidate.signature.parameters == instance.parameters;
+                });
+            if (conflicts) {
+                diagnostics.Report(use.location, Severity::Error,
+                    "template function instance '" + instance.Declaration() +
+                    "' conflicts with an ordinary registered function");
+                continue;
+            }
+            instance.id = GetOrCreateFunctionId(
+                "$host-template-instance\n" + instance.objectType + "\n" +
+                instance.Declaration());
+            hostFunctions_.push_back(
+                {std::move(instance), definition.callback, definition.accessMask,
+                 definition.configGroup, true});
+            PublishFunctionMetadata(hostFunctions_.back().signature);
+        }
+        if (!foundDefinition)
+            diagnostics.Report(use.location, Severity::Error,
+                "template function '" + use.functionName + "' is unavailable");
+    }
+    return !diagnostics.HasErrors();
 }
 
 bool ScriptEngine::InstantiateTemplateTypes(const std::vector<TemplateTypeUse>& uses,

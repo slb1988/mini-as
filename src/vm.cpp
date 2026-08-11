@@ -549,7 +549,8 @@ bool VirtualMachine::Step() {
                 hostArgumentTypes.reserve(hostArguments.size());
                 for (const auto& argument : hostArguments)
                     hostArgumentTypes.push_back(argument.Type());
-                GenericCall call(hostArguments, {}, callable->argumentTypes);
+                GenericCall call(hostArguments, {}, callable->argumentTypes,
+                                 hostTarget->signature.templateArguments);
                 try { hostTarget->callback(call); }
                 catch (const std::exception& error) {
                     throw std::runtime_error(std::string("host exception: ") + error.what());
@@ -640,7 +641,8 @@ bool VirtualMachine::Step() {
                     throw std::runtime_error("host method receiver type mismatch");
             }
         }
-        GenericCall call(arguments, std::move(receiverValue), callable->argumentTypes);
+        GenericCall call(arguments, std::move(receiverValue), callable->argumentTypes,
+                         target->signature.templateArguments);
         try { target->callback(call); }
         catch (const std::exception& error) { throw std::runtime_error(std::string("host exception: ") + error.what()); }
         if (!call.Exception().empty()) throw std::runtime_error(call.Exception());
@@ -732,7 +734,8 @@ bool VirtualMachine::Step() {
             std::vector<DataType> argumentTypes;
             argumentTypes.reserve(arguments.size());
             for (const auto& argument : arguments) argumentTypes.push_back(argument.Type());
-            GenericCall call(arguments, {}, callable->argumentTypes);
+            GenericCall call(arguments, {}, callable->argumentTypes,
+                             target->signature.templateArguments);
             try { target->callback(call); }
             catch (const std::exception& error) {
                 throw std::runtime_error(std::string("host exception: ") + error.what());

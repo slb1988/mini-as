@@ -34,6 +34,9 @@ struct FunctionSignature {
     bool shared = false;
     bool external = false;
     bool variadic = false;
+    bool templateFunction = false;
+    std::vector<std::string> templateParameters;
+    std::vector<DataType> templateArguments;
 
     std::string Declaration() const;
 };
@@ -149,10 +152,12 @@ private:
     bool IsReadOnlyLValue(const AstNode* node) const;
     const FunctionSignature* FindMethod(const DataType& object, std::string_view name,
                                         const std::vector<DataType>& arguments,
-                                        const std::vector<std::string>& argumentNames) const;
+                                        const std::vector<std::string>& argumentNames,
+                                        const std::vector<DataType>& templateArguments = {}) const;
     const FunctionSignature* FindMethodInClass(const ClassSignature* type, std::string_view name,
                                                const std::vector<DataType>& arguments,
-                                               const std::vector<std::string>& argumentNames) const;
+                                               const std::vector<std::string>& argumentNames,
+                                               const std::vector<DataType>& templateArguments = {}) const;
     const FunctionSignature* FindExactMethod(const ClassSignature* type, std::string_view name,
                                              const std::vector<DataType>& parameters,
                                              const std::vector<ParameterMode>& modes) const;

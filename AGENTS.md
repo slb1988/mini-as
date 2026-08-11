@@ -332,6 +332,20 @@ git history and `docs/stages/` before choosing the next stage number.
   wildcard output lvalue's concrete type through callback validation. Every
   call site stores its actual argument count in `CallableRef`. Bytecode format
   version 7 persists `FunctionSignature::variadic`.
+- Registered function templates are generic-call only and are instantiated from
+  explicit script type arguments before type checking. Open definitions remain
+  parser/metadata inputs; only closed instances enter ordinary overload lookup,
+  and each instance receives a stable engine-wide `FunctionId`. Preserve host
+  namespace, access-mask, and configuration-group controls on every instance.
+- Template function substitution currently accepts direct `T` and `T@`
+  placeholders. Type inference, nested forms such as `array<T>`, defaults, and
+  specializations are intentionally unsupported. `GenericCall` exposes the
+  concrete list through `GetTemplateArgCount()` / `GetTemplateArgType()`.
+  Bytecode format version 8 persists template signatures and call-site type
+  arguments; recreate instances before remapping archived host symbols.
+- MinGW GCC debug builds can exceed the PE/COFF section limit as `engine.cpp`
+  grows. Keep `-Wa,-mbig-obj` enabled for that compiler; MSVC remains the
+  primary Windows validation toolchain and local GCC is the secondary one.
 - Preserve the last successful module image on parser, type-check, bytecode, or
   global-initializer failure.
 - Do not edit compatibility expectations merely to make mini and official

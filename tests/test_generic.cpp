@@ -465,6 +465,160 @@ TEST_CASE(registered_variadic_funcdefs_dispatch_host_function_handles) {
     CHECK(context->GetReturnInt() == 42);
 }
 
+TEST_CASE(registered_template_functions_instantiate_explicit_generic_calls) {
+    auto engine = mini_as::CreateScriptEngine();
+    CHECK(engine->RegisterFuncdef("int IntUnary(int value)"));
+    CHECK(engine->RegisterGlobalFunction(
+        "T Identity<class T>(T value)", [](mini_as::GenericCall& call) {
+            CHECK(call.GetTemplateArgCount() == 1);
+            CHECK(call.GetTemplateArgType(0) == call.GetArgType(0));
+            call.SetReturn(call.GetArg(0));
+        }));
+    auto* module = engine->GetModule("template-functions");
+    module->AddScriptSection("template-functions.as",
+        "int run() { IntUnary@ copy = @Identity<int>; return copy(40) + "
+        "(Identity<string>(\"ok\") == \"ok\" ? 2 : 0); }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+
+    std::size_t instances = 0;
+    for (std::size_t index = 0; index < engine->GetFunctionMetadataCount(); ++index) {
+        const auto* metadata = engine->GetFunctionMetadataByIndex(index);
+        if (metadata && metadata->signature.name == "Identity" &&
+            !metadata->signature.templateArguments.empty()) ++instances;
+    }
+    CHECK(instances == 2);
+}
+
+TEST_CASE(registered_template_functions_support_namespaces_multiple_types_and_bytecode) {
+    auto registerTemplates = [](mini_as::ScriptEngine& engine) {
+        if (!engine.SetDefaultNamespace("HostTools")) return false;
+        const bool registered = engine.RegisterGlobalFunction(
+            "T Select<T, U>(T first, U second)", [](mini_as::GenericCall& call) {
+                CHECK(call.GetTemplateArgCount() == 2);
+                CHECK(call.GetTemplateArgType(0) == mini_as::DataType::Int());
+                CHECK(call.GetTemplateArgType(1) == mini_as::DataType::String());
+                CHECK(call.GetArgType(0) == mini_as::DataType::Int());
+                CHECK(call.GetArgType(1) == mini_as::DataType::String());
+                call.SetReturn(call.GetArg(0));
+            });
+        return engine.SetDefaultNamespace("") && registered;
+    };
+    auto sourceEngine = mini_as::CreateScriptEngine();
+    CHECK(registerTemplates(*sourceEngine));
+    auto* source = sourceEngine->GetModule("template-function-bytecode");
+    source->AddScriptSection("template-function-bytecode.as",
+        "int run() { return HostTools::Select<int, string>(42, \"ignored\"); }");
+    CHECK(source->Build());
+    std::stringstream archive(std::ios::in | std::ios::out | std::ios::binary);
+    CHECK(source->SaveBytecode(archive));
+
+    auto targetEngine = mini_as::CreateScriptEngine();
+    CHECK(registerTemplates(*targetEngine));
+    auto* loaded = targetEngine->GetModule("template-function-bytecode-loaded");
+    archive.seekg(0);
+    CHECK(loaded->LoadBytecode(archive));
+    auto context = targetEngine->CreateContext();
+    CHECK(context->Prepare(loaded->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+}
+
+TEST_CASE(registered_template_functions_support_overloaded_definitions) {
+    auto engine = mini_as::CreateScriptEngine();
+    CHECK(engine->RegisterGlobalFunction(
+        "T Select<T>(T value)", [](mini_as::GenericCall& call) {
+            call.SetReturn(call.GetArg(0));
+        }));
+    CHECK(engine->RegisterGlobalFunction(
+        "T Select<T>(T first, T second)", [](mini_as::GenericCall& call) {
+            call.SetReturnInt(call.GetArgInt(0) + call.GetArgInt(1));
+        }));
+    auto* module = engine->GetModule("overloaded-template-functions");
+    module->AddScriptSection("overloaded-template-functions.as",
+        "int run() { return Select<int>(20) + Select<int>(10, 12); }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+}
+
+TEST_CASE(registered_template_function_diagnostics_reject_invalid_uses_and_collisions) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    CHECK(!engine->RegisterGlobalFunction(
+        "T Broken<T, T>(T value)", [](mini_as::GenericCall&) {}));
+    CHECK(engine->RegisterGlobalFunction(
+        "T Identity<T>(T value)", [](mini_as::GenericCall& call) {
+            call.SetReturn(call.GetArg(0));
+        }));
+
+    auto* deduction = engine->GetModule("template-function-deduction");
+    deduction->AddScriptSection("deduction.as",
+        "int run() { return Identity(42); }");
+    CHECK(!deduction->Build());
+
+    CHECK(engine->RegisterGlobalFunction(
+        "int Identity(int value)", [](mini_as::GenericCall& call) {
+            call.SetReturnInt(call.GetArgInt(0));
+        }));
+
+    auto* wrongCount = engine->GetModule("template-function-wrong-count");
+    wrongCount->AddScriptSection("wrong-count.as",
+        "int run() { return Identity<int, float>(42); }");
+    CHECK(!wrongCount->Build());
+
+    auto* omitted = engine->GetModule("template-function-omitted-types");
+    omitted->AddScriptSection("omitted-types.as",
+        "int run() { return Identity(42); }");
+    CHECK(omitted->Build());
+    auto omittedContext = engine->CreateContext();
+    CHECK(omittedContext->Prepare(omitted->GetFunctionByDecl("int run()")));
+    CHECK(omittedContext->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(omittedContext->GetReturnInt() == 42);
+
+    auto* collision = engine->GetModule("template-function-collision");
+    collision->AddScriptSection("collision.as",
+        "int run() { return Identity<int>(42); }");
+    CHECK(!collision->Build());
+
+    CHECK(engine->RegisterGlobalFunction(
+        "T@ HandleOnly<T>(T@ value)", [](mini_as::GenericCall& call) {
+            call.SetReturn(call.GetArg(0));
+        }));
+    auto* invalidHandle = engine->GetModule("template-function-invalid-handle");
+    invalidHandle->AddScriptSection("invalid-handle.as",
+        "int run() { return HandleOnly<int>(42); }");
+    CHECK(!invalidHandle->Build());
+    CHECK(diagnostics.size() >= 4);
+}
+
+TEST_CASE(registered_template_function_exceptions_keep_call_location) {
+    auto engine = mini_as::CreateScriptEngine();
+    CHECK(engine->RegisterGlobalFunction(
+        "T Fail<T>(T value)", [](mini_as::GenericCall& call) {
+            CHECK(call.GetTemplateArgType(0) == mini_as::DataType::Int());
+            call.SetException("template callback failed");
+        }));
+    auto* module = engine->GetModule("template-function-exception");
+    module->AddScriptSection("template-function-exception.as",
+        "int run() {\n  return Fail<int>(42);\n}\n");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Exception);
+    CHECK(context->GetExceptionString() == "template callback failed");
+    CHECK(context->GetExceptionLocation().section == "template-function-exception.as");
+    CHECK(context->GetExceptionLocation().row == 2);
+}
+
 TEST_CASE(generic_declarations_parse_qualified_and_nested_template_types) {
     mini_as::DiagnosticSink diagnostics;
     const auto signature = mini_as::ParseFunctionDeclaration(

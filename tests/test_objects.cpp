@@ -371,6 +371,36 @@ TEST_CASE(wildcard_variadic_out_retains_static_object_handle_type) {
     CHECK(destroyed == 1);
 }
 
+TEST_CASE(registered_object_methods_support_explicit_template_arguments) {
+    auto engine = mini_as::CreateScriptEngine();
+    const auto* type = engine->RegisterObjectType("Thing");
+    CHECK(type != nullptr);
+    int destroyed = 0;
+    CHECK(engine->RegisterObjectFactory(
+        "Thing", "Thing@ f()", [type, &destroyed](mini_as::GenericCall& call) {
+            call.SetReturnObject(
+                mini_as::ObjectHandle(new HostThing(type, 0, destroyed)));
+        }));
+    CHECK(engine->RegisterObjectMethod(
+        "Thing", "T echo<class T>(T value) const",
+        [](mini_as::GenericCall& call) {
+            CHECK(call.GetObject());
+            CHECK(call.GetTemplateArgCount() == 1);
+            CHECK(call.GetTemplateArgType(0) == call.GetArgType(0));
+            call.SetReturn(call.GetArg(0));
+        }));
+    auto* module = engine->GetModule("template-methods");
+    module->AddScriptSection("template-methods.as",
+        "int run() { Thing@ value = Thing(); return value.echo<int>(40) + "
+        "(value.echo<string>(\"ok\") == \"ok\" ? 2 : 0); }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+    CHECK(destroyed == 1);
+}
+
 TEST_CASE(object_method_registration_rejects_invalid_owners_callbacks_and_duplicates) {
     auto engine = mini_as::CreateScriptEngine();
     std::vector<mini_as::Diagnostic> diagnostics;

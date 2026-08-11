@@ -122,6 +122,10 @@ void VariadicSum(asIScriptGeneric* call) {
     call->SetReturnDWord(static_cast<asDWORD>(total));
 }
 
+void TemplateIdentity(asIScriptGeneric* call) {
+    call->SetReturnDWord(call->GetArgDWord(0));
+}
+
 struct DebugProbe {
     bool printed = false;
 };
@@ -210,6 +214,12 @@ int main(int argc, char** argv) {
         engine->RegisterGlobalFunction(
             "int VariadicSum(int seed, const int &in ...)",
             asFUNCTION(VariadicSum), asCALL_GENERIC) < 0) {
+        engine->ShutDownAndRelease();
+        return 3;
+    }
+    if (std::string(argv[1]).find("template_functions") != std::string::npos &&
+        engine->RegisterGlobalFunction(
+            "T Identity<T>(T value)", asFUNCTION(TemplateIdentity), asCALL_GENERIC) < 0) {
         engine->ShutDownAndRelease();
         return 3;
     }

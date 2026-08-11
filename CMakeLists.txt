@@ -35,6 +35,9 @@ if(MSVC)
   target_compile_options(mini_angelscript PRIVATE /W4 /permissive-)
 else()
   target_compile_options(mini_angelscript PRIVATE -Wall -Wextra -Wpedantic)
+  if(MINGW AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(mini_angelscript PRIVATE -Wa,-mbig-obj)
+  endif()
 endif()
 
 enable_testing()
@@ -559,5 +562,12 @@ if(MINI_AS_BUILD_COMPAT_TESTS)
       -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
       -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
       -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/variadic_arguments.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_template_functions
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/template_functions.as
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
 endif()

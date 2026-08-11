@@ -11,7 +11,7 @@ namespace mini_as::detail {
 namespace {
 
 constexpr char kMagic[] = {'M', 'A', 'S', 'B'};
-constexpr std::uint32_t kVersion = 7;
+constexpr std::uint32_t kVersion = 8;
 constexpr std::uint64_t kMaxItems = 1'000'000;
 constexpr std::uint64_t kMaxString = 16 * 1024 * 1024;
 
@@ -214,6 +214,11 @@ void WriteFunctionSignature(Writer& writer, const FunctionSignature& signature) 
     writer.Scalar<std::uint8_t>(signature.shared ? 1 : 0);
     writer.Scalar<std::uint8_t>(signature.external ? 1 : 0);
     writer.Scalar<std::uint8_t>(signature.variadic ? 1 : 0);
+    writer.Scalar<std::uint8_t>(signature.templateFunction ? 1 : 0);
+    writer.Vector(signature.templateParameters,
+        [](Writer& out, const std::string& value) { out.String(value); });
+    writer.Vector(signature.templateArguments,
+        [](Writer& out, const DataType& type) { WriteType(out, type); });
 }
 
 bool ReadBool(Reader& reader, bool& value) {
@@ -249,12 +254,21 @@ bool ReadFunctionSignature(Reader& reader, FunctionSignature& signature) {
         !reader.String(signature.sourceModule) ||
         !ReadBool(reader, signature.shared) ||
         !ReadBool(reader, signature.external) ||
-        !ReadBool(reader, signature.variadic)) return false;
+        !ReadBool(reader, signature.variadic) ||
+        !ReadBool(reader, signature.templateFunction) ||
+        !reader.Vector(signature.templateParameters,
+            [](Reader& in, std::string& value) { return in.String(value); }) ||
+        !reader.Vector(signature.templateArguments,
+            [](Reader& in, DataType& type) { return ReadType(in, type); })) return false;
     signature.defaultArgumentCount = static_cast<std::size_t>(defaults);
     return signature.parameterNames.size() <= signature.parameters.size() &&
            signature.parameterModes.size() <= signature.parameters.size() &&
            (!signature.variadic ||
-            (!signature.parameters.empty() && signature.defaultArgumentCount == 0));
+            (!signature.parameters.empty() && signature.defaultArgumentCount == 0)) &&
+           (!signature.templateFunction ||
+            (!signature.templateParameters.empty() &&
+             (signature.templateArguments.empty() ||
+              signature.templateArguments.size() == signature.templateParameters.size())));
 }
 
 void WriteValue(Writer& writer, const Value& value, bool& valid) {
@@ -656,6 +670,8 @@ void WriteNode(Writer& writer, const AstNode* node) {
     writer.String(node->delegateObjectType);
     writer.Vector(node->captureNames,
         [](Writer& out, const std::string& value) { out.String(value); });
+    writer.Vector(node->templateArguments,
+        [](Writer& out, const DataType& type) { WriteType(out, type); });
     writer.Scalar(node->memberAccess);
     writer.Scalar(node->parameterMode);
     std::uint64_t children = 0;
@@ -693,6 +709,8 @@ bool ReadNode(Reader& reader, AstArena& arena, AstNode*& result,
         !reader.String(node->propertySetter) || !reader.String(node->delegateObjectType) ||
         !reader.Vector(node->captureNames,
             [](Reader& in, std::string& value) { return in.String(value); }) ||
+        !reader.Vector(node->templateArguments,
+            [](Reader& in, DataType& type) { return ReadType(in, type); }) ||
         !reader.Scalar(node->memberAccess) || node->memberAccess > MemberAccess::Private ||
         !reader.Scalar(node->parameterMode) || node->parameterMode > ParameterMode::InOut)
         return false;

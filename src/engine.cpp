@@ -29,6 +29,36 @@ Value DefaultGlobalValue(const DataType& type, const ScriptEngine& engine) {
     return Value{};
 }
 
+void CollectDynamicDeclarations(AstNode* node, std::vector<AstNode*>& declarations) {
+    if (!node) return;
+    if (node->kind == NodeKind::Program || node->kind == NodeKind::NamespaceDecl) {
+        for (AstNode* child = node->firstChild; child; child = child->nextSibling)
+            CollectDynamicDeclarations(child, declarations);
+        return;
+    }
+    declarations.push_back(node);
+}
+
+bool CallsFunctionDirectly(AstNode* node, std::string_view qualifiedName) {
+    if (!node) return false;
+    const auto separator = qualifiedName.rfind("::");
+    const std::string_view simpleName = separator == std::string_view::npos
+        ? qualifiedName : qualifiedName.substr(separator + 2);
+    if (node->kind == NodeKind::Call && node->firstChild &&
+        node->firstChild->kind == NodeKind::Identifier &&
+        (node->firstChild->token.lexeme == qualifiedName ||
+         node->firstChild->token.lexeme == simpleName)) return true;
+    for (AstNode* child = node->firstChild; child; child = child->nextSibling)
+        if (CallsFunctionDirectly(child, qualifiedName)) return true;
+    return false;
+}
+
+bool UsesCallableDescriptor(OpCode opcode) {
+    return opcode == OpCode::Call || opcode == OpCode::CallHost ||
+           opcode == OpCode::CallVirtual || opcode == OpCode::CallHandle ||
+           opcode == OpCode::MakeDelegate || opcode == OpCode::MakeClosure;
+}
+
 } // namespace
 
 std::string_view Version() { return "0.1.0-learning"; }
@@ -175,6 +205,14 @@ bool ScriptModule::Build() {
     nextImage->bytecode = std::move(candidate);
     nextImage->finalizerBytecode = std::move(finalizerModule);
     nextImage->state = std::move(state);
+    nextImage->environment.functions = std::move(functions);
+    nextImage->environment.classes = std::move(classes);
+    nextImage->environment.globals = std::move(globals);
+    nextImage->environment.enums = std::move(enums);
+    nextImage->environment.typedefs = std::move(typedefs);
+    nextImage->environment.funcdefs = std::move(funcdefs);
+    nextImage->definitionTrees.push_back(
+        std::make_shared<SyntaxTree>(std::move(tree)));
     engine_.RegisterModuleImage(nextImage);
     image_ = std::move(nextImage);
     sections_.clear();
@@ -211,6 +249,170 @@ const GlobalMetadata* ScriptModule::GetGlobalMetadataByIndex(std::size_t index) 
         if (index-- == 0) return engine_.FindGlobalMetadata(binding.signature.id);
     }
     return nullptr;
+}
+
+const BytecodeFunction* ScriptModule::CompileFunction(std::string sectionName,
+                                                      std::string source,
+                                                      bool addToModule,
+                                                      int lineOffset) {
+    DiagnosticSink diagnostics([this](const Diagnostic& diagnostic) {
+        engine_.ForwardDiagnostic(diagnostic);
+    });
+    Tokenizer tokenizer(sectionName, source, diagnostics);
+    auto tokens = tokenizer.ScanAll();
+    for (auto& token : tokens) token.location.row += lineOffset;
+    Parser parser(std::move(tokens), diagnostics);
+
+    ModuleCompilationEnvironment base = image_->environment;
+    if (!image_->state) {
+        base.functions = engine_.HostSignatures();
+        base.globals = engine_.HostPropertySignatures();
+        base.classes = engine_.HostTypeSignatures();
+        base.enums = engine_.hostEnums_;
+        base.typedefs = engine_.hostTypedefs_;
+        base.funcdefs = engine_.hostFuncdefs_;
+    }
+    for (const auto& type : base.enums) parser.RegisterEnumType(type.name);
+    for (const auto& type : base.typedefs)
+        parser.RegisterTypedefType(type.name, type.underlyingType);
+    for (const auto& type : base.funcdefs) parser.RegisterFuncdefType(type.name);
+    auto tree = parser.Parse();
+
+    std::vector<AstNode*> declarations;
+    CollectDynamicDeclarations(tree.root, declarations);
+    if (declarations.size() != 1 || declarations.front()->kind != NodeKind::FunctionDecl) {
+        diagnostics.Report({sectionName}, Severity::Error,
+                           "dynamic code must contain exactly one function");
+        return nullptr;
+    }
+    AstNode* declaration = declarations.front();
+    if (!addToModule && CallsFunctionDirectly(declaration, declaration->token.lexeme)) {
+        diagnostics.Report(declaration->token.location, Severity::Error,
+                           "detached dynamic function cannot call itself");
+        return nullptr;
+    }
+
+    TypeChecker checker(diagnostics);
+    for (const auto& signature : base.functions) checker.RegisterFunction(signature);
+    for (const auto& signature : base.globals) checker.RegisterGlobalProperty(signature);
+    for (const auto& signature : base.classes) checker.RegisterObjectType(signature);
+    for (const auto& signature : base.enums) checker.RegisterEnum(signature);
+    for (const auto& signature : base.typedefs) checker.RegisterTypedef(signature);
+    for (const auto& signature : base.funcdefs) checker.RegisterFuncdef(signature);
+    if (diagnostics.HasErrors() || !checker.Check(tree.root)) return nullptr;
+
+    auto functions = checker.Functions();
+    FunctionId primaryId;
+    std::vector<FunctionId> dynamicIds;
+    const std::uint64_t serial = nextDynamicFunctionSerial_++;
+    for (auto& function : functions) {
+        if (function.id.IsValid()) continue;
+        function.id = engine_.GetOrCreateFunctionId(
+            name_ + "\n$dynamic:" + std::to_string(serial) + "\n" +
+            function.Declaration());
+        if (!primaryId.IsValid()) primaryId = function.id;
+        dynamicIds.push_back(function.id);
+    }
+    if (!primaryId.IsValid()) {
+        diagnostics.Report(declaration->token.location, Severity::Error,
+                           "dynamic function did not produce a callable signature");
+        return nullptr;
+    }
+
+    auto classes = checker.Classes();
+    auto globals = checker.Globals();
+    auto enums = checker.Enums();
+    auto typedefs = checker.Typedefs();
+    auto funcdefs = checker.Funcdefs();
+    BytecodeCompiler compiler(diagnostics);
+    std::vector<AstNode*> definitionRoots;
+    definitionRoots.reserve(image_->definitionTrees.size());
+    for (const auto& definitions : image_->definitionTrees)
+        definitionRoots.push_back(definitions->root);
+    BytecodeModule candidate = compiler.Compile(
+        tree.root, functions, classes, globals, enums, funcdefs, definitionRoots);
+    if (diagnostics.HasErrors()) return nullptr;
+
+    const std::size_t callableOffset = image_->bytecode.callables.size();
+    std::vector<CallableRef> dynamicCallables = std::move(candidate.callables);
+    candidate.callables = image_->bytecode.callables;
+    candidate.callables.insert(candidate.callables.end(),
+                               std::make_move_iterator(dynamicCallables.begin()),
+                               std::make_move_iterator(dynamicCallables.end()));
+    for (auto& function : candidate.functions) {
+        const BytecodeFunction* existing = image_->bytecode.FindFunction(function.signature.id);
+        if (existing) {
+            function = *existing;
+            continue;
+        }
+        if (std::find(dynamicIds.begin(), dynamicIds.end(), function.signature.id) ==
+            dynamicIds.end()) continue;
+        for (auto& instruction : function.code) {
+            if (!UsesCallableDescriptor(instruction.opcode) || instruction.operand < 0) continue;
+            instruction.operand += static_cast<std::int32_t>(callableOffset);
+        }
+    }
+    for (const auto& host : engine_.hostFunctions_)
+        candidate.hostFunctions.push_back({host.signature.id, &host});
+    for (auto& binding : candidate.globals) {
+        if (!binding.signature.host) continue;
+        for (const auto& host : engine_.hostProperties_) {
+            if (host.signature.id == binding.signature.id) {
+                binding.host = &host;
+                break;
+            }
+        }
+        if (!binding.host) {
+            diagnostics.Report({sectionName}, Severity::Error,
+                               "registered global property binding is unavailable");
+            return nullptr;
+        }
+    }
+    for (const auto& type : classes) {
+        const TypeInfo* linked = engine_.GetTypeInfo(type.name);
+        if (linked) candidate.objectTypes.push_back({linked->id, linked});
+    }
+
+    std::shared_ptr<ModuleState> state = image_->state;
+    if (!state) {
+        state = std::make_shared<ModuleState>();
+        state->globals.reserve(candidate.globals.size());
+        for (const auto& global : candidate.globals) {
+            state->globals.push_back(global.host && global.host->storage
+                ? *global.host->storage : DefaultGlobalValue(global.signature.type, engine_));
+        }
+    }
+    auto nextImage = std::make_shared<ModuleImage>();
+    nextImage->bytecode = std::move(candidate);
+    nextImage->finalizerBytecode =
+        std::make_shared<BytecodeModule>(nextImage->bytecode);
+    nextImage->state = std::move(state);
+    nextImage->environment = base;
+    nextImage->definitionTrees = image_->definitionTrees;
+    if (addToModule) {
+        nextImage->environment.functions = functions;
+        nextImage->environment.classes = classes;
+        nextImage->environment.globals = globals;
+        nextImage->environment.enums = enums;
+        nextImage->environment.typedefs = typedefs;
+        nextImage->environment.funcdefs = funcdefs;
+        nextImage->definitionTrees.push_back(
+            std::make_shared<SyntaxTree>(std::move(tree)));
+    }
+    engine_.RegisterModuleImage(nextImage);
+    const BytecodeFunction* result = nextImage->bytecode.FindFunction(primaryId);
+    if (!result) {
+        diagnostics.Report(declaration->token.location, Severity::Error,
+                           "compiled function is unavailable");
+        return nullptr;
+    }
+    for (const FunctionId id : dynamicIds) {
+        const BytecodeFunction* function = nextImage->bytecode.FindFunction(id);
+        if (function) engine_.PublishFunctionMetadata(function->signature, name_);
+    }
+    dynamicImages_.push_back(nextImage);
+    if (addToModule) image_ = std::move(nextImage);
+    return result;
 }
 
 const GlobalMetadata* ScriptModule::GetGlobalMetadataById(GlobalId id) const {

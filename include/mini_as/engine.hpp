@@ -49,10 +49,21 @@ struct GlobalMetadata {
 
 class ScriptEngine;
 
+struct ModuleCompilationEnvironment {
+    std::vector<FunctionSignature> functions;
+    std::vector<ClassSignature> classes;
+    std::vector<GlobalSignature> globals;
+    std::vector<EnumSignature> enums;
+    std::vector<TypedefSignature> typedefs;
+    std::vector<FuncdefSignature> funcdefs;
+};
+
 struct ModuleImage {
     BytecodeModule bytecode;
     std::shared_ptr<const BytecodeModule> finalizerBytecode;
     std::shared_ptr<ModuleState> state;
+    ModuleCompilationEnvironment environment;
+    std::vector<std::shared_ptr<const SyntaxTree>> definitionTrees;
 };
 
 class ScriptModule {
@@ -63,6 +74,8 @@ public:
     bool Build();
     const BytecodeFunction* GetFunctionByDecl(std::string_view declaration) const;
     const BytecodeFunction* GetFunctionByName(std::string_view name) const;
+    const BytecodeFunction* CompileFunction(std::string sectionName, std::string source,
+                                            bool addToModule = true, int lineOffset = 0);
     const FunctionMetadata* GetFunctionMetadataByDecl(std::string_view declaration) const;
     std::size_t GetGlobalMetadataCount() const;
     const GlobalMetadata* GetGlobalMetadataByIndex(std::size_t index) const;
@@ -78,6 +91,8 @@ private:
     std::string name_;
     std::vector<Section> sections_;
     std::shared_ptr<const ModuleImage> image_;
+    std::vector<std::shared_ptr<const ModuleImage>> dynamicImages_;
+    std::uint64_t nextDynamicFunctionSerial_ = 0;
 };
 
 class ScriptContext {

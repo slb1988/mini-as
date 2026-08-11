@@ -103,6 +103,12 @@ int main(int argc, char** argv) {
         const auto* transform = module->GetGlobalMetadataByName("transform");
         if (module->GetGlobalMetadataCount() != 2 || !selected || !transform ||
             transform->signature.Declaration() != "HostTransform@ transform") return 13;
+        const auto* detached = module->CompileFunction(
+            "dynamic-detached", "int detached_probe() { return main(); }", false);
+        const auto* added = module->CompileFunction(
+            "dynamic-added", "int dynamic_probe() { return main(); }");
+        if (!detached || module->GetFunctionByDecl("int detached_probe()") || !added ||
+            module->GetFunctionByDecl("int dynamic_probe()") != added) return 13;
     }
     auto context = engine->CreateContext();
     if (!context->Prepare(module->GetFunctionByDecl("int main()"))) return 14;

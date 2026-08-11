@@ -450,6 +450,110 @@ TEST_CASE(module_global_reflection_is_stable_scoped_and_published_atomically) {
     CHECK(module->GetGlobalMetadataByName("bad") == nullptr);
 }
 
+TEST_CASE(dynamic_functions_compile_against_module_scope_and_preserve_snapshots) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("dynamic-functions");
+    module->AddScriptSection("base",
+        "int base = 10; int helper(int value, int increment = base + 1) { "
+        "return value + increment; } "
+        "class Box { int value; Box(int input) { value = input; } "
+        "int read() { return value; } } int main() { return helper(0); }");
+    CHECK(module->Build());
+
+    auto oldContext = engine->CreateContext();
+    CHECK(oldContext->Prepare(module->GetFunctionByDecl("int main()")));
+    const auto* dynamic = module->CompileFunction("dynamic",
+        "int dynamic(int input) { Box@ box = Box(input); "
+        "return helper(box.read()); }");
+    CHECK(dynamic != nullptr);
+    CHECK(module->GetFunctionByDecl("int dynamic(int)") == dynamic);
+    CHECK(module->GetFunctionMetadataByDecl("int dynamic(int)") != nullptr);
+
+    auto dynamicContext = engine->CreateContext();
+    CHECK(dynamicContext->Prepare(dynamic));
+    CHECK(dynamicContext->SetArgInt(0, 31));
+    CHECK(dynamicContext->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(dynamicContext->GetReturnInt() == 42);
+    CHECK(oldContext->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(oldContext->GetReturnInt() == 11);
+
+    const auto* chain = module->CompileFunction(
+        "chain", "int chain() { return dynamic(31); }");
+    CHECK(chain != nullptr);
+    auto chainContext = engine->CreateContext();
+    CHECK(chainContext->Prepare(chain));
+    CHECK(chainContext->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(chainContext->GetReturnInt() == 42);
+    auto retainedDynamicContext = engine->CreateContext();
+    CHECK(retainedDynamicContext->Prepare(dynamic));
+    CHECK(retainedDynamicContext->SetArgInt(0, 31));
+    CHECK(retainedDynamicContext->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(retainedDynamicContext->GetReturnInt() == 42);
+
+    const auto* recursive = module->CompileFunction("recursive-added",
+        "int countdown(int value) { if (value == 0) return 42; "
+        "return countdown(value - 1); }");
+    CHECK(recursive != nullptr);
+    auto recursiveContext = engine->CreateContext();
+    CHECK(recursiveContext->Prepare(recursive));
+    CHECK(recursiveContext->SetArgInt(0, 3));
+    CHECK(recursiveContext->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(recursiveContext->GetReturnInt() == 42);
+
+    const auto* detached = module->CompileFunction(
+        "detached", "int transient() { return chain() + 1; }", false);
+    CHECK(detached != nullptr);
+    CHECK(module->GetFunctionByDecl("int transient()") == nullptr);
+    CHECK(module->GetFunctionMetadataByDecl("int transient()") == nullptr);
+    auto detachedContext = engine->CreateContext();
+    CHECK(detachedContext->Prepare(detached));
+    CHECK(detachedContext->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(detachedContext->GetReturnInt() == 43);
+}
+
+TEST_CASE(dynamic_function_failures_are_atomic_and_report_source_locations) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    auto* module = engine->GetModule("dynamic-errors");
+    module->AddScriptSection("base", "int existing() { return 42; }");
+    CHECK(module->Build());
+
+    CHECK(module->CompileFunction(
+        "two", "int first() { return 1; } int second() { return 2; }") == nullptr);
+    CHECK(module->CompileFunction(
+        "recursive", "int recurse() { return recurse(); }", false) == nullptr);
+    CHECK(module->CompileFunction(
+        "duplicate", "int existing() { return 0; }") == nullptr);
+    CHECK(module->GetFunctionByDecl("int existing()") != nullptr);
+    bool exactlyOne = false, detachedRecursion = false, duplicate = false;
+    for (const auto& diagnostic : diagnostics) {
+        exactlyOne = exactlyOne ||
+            diagnostic.message.find("exactly one function") != std::string::npos;
+        detachedRecursion = detachedRecursion ||
+            diagnostic.message.find("detached dynamic function cannot call itself") !=
+                std::string::npos;
+        duplicate = duplicate ||
+            diagnostic.message.find("duplicate function 'int existing()'") != std::string::npos;
+    }
+    CHECK(exactlyOne);
+    CHECK(detachedRecursion);
+    CHECK(duplicate);
+
+    const auto* failing = module->CompileFunction("dynamic-failure",
+        "int fail_dynamic(int divisor) {\n return 42 / divisor;\n}", true, 5);
+    CHECK(failing != nullptr);
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(failing));
+    CHECK(context->SetArgInt(0, 0));
+    CHECK(context->Execute() == mini_as::ExecutionState::Exception);
+    CHECK(context->GetExceptionString().find("division by zero") != std::string::npos);
+    CHECK(context->GetExceptionLocation().section == "dynamic-failure");
+    CHECK(context->GetExceptionLocation().row == 7);
+}
+
 TEST_CASE(for_loops_execute_initializer_condition_and_increment) {
     auto engine = mini_as::CreateScriptEngine();
     auto* module = engine->GetModule("for-loop");

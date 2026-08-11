@@ -211,7 +211,8 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
                                          const std::vector<ClassSignature>& classes,
                                          const std::vector<GlobalSignature>& globals,
                                          const std::vector<EnumSignature>& enums,
-                                         const std::vector<FuncdefSignature>& funcdefs) {
+                                         const std::vector<FuncdefSignature>& funcdefs,
+                                         const std::vector<AstNode*>& definitionRoots) {
     module_ = {};
     signatures_ = signatures;
     functionIndices_.clear();
@@ -269,39 +270,50 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
         }
     }
     if (!root) return module_;
-    for (AstNode* node : TopLevelDeclarations(root))
-        if (node->kind == NodeKind::ClassDecl) classNodes_[node->token.lexeme] = node;
-    for (AstNode* node : TopLevelDeclarations(root)) {
-        if (node->kind == NodeKind::FunctionDecl && !node->isDeleted) {
-            FunctionSignature signature{node->token.lexeme, node->declaredType, {}, false, {}, {}, false, false, 0, {}, {},
-                                        node->returnsReference, node->returnReferenceConst, false};
-            for (AstNode* parameter = node->firstChild;
-                 parameter && parameter->kind == NodeKind::Parameter; parameter = parameter->nextSibling) {
-                signature.parameters.push_back(parameter->declaredType);
-                signature.parameterNames.push_back(parameter->token.lexeme);
-                signature.parameterModes.push_back(parameter->parameterMode);
-                if (parameter->firstChild) ++signature.defaultArgumentCount;
-            }
-            functionNodes_[FunctionKey(signature)] = node;
-        }
-        if (node->kind == NodeKind::ClassDecl) {
-            for (AstNode* methodNode = node->firstChild; methodNode; methodNode = methodNode->nextSibling) {
-                if (methodNode->kind != NodeKind::FunctionDecl || methodNode->isDeleted) continue;
-                FunctionSignature method{methodNode->token.lexeme, methodNode->declaredType, {}, false, {},
-                                         node->token.lexeme, true, methodNode->isConstructor, 0, {}, {},
-                                         methodNode->returnsReference, methodNode->returnReferenceConst,
-                                         methodNode->isDestructor};
-                for (AstNode* parameter = methodNode->firstChild;
-                     parameter && parameter->kind == NodeKind::Parameter; parameter = parameter->nextSibling) {
-                    method.parameters.push_back(parameter->declaredType);
-                    method.parameterNames.push_back(parameter->token.lexeme);
-                    method.parameterModes.push_back(parameter->parameterMode);
-                    if (parameter->firstChild) ++method.defaultArgumentCount;
+    const auto registerDefinitions = [this](AstNode* definitionRoot) {
+        for (AstNode* node : TopLevelDeclarations(definitionRoot))
+            if (node->kind == NodeKind::ClassDecl) classNodes_[node->token.lexeme] = node;
+        for (AstNode* node : TopLevelDeclarations(definitionRoot)) {
+            if (node->kind == NodeKind::FunctionDecl && !node->isDeleted) {
+                FunctionSignature signature{
+                    node->token.lexeme, node->declaredType, {}, false, {}, {}, false,
+                    false, 0, {}, {}, node->returnsReference,
+                    node->returnReferenceConst, false};
+                for (AstNode* parameter = node->firstChild;
+                     parameter && parameter->kind == NodeKind::Parameter;
+                     parameter = parameter->nextSibling) {
+                    signature.parameters.push_back(parameter->declaredType);
+                    signature.parameterNames.push_back(parameter->token.lexeme);
+                    signature.parameterModes.push_back(parameter->parameterMode);
+                    if (parameter->firstChild) ++signature.defaultArgumentCount;
                 }
-                functionNodes_[FunctionKey(method)] = methodNode;
+                functionNodes_[FunctionKey(signature)] = node;
+            }
+            if (node->kind == NodeKind::ClassDecl) {
+                for (AstNode* methodNode = node->firstChild; methodNode;
+                     methodNode = methodNode->nextSibling) {
+                    if (methodNode->kind != NodeKind::FunctionDecl || methodNode->isDeleted)
+                        continue;
+                    FunctionSignature method{
+                        methodNode->token.lexeme, methodNode->declaredType, {}, false, {},
+                        node->token.lexeme, true, methodNode->isConstructor, 0, {}, {},
+                        methodNode->returnsReference, methodNode->returnReferenceConst,
+                        methodNode->isDestructor};
+                    for (AstNode* parameter = methodNode->firstChild;
+                         parameter && parameter->kind == NodeKind::Parameter;
+                         parameter = parameter->nextSibling) {
+                        method.parameters.push_back(parameter->declaredType);
+                        method.parameterNames.push_back(parameter->token.lexeme);
+                        method.parameterModes.push_back(parameter->parameterMode);
+                        if (parameter->firstChild) ++method.defaultArgumentCount;
+                    }
+                    functionNodes_[FunctionKey(method)] = methodNode;
+                }
             }
         }
-    }
+    };
+    for (AstNode* definitionRoot : definitionRoots) registerDefinitions(definitionRoot);
+    registerDefinitions(root);
     for (const auto& signature : signatures_) {
         if (signature.host) {
             hostIds_[FunctionKey(signature)] = signature.id;

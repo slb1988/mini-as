@@ -155,6 +155,21 @@ int main(int argc, char** argv) {
         engine->ShutDownAndRelease();
         return 8;
     }
+    if (std::string(argv[1]).find("registered_named_types") != std::string::npos) {
+        asIScriptFunction* detached = nullptr;
+        if (module->CompileFunction("dynamic-detached",
+                "int detached_probe() { return main(); }", 0, 0, &detached) < 0 ||
+            !detached || module->GetFunctionByDecl("int detached_probe()") ||
+            module->CompileFunction("dynamic-added",
+                "int dynamic_probe() { return main(); }", 0,
+                asCOMP_ADD_TO_MODULE, nullptr) < 0 ||
+            !module->GetFunctionByDecl("int dynamic_probe()")) {
+            if (detached) detached->Release();
+            engine->ShutDownAndRelease();
+            return 8;
+        }
+        detached->Release();
+    }
     asIScriptFunction* function = module->GetFunctionByDecl("int main()");
     if (!function) { engine->ShutDownAndRelease(); return 9; }
     asIScriptContext* context = engine->CreateContext();

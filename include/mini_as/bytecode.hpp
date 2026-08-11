@@ -122,7 +122,8 @@ public:
                            const std::vector<ClassSignature>& classes = {},
                            const std::vector<GlobalSignature>& globals = {},
                            const std::vector<EnumSignature>& enums = {},
-                           const std::vector<FuncdefSignature>& funcdefs = {});
+                           const std::vector<FuncdefSignature>& funcdefs = {},
+                           const std::vector<AstNode*>& definitionRoots = {});
 
 private:
     using ReferenceReceiverMap = std::unordered_map<const AstNode*, VariableId>;

@@ -64,6 +64,8 @@ Important compiler abstractions:
   disassembler, module bytecode metadata.
 - `include/mini_as/vm.hpp`, `src/vm.cpp`: execution, calls, suspension, and
   exception locations.
+- `include/mini_as/coroutine.hpp`, `src/coroutine.cpp`: cooperative scheduling,
+  yield registration, cancellation, and completed-result retention.
 - `include/mini_as/engine.hpp`, `src/engine.cpp`: public Engine/Module/Context
   lifecycle and module snapshots.
 - `include/mini_as/generic.hpp`, `src/generic.cpp`: portable host registration
@@ -149,9 +151,9 @@ Do not stage generated build directories or unrelated user changes. Inspect
 
 The completed stage notes are authoritative. The latest alignment stage is:
 
-- Stage 87 context pooling.
+- Stage 88 cooperative coroutines.
 
-The next planned item is Stage 88, cooperative coroutines.
+The next planned item is Stage 89, module-global and object-graph serialization.
 Confirm the latest
 git history and `docs/stages/` before choosing the next stage number.
 
@@ -301,6 +303,11 @@ git history and `docs/stages/` before choosing the next stage number.
   before storing it under `unique_ptr`; active and suspended contexts must be
   finished or aborted first. Unprepare keeps context configuration such as the
   line callback but releases execution state and the retained module image.
+- `CoroutineScheduler` is single-threaded and must die before its engine. A
+  script `yield()` only requests suspension; the statement completes and the
+  next bytecode suspension cue returns control. Defer cancellation of the
+  currently active coroutine until `Execute()` returns, then send every terminal
+  context through `ReturnContext()` so configured pools remain authoritative.
 - Preserve the last successful module image on parser, type-check, bytecode, or
   global-initializer failure.
 - Do not edit compatibility expectations merely to make mini and official

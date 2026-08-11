@@ -13,6 +13,7 @@ add_library(mini_angelscript
   src/bytecode_io.cpp
   src/compat.cpp
   src/constant_evaluator.cpp
+  src/coroutine.cpp
   src/core.cpp
   src/engine.cpp
   src/generic.cpp
@@ -45,6 +46,7 @@ add_executable(mini_as_tests
   tests/test_types.cpp
   tests/test_bytecode.cpp
   tests/test_constant_evaluator.cpp
+  tests/test_coroutine.cpp
   tests/test_compat.cpp
   tests/test_vm.cpp
   tests/test_engine.cpp

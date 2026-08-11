@@ -16,6 +16,7 @@
 namespace mini_as {
 
 class RefObject;
+using ReferenceVisitor = std::function<void(RefObject*)>;
 struct WeakRefState {
     std::mutex mutex;
     bool alive = true;
@@ -140,6 +141,8 @@ bool operator==(const IntegerStorage& left, const IntegerStorage& right);
 struct HostValueStorage {
     std::string typeName;
     std::any value;
+    std::function<void(const std::any&, const ReferenceVisitor&)> enumerateReferences;
+    std::function<void(std::any&)> clearReferences;
 };
 
 bool operator==(const HostValueStorage& left, const HostValueStorage& right);
@@ -218,7 +221,30 @@ public:
     template <typename T>
     static Value HostValue(std::string typeName, T value) {
         Value result;
-        result.storage_ = HostValueStorage{std::move(typeName), std::any(std::move(value))};
+        result.storage_ = HostValueStorage{
+            std::move(typeName), std::any(std::move(value)), {}, {}};
+        return result;
+    }
+
+    template <typename T>
+    static Value ManagedHostValue(
+        std::string typeName, T value,
+        std::function<void(const T&, const ReferenceVisitor&)> enumerateReferences,
+        std::function<void(T&)> clearReferences) {
+        Value result;
+        HostValueStorage storage;
+        storage.typeName = std::move(typeName);
+        storage.value = std::any(std::move(value));
+        storage.enumerateReferences =
+            [enumerateReferences = std::move(enumerateReferences)](
+                const std::any& stored, const ReferenceVisitor& visitor) {
+                enumerateReferences(std::any_cast<const T&>(stored), visitor);
+            };
+        storage.clearReferences =
+            [clearReferences = std::move(clearReferences)](std::any& stored) {
+                clearReferences(std::any_cast<T&>(stored));
+            };
+        result.storage_ = std::move(storage);
         return result;
     }
 
@@ -228,6 +254,8 @@ public:
     std::int64_t SignedInteger() const;
     std::uint64_t UnsignedInteger() const;
     const Storage& Raw() const;
+    void EnumerateReferences(const ReferenceVisitor& visitor) const;
+    void ClearReferences();
 
     template <typename T>
     const T& As() const {

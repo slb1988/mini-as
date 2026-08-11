@@ -250,6 +250,10 @@ git history and `docs/stages/` before choosing the next stage number.
   It stores arbitrary C++ `Value`s, but scripts currently see typed overloads;
   preserve that boundary until wildcard parameters are implemented. Registered
   GC reference types must opt in through `RegisterObjectType(name, true)`.
+- Registered value types that own strong object references must use
+  `Value::ManagedHostValue` and provide enumerate/clear callbacks. Containers
+  and script fields delegate GC traversal to `Value`; do not inspect the
+  variant and assume every object-typed value is an `ObjectHandle`.
 - Preserve the last successful module image on parser, type-check, bytecode, or
   global-initializer failure.
 - Do not edit compatibility expectations merely to make mini and official

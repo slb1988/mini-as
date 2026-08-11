@@ -8,21 +8,6 @@
 namespace mini_as::addons {
 namespace {
 
-void VisitValue(const Value& value, const std::function<void(RefObject*)>& visitor) {
-    if (const auto* object = std::get_if<ObjectHandle>(&value.Raw())) {
-        if (*object) visitor(object->Get());
-        return;
-    }
-    if (const auto* function = std::get_if<FunctionHandle>(&value.Raw())) {
-        if (function->object) visitor(function->object.Get());
-        for (const auto& capture : function->captures)
-            if (capture) VisitValue(capture->value, visitor);
-        return;
-    }
-    if (const auto* cell = std::get_if<CapturedCellHandle>(&value.Raw()))
-        if (*cell) VisitValue((*cell)->value, visitor);
-}
-
 ScriptDictionary* RequireDictionary(GenericCall& call) {
     auto* dictionary = dynamic_cast<ScriptDictionary*>(call.GetObject().Get());
     if (!dictionary) throw std::runtime_error("invalid dictionary receiver");
@@ -150,10 +135,13 @@ const std::string& ScriptDictionary::KeyAt(std::size_t iterator) const {
 
 void ScriptDictionary::EnumerateReferences(
     const std::function<void(RefObject*)>& visitor) const {
-    for (const auto& entry : values_) VisitValue(entry.second, visitor);
+    for (const auto& entry : values_) entry.second.EnumerateReferences(visitor);
 }
 
-void ScriptDictionary::ClearReferences() { values_.clear(); }
+void ScriptDictionary::ClearReferences() {
+    for (auto& entry : values_) entry.second.ClearReferences();
+    values_.clear();
+}
 
 bool RegisterScriptDictionary(ScriptEngine& engine) {
     if (!engine.GetTypeInfo("array<T>")) return false;

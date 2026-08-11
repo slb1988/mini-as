@@ -2,11 +2,45 @@
 #include "mini_as/engine.hpp"
 
 namespace {
+struct ManagedLink {
+    mini_as::ObjectHandle object;
+};
+
+mini_as::Value MakeManagedLink(mini_as::ObjectHandle object = {}) {
+    return mini_as::Value::ManagedHostValue<ManagedLink>(
+        "ManagedLink", ManagedLink{std::move(object)},
+        [](const ManagedLink& link, const mini_as::ReferenceVisitor& visitor) {
+            if (link.object) visitor(link.object.Get());
+        },
+        [](ManagedLink& link) { link.object = {}; });
+}
+
 mini_as::ObjectHandle BuildCycle(mini_as::ScriptEngine& engine, mini_as::ScriptModule& module) {
     auto context = engine.CreateContext();
     if (!context->Prepare(module.GetFunctionByName("makeCycle"))) throw std::runtime_error("prepare failed");
     if (context->Execute() != mini_as::ExecutionState::Finished) throw std::runtime_error(context->GetExceptionString());
     return context->GetReturnValue().As<mini_as::ObjectHandle>();
+}
+
+TEST_CASE(gc_traverses_references_owned_by_registered_host_values) {
+    auto engine = mini_as::CreateScriptEngine();
+    CHECK(engine->RegisterValueType("ManagedLink", MakeManagedLink()) != nullptr);
+    auto* module = engine->GetModule("gc-managed-host-value");
+    module->AddScriptSection("gc-managed-host-value",
+        "class Node { ManagedLink link; } Node@ make() { return Node(); }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("Node@ make()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    mini_as::ObjectHandle root = context->GetReturnValue().As<mini_as::ObjectHandle>();
+    context.reset();
+    auto* object = dynamic_cast<mini_as::ScriptObject*>(root.Get());
+    CHECK(object != nullptr);
+    object->SetField(0, MakeManagedLink(root));
+    root = {};
+    CHECK(engine->GetTrackedObjectCount() == 1);
+    CHECK(engine->CollectGarbage() == 1);
+    CHECK(engine->GetTrackedObjectCount() == 0);
 }
 }
 

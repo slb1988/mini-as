@@ -38,21 +38,6 @@ std::size_t ArrayIndex(const GenericCall& call, std::size_t argument) {
     return static_cast<std::size_t>(value);
 }
 
-void VisitValue(const Value& value, const std::function<void(RefObject*)>& visitor) {
-    if (const auto* object = std::get_if<ObjectHandle>(&value.Raw())) {
-        if (*object) visitor(object->Get());
-        return;
-    }
-    if (const auto* function = std::get_if<FunctionHandle>(&value.Raw())) {
-        if (function->object) visitor(function->object.Get());
-        for (const auto& capture : function->captures)
-            if (capture) VisitValue(capture->value, visitor);
-        return;
-    }
-    if (const auto* cell = std::get_if<CapturedCellHandle>(&value.Raw()))
-        if (*cell) VisitValue((*cell)->value, visitor);
-}
-
 } // namespace
 
 ScriptArray::ScriptArray(const TypeInfo* type, DataType elementType,
@@ -83,10 +68,11 @@ void ScriptArray::Set(std::size_t index, Value value) {
 }
 void ScriptArray::EnumerateReferences(
     const std::function<void(RefObject*)>& visitor) const {
-    for (const auto& element : elements_) VisitValue(element, visitor);
+    for (const auto& element : elements_) element.EnumerateReferences(visitor);
 }
 void ScriptArray::ClearReferences() {
-    for (auto& element : elements_) element = defaultElement_;
+    for (auto& element : elements_) element.ClearReferences();
+    defaultElement_.ClearReferences();
     elements_.clear();
     defaultElement_ = Value{};
 }

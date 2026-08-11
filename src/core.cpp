@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <iomanip>
 #include <sstream>
+#include <unordered_set>
 #include <utility>
 
 namespace mini_as {
@@ -134,6 +135,36 @@ bool operator==(const HostValueStorage& left, const HostValueStorage& right) {
            !left.value.has_value() && !right.value.has_value();
 }
 
+namespace {
+
+void EnumerateValueReferences(const Value& value, const ReferenceVisitor& visitor,
+                              std::unordered_set<const CapturedCell*>& visited) {
+    if (const auto* object = std::get_if<ObjectHandle>(&value.Raw())) {
+        if (*object) visitor(object->Get());
+        return;
+    }
+    if (const auto* function = std::get_if<FunctionHandle>(&value.Raw())) {
+        if (function->object) visitor(function->object.Get());
+        for (const auto& cell : function->captures)
+            if (cell && visited.insert(cell.get()).second)
+                EnumerateValueReferences(cell->value, visitor, visited);
+        return;
+    }
+    if (const auto* cell = std::get_if<CapturedCellHandle>(&value.Raw())) {
+        if (*cell && visited.insert(cell->get()).second)
+            EnumerateValueReferences((*cell)->value, visitor, visited);
+        return;
+    }
+    if (const auto* host = std::get_if<HostValueStorage>(&value.Raw())) {
+        if (host->enumerateReferences) host->enumerateReferences(host->value, visitor);
+        return;
+    }
+    if (const auto* reference = std::get_if<ReferenceStorage>(&value.Raw()))
+        if (reference->object) visitor(reference->object.Get());
+}
+
+} // namespace
+
 bool operator==(const ReferenceStorage& left, const ReferenceStorage& right) {
     return left.kind == right.kind && left.type == right.type && left.slot == right.slot &&
            left.object == right.object;
@@ -222,6 +253,34 @@ std::int64_t Value::SignedInteger() const {
     return static_cast<std::int64_t>((value->bits ^ sign) - sign);
 }
 const Value::Storage& Value::Raw() const { return storage_; }
+
+void Value::EnumerateReferences(const ReferenceVisitor& visitor) const {
+    std::unordered_set<const CapturedCell*> visited;
+    EnumerateValueReferences(*this, visitor, visited);
+}
+
+void Value::ClearReferences() {
+    if (auto* object = std::get_if<ObjectHandle>(&storage_)) {
+        *object = {};
+        return;
+    }
+    if (auto* function = std::get_if<FunctionHandle>(&storage_)) {
+        function->object = {};
+        function->captures.clear();
+        return;
+    }
+    if (auto* cell = std::get_if<CapturedCellHandle>(&storage_)) {
+        if (*cell) (*cell)->value.ClearReferences();
+        cell->reset();
+        return;
+    }
+    if (auto* host = std::get_if<HostValueStorage>(&storage_)) {
+        if (host->clearReferences) host->clearReferences(host->value);
+        return;
+    }
+    if (auto* reference = std::get_if<ReferenceStorage>(&storage_))
+        reference->object = {};
+}
 
 std::string Value::ToString() const {
     if (IsVoid()) return "void";

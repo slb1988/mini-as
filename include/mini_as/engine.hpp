@@ -17,6 +17,24 @@ std::string_view Version();
 
 enum class ModulePolicy { AlwaysCreate, CreateIfMissing, OnlyIfExists };
 
+enum class TypeMetadataKind { Object, Enum, Typedef, Funcdef };
+
+struct TypeMetadata {
+    TypeId id;
+    std::string name;
+    TypeMetadataKind kind = TypeMetadataKind::Object;
+    bool host = false;
+    bool valueType = false;
+    bool interfaceType = false;
+    std::string baseClass;
+    std::vector<std::string> interfaces;
+    std::vector<FieldSignature> fields;
+    std::vector<FunctionSignature> methods;
+    std::vector<EnumValueSignature> enumValues;
+    DataType underlyingType = DataType::Invalid();
+    FunctionSignature funcdef;
+};
+
 class ScriptEngine;
 
 struct ModuleImage {
@@ -103,6 +121,10 @@ public:
                                 GenericPropertyGetter getter,
                                 GenericPropertySetter setter = {});
     const TypeInfo* GetTypeInfo(std::string_view name) const;
+    std::size_t GetTypeMetadataCount() const;
+    const TypeMetadata* GetTypeMetadataByIndex(std::size_t index) const;
+    const TypeMetadata* GetTypeMetadataById(TypeId id) const;
+    const TypeMetadata* GetTypeMetadataByName(std::string_view name) const;
     std::size_t CollectGarbage();
     std::size_t GetTrackedObjectCount() const;
     ScriptModule* GetModule(std::string name = {},
@@ -119,6 +141,11 @@ private:
     DataType ResolveRegisteredType(DataType type) const;
     void ResolveRegisteredTypes(FunctionSignature& signature) const;
     bool HasRegisteredType(std::string_view name) const;
+    void PublishTypeMetadata(TypeMetadata metadata);
+    void PublishObjectMetadata(const ClassSignature& signature);
+    void PublishEnumMetadata(const EnumSignature& signature, bool host);
+    void PublishTypedefMetadata(const TypedefSignature& signature, bool host);
+    void PublishFuncdefMetadata(const FuncdefSignature& signature, bool host);
     const TypeInfo* RegisterScriptType(const ClassSignature& type);
     void LinkScriptType(const ClassSignature& type);
     FunctionId GetOrCreateFunctionId(std::string key);
@@ -138,6 +165,7 @@ private:
     std::vector<EnumSignature> hostEnums_;
     std::vector<TypedefSignature> hostTypedefs_;
     std::vector<FuncdefSignature> hostFuncdefs_;
+    std::deque<TypeMetadata> typeMetadata_;
     GarbageCollector garbageCollector_;
     std::unordered_map<std::string, std::unique_ptr<TypeInfo>> objectTypes_;
     std::unordered_map<std::string, FunctionId> functionIds_;

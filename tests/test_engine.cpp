@@ -107,6 +107,92 @@ TEST_CASE(module_rebuild_preserves_function_and_type_ids) {
     CHECK(engine->GetTypeInfo("Box")->id == typeId);
 }
 
+TEST_CASE(host_type_reflection_metadata_has_stable_addresses_and_complete_kinds) {
+    auto engine = mini_as::CreateScriptEngine();
+    CHECK(engine->RegisterObjectType("HostBox") != nullptr);
+    const auto* hostBox = engine->GetTypeMetadataByName("HostBox");
+    CHECK(hostBox != nullptr);
+    CHECK(hostBox->kind == mini_as::TypeMetadataKind::Object);
+    CHECK(hostBox->host);
+    CHECK(engine->RegisterObjectMethod("HostBox", "int read() const",
+        [](mini_as::GenericCall& call) { call.SetReturnInt(42); }));
+    CHECK(engine->GetTypeMetadataByName("HostBox") == hostBox);
+    CHECK(hostBox->methods.size() == 1);
+    CHECK(hostBox->methods[0].Declaration() == "int read() const");
+
+    CHECK(engine->RegisterEnum("HostMode"));
+    const auto* hostMode = engine->GetTypeMetadataByName("HostMode");
+    CHECK(hostMode != nullptr);
+    CHECK(engine->RegisterEnumValue("HostMode", "HostReady", 42));
+    CHECK(engine->GetTypeMetadataByName("HostMode") == hostMode);
+    CHECK(hostMode->kind == mini_as::TypeMetadataKind::Enum);
+    CHECK(hostMode->enumValues.size() == 1);
+    CHECK(hostMode->enumValues[0].value == 42);
+
+    CHECK(engine->RegisterTypedef("HostScore", mini_as::DataType::Int()));
+    CHECK(engine->RegisterFuncdef("HostScore HostCallback(HostScore value)"));
+    CHECK(engine->GetTypeMetadataCount() == 4);
+    for (std::size_t index = 0; index < engine->GetTypeMetadataCount(); ++index) {
+        const auto* metadata = engine->GetTypeMetadataByIndex(index);
+        CHECK(metadata != nullptr);
+        CHECK(engine->GetTypeMetadataById(metadata->id) == metadata);
+        CHECK(engine->GetTypeMetadataByName(metadata->name) == metadata);
+    }
+    const auto* alias = engine->GetTypeMetadataByName("HostScore");
+    CHECK(alias != nullptr);
+    CHECK(alias->kind == mini_as::TypeMetadataKind::Typedef);
+    CHECK(alias->underlyingType == mini_as::DataType::Int());
+    const auto* callback = engine->GetTypeMetadataByName("HostCallback");
+    CHECK(callback != nullptr);
+    CHECK(callback->kind == mini_as::TypeMetadataKind::Funcdef);
+    CHECK(callback->funcdef.returnType == mini_as::DataType::Int());
+    CHECK(engine->GetTypeMetadataByIndex(4) == nullptr);
+    CHECK(engine->GetTypeMetadataById(mini_as::TypeId{}) == nullptr);
+    CHECK(engine->GetTypeMetadataByName("Missing") == nullptr);
+}
+
+TEST_CASE(script_type_reflection_publishes_successful_rebuilds_atomically) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("type-reflection");
+    module->AddScriptSection("v1",
+        "class Box { int value; int read() { return value; } } "
+        "enum Mode { Ready = 41, Done } typedef uint Bits; "
+        "funcdef int Callback(int value); int main() { return Done; }");
+    CHECK(module->Build());
+
+    const auto* box = engine->GetTypeMetadataByName("Box");
+    CHECK(box != nullptr);
+    CHECK(!box->host);
+    CHECK(box->kind == mini_as::TypeMetadataKind::Object);
+    CHECK(box->fields.size() == 1);
+    CHECK(box->methods.size() == 1);
+    const auto* mode = engine->GetTypeMetadataByName("Mode");
+    CHECK(mode != nullptr);
+    CHECK(mode->enumValues.size() == 2);
+    CHECK(mode->enumValues[1].value == 42);
+    const auto* bits = engine->GetTypeMetadataByName("Bits");
+    CHECK(bits != nullptr);
+    CHECK(bits->underlyingType == mini_as::DataType::UInt());
+    const auto* callback = engine->GetTypeMetadataByName("Callback");
+    CHECK(callback != nullptr);
+    CHECK(callback->funcdef.parameters == std::vector<mini_as::DataType>{mini_as::DataType::Int()});
+
+    module->AddScriptSection("v2",
+        "class Box { int value; int extra; int read() { return value + extra; } } "
+        "int main() { return 42; }");
+    CHECK(module->Build());
+    CHECK(engine->GetTypeMetadataByName("Box") == box);
+    CHECK(box->fields.size() == 2);
+
+    module->AddScriptSection("failed",
+        "class Box { float replaced; } int zero = 0; int bad = 1 / zero; "
+        "int main() { return 0; }");
+    CHECK(!module->Build());
+    CHECK(engine->GetTypeMetadataByName("Box") == box);
+    CHECK(box->fields.size() == 2);
+    CHECK(box->fields[0].name == "value");
+}
+
 TEST_CASE(multiple_declarations_execute_in_source_order) {
     auto engine = mini_as::CreateScriptEngine();
     auto* module = engine->GetModule("multiple-declarations");

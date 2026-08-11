@@ -49,6 +49,12 @@ int main(int argc, char** argv) {
         [](mini_as::GenericCall& call) {
             call.SetReturnInt(call.GetArgInt(0) + 2);
         })) return 5;
+    const auto* reflectedEnum = engine->GetTypeMetadataByName("HostColor");
+    const auto* reflectedAlias = engine->GetTypeMetadataByName("HostScore");
+    const auto* reflectedFuncdef = engine->GetTypeMetadataByName("HostTransform");
+    if (!reflectedEnum || reflectedEnum->enumValues.size() != 2 ||
+        !reflectedAlias || reflectedAlias->underlyingType != mini_as::DataType::Int() ||
+        !reflectedFuncdef || reflectedFuncdef->funcdef.parameters.size() != 1) return 5;
     if (!engine->RegisterValueType("HostValue",
         mini_as::Value::HostValue("HostValue", CompatValue{}))) return 6;
     if (!engine->RegisterGlobalFunction("int ReadHostValue(HostValue value)",

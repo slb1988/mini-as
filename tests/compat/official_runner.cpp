@@ -99,6 +99,16 @@ int main(int argc, char** argv) {
         engine->ShutDownAndRelease();
         return 5;
     }
+    asITypeInfo* reflectedEnum = engine->GetTypeInfoByName("HostColor");
+    asITypeInfo* reflectedAlias = engine->GetTypeInfoByName("HostScore");
+    asITypeInfo* reflectedFuncdef = engine->GetFuncdefCount() == 1
+        ? engine->GetFuncdefByIndex(0) : nullptr;
+    if (!reflectedEnum || reflectedEnum->GetEnumValueCount() != 2 ||
+        !reflectedAlias || reflectedAlias->GetTypedefTypeId() < 0 ||
+        !reflectedFuncdef || !reflectedFuncdef->GetFuncdefSignature()) {
+        engine->ShutDownAndRelease();
+        return 5;
+    }
     if (engine->RegisterObjectType("HostValue", sizeof(CompatValue),
             asOBJ_VALUE | asGetTypeTraits<CompatValue>()) < 0 ||
         engine->RegisterObjectBehaviour("HostValue", asBEHAVE_CONSTRUCT, "void f()",

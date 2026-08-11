@@ -143,6 +143,26 @@ bool ScriptModule::Build() {
                            "global initialization failed: " + initialized.exception);
         return false;
     }
+    for (const auto& type : classes)
+        if (!type.host) engine_.PublishObjectMetadata(type);
+    for (const auto& type : enums) {
+        bool host = false;
+        for (const auto& registered : engine_.hostEnums_)
+            host = host || registered.name == type.name;
+        if (!host) engine_.PublishEnumMetadata(type, false);
+    }
+    for (const auto& type : typedefs) {
+        bool host = false;
+        for (const auto& registered : engine_.hostTypedefs_)
+            host = host || registered.name == type.name;
+        if (!host) engine_.PublishTypedefMetadata(type, false);
+    }
+    for (const auto& type : funcdefs) {
+        bool host = false;
+        for (const auto& registered : engine_.hostFuncdefs_)
+            host = host || registered.name == type.name;
+        if (!host) engine_.PublishFuncdefMetadata(type, false);
+    }
     auto nextImage = std::make_shared<ModuleImage>();
     nextImage->bytecode = std::move(candidate);
     nextImage->finalizerBytecode = std::move(finalizerModule);
@@ -325,6 +345,11 @@ const TypeInfo* ScriptEngine::RegisterObjectType(std::string name) {
     type->host = true;
     const TypeInfo* result = type.get();
     objectTypes_.emplace(std::move(name), std::move(type));
+    ClassSignature signature;
+    signature.name = result->name;
+    signature.id = result->id;
+    signature.host = true;
+    PublishObjectMetadata(signature);
     return result;
 }
 
@@ -339,6 +364,13 @@ const TypeInfo* ScriptEngine::RegisterValueType(std::string name, Value defaultV
     type->defaultValue = std::move(defaultValue);
     const TypeInfo* result = type.get();
     objectTypes_.emplace(std::move(name), std::move(type));
+    ClassSignature signature;
+    signature.name = result->name;
+    signature.id = result->id;
+    signature.host = true;
+    signature.valueType = true;
+    signature.defaultValue = result->defaultValue;
+    PublishObjectMetadata(signature);
     return result;
 }
 
@@ -351,6 +383,7 @@ bool ScriptEngine::RegisterEnum(std::string name) {
     }
     hostEnums_.push_back({std::move(name), {}, {}});
     hostEnums_.back().id = GetOrCreateTypeId(hostEnums_.back().name);
+    PublishEnumMetadata(hostEnums_.back(), true);
     return true;
 }
 
@@ -380,6 +413,7 @@ bool ScriptEngine::RegisterEnumValue(std::string enumName, std::string valueName
         }
     }
     type->values.push_back({std::move(valueName), value});
+    PublishEnumMetadata(*type, true);
     return true;
 }
 
@@ -395,6 +429,7 @@ bool ScriptEngine::RegisterTypedef(std::string name, DataType underlyingType) {
     }
     hostTypedefs_.push_back({std::move(name), std::move(underlyingType), {}});
     hostTypedefs_.back().id = GetOrCreateTypeId(hostTypedefs_.back().name);
+    PublishTypedefMetadata(hostTypedefs_.back(), true);
     return true;
 }
 
@@ -413,6 +448,7 @@ bool ScriptEngine::RegisterFuncdef(std::string declaration) {
     FuncdefSignature type{signature->name, std::move(*signature), {}, {}};
     type.id = GetOrCreateTypeId(type.name);
     hostFuncdefs_.push_back(std::move(type));
+    PublishFuncdefMetadata(hostFuncdefs_.back(), true);
     return true;
 }
 
@@ -452,6 +488,8 @@ bool ScriptEngine::RegisterObjectFactory(std::string typeName, std::string decla
     signature->id = GetOrCreateFunctionId("$factory\n" + typeName + "\n" +
                                           signature->Declaration());
     hostFunctions_.push_back({std::move(*signature), std::move(callback)});
+    for (const auto& registered : HostTypeSignatures())
+        if (registered.name == typeName) PublishObjectMetadata(registered);
     return true;
 }
 
@@ -495,6 +533,8 @@ bool ScriptEngine::RegisterObjectMethod(std::string typeName, std::string declar
     signature->id = GetOrCreateFunctionId("$host-method\n" + typeName + "\n" +
                                           signature->Declaration());
     hostFunctions_.push_back({std::move(*signature), std::move(callback)});
+    for (const auto& registered : HostTypeSignatures())
+        if (registered.name == typeName) PublishObjectMetadata(registered);
     return true;
 }
 
@@ -554,12 +594,32 @@ bool ScriptEngine::RegisterObjectProperty(std::string typeName, std::string decl
     const auto* property = &hostObjectProperties_.back();
     type->second->fields.emplace_back(property->signature.name, property->signature.type);
     type->second->hostProperties.push_back(property);
+    for (const auto& registered : HostTypeSignatures())
+        if (registered.name == typeName) PublishObjectMetadata(registered);
     return true;
 }
 
 const TypeInfo* ScriptEngine::GetTypeInfo(std::string_view name) const {
     const auto found = objectTypes_.find(std::string(name));
     return found == objectTypes_.end() ? nullptr : found->second.get();
+}
+
+std::size_t ScriptEngine::GetTypeMetadataCount() const { return typeMetadata_.size(); }
+
+const TypeMetadata* ScriptEngine::GetTypeMetadataByIndex(std::size_t index) const {
+    return index < typeMetadata_.size() ? &typeMetadata_[index] : nullptr;
+}
+
+const TypeMetadata* ScriptEngine::GetTypeMetadataById(TypeId id) const {
+    for (const auto& metadata : typeMetadata_)
+        if (metadata.id == id) return &metadata;
+    return nullptr;
+}
+
+const TypeMetadata* ScriptEngine::GetTypeMetadataByName(std::string_view name) const {
+    for (const auto& metadata : typeMetadata_)
+        if (metadata.name == name) return &metadata;
+    return nullptr;
 }
 
 std::size_t ScriptEngine::CollectGarbage() {
@@ -704,6 +764,60 @@ std::vector<ClassSignature> ScriptEngine::HostTypeSignatures() const {
         signatures.push_back(std::move(signature));
     }
     return signatures;
+}
+
+void ScriptEngine::PublishTypeMetadata(TypeMetadata metadata) {
+    for (auto& existing : typeMetadata_) {
+        if (existing.id != metadata.id && existing.name != metadata.name) continue;
+        existing = std::move(metadata);
+        return;
+    }
+    typeMetadata_.push_back(std::move(metadata));
+}
+
+void ScriptEngine::PublishObjectMetadata(const ClassSignature& signature) {
+    TypeMetadata metadata;
+    metadata.id = signature.id;
+    metadata.name = signature.name;
+    metadata.kind = TypeMetadataKind::Object;
+    metadata.host = signature.host;
+    metadata.valueType = signature.valueType;
+    metadata.interfaceType = signature.interfaceType;
+    metadata.baseClass = signature.baseClass;
+    metadata.interfaces = signature.interfaces;
+    metadata.fields = signature.fields;
+    metadata.methods = signature.methods;
+    PublishTypeMetadata(std::move(metadata));
+}
+
+void ScriptEngine::PublishEnumMetadata(const EnumSignature& signature, bool host) {
+    TypeMetadata metadata;
+    metadata.id = signature.id;
+    metadata.name = signature.name;
+    metadata.kind = TypeMetadataKind::Enum;
+    metadata.host = host;
+    metadata.enumValues = signature.values;
+    PublishTypeMetadata(std::move(metadata));
+}
+
+void ScriptEngine::PublishTypedefMetadata(const TypedefSignature& signature, bool host) {
+    TypeMetadata metadata;
+    metadata.id = signature.id;
+    metadata.name = signature.name;
+    metadata.kind = TypeMetadataKind::Typedef;
+    metadata.host = host;
+    metadata.underlyingType = signature.underlyingType;
+    PublishTypeMetadata(std::move(metadata));
+}
+
+void ScriptEngine::PublishFuncdefMetadata(const FuncdefSignature& signature, bool host) {
+    TypeMetadata metadata;
+    metadata.id = signature.id;
+    metadata.name = signature.name;
+    metadata.kind = TypeMetadataKind::Funcdef;
+    metadata.host = host;
+    metadata.funcdef = signature.signature;
+    PublishTypeMetadata(std::move(metadata));
 }
 
 DataType ScriptEngine::ResolveRegisteredType(DataType type) const {

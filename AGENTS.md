@@ -150,11 +150,11 @@ Do not stage generated build directories or unrelated user changes. Inspect
 The completed stage notes are authoritative. At the time this guide was added,
 the latest language stage is:
 
-- Stage 64 registered enums, typedefs, and funcdefs by seeding the parser and type
-  checker catalogs and reusing typed enum constants plus function-handle bytecode.
+- Stage 65 stable type reflection metadata for objects, enums, typedefs, and
+  funcdefs, published only after successful module builds.
 
-The next planned feature is stable type reflection metadata. Confirm the latest git
-history and `docs/stages/` before choosing the next stage number.
+The next planned feature is stable function reflection metadata. Confirm the latest
+git history and `docs/stages/` before choosing the next stage number.
 
 ## Common pitfalls
 
@@ -184,6 +184,9 @@ history and `docs/stages/` before choosing the next stage number.
 - Registered enums, typedefs, and funcdefs must be injected into `Parser` before
   parsing and into `TypeChecker` before `Check`; otherwise their surface spelling
   degrades to an object type and later bytecode metadata will be inconsistent.
+- `TypeMetadata` addresses are stable because the engine owns them in a deque.
+  Refresh records in place, and publish script metadata only after the complete
+  build including global initialization succeeds.
 - Preserve the last successful module image on parser, type-check, bytecode, or
   global-initializer failure.
 - Do not edit compatibility expectations merely to make mini and official

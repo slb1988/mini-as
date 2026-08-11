@@ -109,6 +109,11 @@ int main(int argc, char** argv) {
             "dynamic-added", "int dynamic_probe() { return main(); }");
         if (!detached || module->GetFunctionByDecl("int detached_probe()") || !added ||
             module->GetFunctionByDecl("int dynamic_probe()") != added) return 13;
+        const auto* caller = module->CompileFunction(
+            "dynamic-caller", "int dynamic_caller() { return dynamic_probe(); }");
+        if (!caller || !module->RemoveFunction(added) ||
+            module->GetFunctionByDecl("int dynamic_probe()") ||
+            !module->GetFunctionByDecl("int dynamic_caller()")) return 13;
     }
     auto context = engine->CreateContext();
     if (!context->Prepare(module->GetFunctionByDecl("int main()"))) return 14;

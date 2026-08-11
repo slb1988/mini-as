@@ -149,10 +149,10 @@ Do not stage generated build directories or unrelated user changes. Inspect
 
 The completed stage notes are authoritative. The latest alignment stage is:
 
-- Stage 68 dynamic compilation of one added or detached global function against
-  a saved module compilation environment and immutable runtime snapshot.
+- Stage 69 dynamic function removal as a scope change: hidden bytecode remains
+  executable for old callers and pointers while new compilation cannot see it.
 
-The next planned feature is dynamic function removal. Confirm the latest
+The next planned feature is versioned bytecode save and load. Confirm the latest
 git history and `docs/stages/` before choosing the next stage number.
 
 ## Common pitfalls
@@ -202,6 +202,9 @@ git history and `docs/stages/` before choosing the next stage number.
   returned by earlier compilations survive later incremental compilations. A
   detached function remains executable but must not enter module lookup or later
   compilation scope.
+- Removing a function adds its id to `ModuleImage::removedFunctions` and removes
+  only its compilation signature. Keep retired bytecode in subsequent images so
+  old call descriptors continue resolving the original id.
 - Preserve the last successful module image on parser, type-check, bytecode, or
   global-initializer failure.
 - Do not edit compatibility expectations merely to make mini and official

@@ -64,6 +64,7 @@ struct ModuleImage {
     std::shared_ptr<ModuleState> state;
     ModuleCompilationEnvironment environment;
     std::vector<std::shared_ptr<const SyntaxTree>> definitionTrees;
+    std::vector<FunctionId> removedFunctions;
 };
 
 class ScriptModule {
@@ -76,6 +77,7 @@ public:
     const BytecodeFunction* GetFunctionByName(std::string_view name) const;
     const BytecodeFunction* CompileFunction(std::string sectionName, std::string source,
                                             bool addToModule = true, int lineOffset = 0);
+    bool RemoveFunction(const BytecodeFunction* function);
     const FunctionMetadata* GetFunctionMetadataByDecl(std::string_view declaration) const;
     std::size_t GetGlobalMetadataCount() const;
     const GlobalMetadata* GetGlobalMetadataByIndex(std::size_t index) const;

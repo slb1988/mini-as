@@ -169,6 +169,16 @@ int main(int argc, char** argv) {
             return 8;
         }
         detached->Release();
+        asIScriptFunction* added = module->GetFunctionByDecl("int dynamic_probe()");
+        if (!added || module->CompileFunction("dynamic-caller",
+                "int dynamic_caller() { return dynamic_probe(); }", 0,
+                asCOMP_ADD_TO_MODULE, nullptr) < 0 ||
+            module->RemoveFunction(added) < 0 ||
+            module->GetFunctionByDecl("int dynamic_probe()") ||
+            !module->GetFunctionByDecl("int dynamic_caller()")) {
+            engine->ShutDownAndRelease();
+            return 8;
+        }
     }
     asIScriptFunction* function = module->GetFunctionByDecl("int main()");
     if (!function) { engine->ShutDownAndRelease(); return 9; }

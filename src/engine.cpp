@@ -221,13 +221,19 @@ bool ScriptModule::Build() {
 
 const BytecodeFunction* ScriptModule::GetFunctionByDecl(std::string_view declaration) const {
     for (const auto& function : image_->bytecode.functions) {
+        if (std::find(image_->removedFunctions.begin(), image_->removedFunctions.end(),
+                      function.signature.id) != image_->removedFunctions.end()) continue;
         if (function.signature.Declaration() == declaration) return &function;
     }
     return nullptr;
 }
 
 const BytecodeFunction* ScriptModule::GetFunctionByName(std::string_view name) const {
-    for (const auto& function : image_->bytecode.functions) if (function.signature.name == name) return &function;
+    for (const auto& function : image_->bytecode.functions) {
+        if (std::find(image_->removedFunctions.begin(), image_->removedFunctions.end(),
+                      function.signature.id) != image_->removedFunctions.end()) continue;
+        if (function.signature.name == name) return &function;
+    }
     return nullptr;
 }
 
@@ -352,6 +358,9 @@ const BytecodeFunction* ScriptModule::CompileFunction(std::string sectionName,
             instruction.operand += static_cast<std::int32_t>(callableOffset);
         }
     }
+    for (const auto& existing : image_->bytecode.functions)
+        if (!candidate.FindFunction(existing.signature.id))
+            candidate.functions.push_back(existing);
     for (const auto& host : engine_.hostFunctions_)
         candidate.hostFunctions.push_back({host.signature.id, &host});
     for (auto& binding : candidate.globals) {
@@ -413,6 +422,26 @@ const BytecodeFunction* ScriptModule::CompileFunction(std::string sectionName,
     dynamicImages_.push_back(nextImage);
     if (addToModule) image_ = std::move(nextImage);
     return result;
+}
+
+bool ScriptModule::RemoveFunction(const BytecodeFunction* function) {
+    if (!function || function->signature.host || function->signature.method) return false;
+    const FunctionId id = function->signature.id;
+    if (!id.IsValid() ||
+        std::find(image_->removedFunctions.begin(), image_->removedFunctions.end(), id) !=
+            image_->removedFunctions.end() ||
+        !image_->bytecode.FindFunction(id)) return false;
+
+    auto nextImage = std::make_shared<ModuleImage>(*image_);
+    nextImage->removedFunctions.push_back(id);
+    auto& functions = nextImage->environment.functions;
+    functions.erase(std::remove_if(functions.begin(), functions.end(),
+        [id](const FunctionSignature& signature) { return signature.id == id; }),
+        functions.end());
+    engine_.RegisterModuleImage(nextImage);
+    dynamicImages_.push_back(image_);
+    image_ = std::move(nextImage);
+    return true;
 }
 
 const GlobalMetadata* ScriptModule::GetGlobalMetadataById(GlobalId id) const {

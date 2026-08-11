@@ -554,6 +554,76 @@ TEST_CASE(dynamic_function_failures_are_atomic_and_report_source_locations) {
     CHECK(context->GetExceptionLocation().row == 7);
 }
 
+TEST_CASE(removed_functions_leave_scope_but_existing_references_keep_executing) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    auto* module = engine->GetModule("function-removal");
+    module->AddScriptSection("base",
+        "int target() { return 40; } int caller() { return target() + 2; }");
+    CHECK(module->Build());
+    const auto* removed = module->GetFunctionByDecl("int target()");
+    CHECK(removed != nullptr);
+    CHECK(module->RemoveFunction(removed));
+    CHECK(module->GetFunctionByDecl("int target()") == nullptr);
+    CHECK(module->GetFunctionMetadataByDecl("int target()") == nullptr);
+    CHECK(!module->RemoveFunction(removed));
+    CHECK(!module->RemoveFunction(nullptr));
+
+    auto removedContext = engine->CreateContext();
+    CHECK(removedContext->Prepare(removed));
+    CHECK(removedContext->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(removedContext->GetReturnInt() == 40);
+    auto callerContext = engine->CreateContext();
+    CHECK(callerContext->Prepare(module->GetFunctionByDecl("int caller()")));
+    CHECK(callerContext->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(callerContext->GetReturnInt() == 42);
+
+    CHECK(module->CompileFunction(
+        "hidden", "int cannot_see_removed() { return target(); }") == nullptr);
+    bool hidden = false;
+    for (const auto& diagnostic : diagnostics)
+        hidden = hidden || diagnostic.message.find("target") != std::string::npos;
+    CHECK(hidden);
+
+    const auto* replacement = module->CompileFunction(
+        "replacement", "int target() { return 41; }");
+    CHECK(replacement != nullptr);
+    CHECK(replacement != removed);
+    CHECK(module->GetFunctionByDecl("int target()") == replacement);
+    const auto* newCaller = module->CompileFunction(
+        "new-caller", "int new_caller() { return target() + 1; }");
+    CHECK(newCaller != nullptr);
+    auto newCallerContext = engine->CreateContext();
+    CHECK(newCallerContext->Prepare(newCaller));
+    CHECK(newCallerContext->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(newCallerContext->GetReturnInt() == 42);
+
+    auto preservedCallerContext = engine->CreateContext();
+    CHECK(preservedCallerContext->Prepare(module->GetFunctionByDecl("int caller()")));
+    CHECK(preservedCallerContext->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(preservedCallerContext->GetReturnInt() == 42);
+}
+
+TEST_CASE(detached_and_method_functions_cannot_be_removed_from_module_scope) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("invalid-function-removal");
+    module->AddScriptSection("base",
+        "class Box { int read() { return 42; } } int main() { return 0; }");
+    CHECK(module->Build());
+    const auto* detached = module->CompileFunction(
+        "detached", "int detached_value() { return 42; }", false);
+    CHECK(detached != nullptr);
+    CHECK(!module->RemoveFunction(detached));
+    const mini_as::BytecodeFunction* method = nullptr;
+    for (const auto& candidate : module->Bytecode().functions)
+        if (candidate.signature.method && candidate.signature.name == "read") method = &candidate;
+    CHECK(method != nullptr);
+    CHECK(!module->RemoveFunction(method));
+}
+
 TEST_CASE(for_loops_execute_initializer_condition_and_increment) {
     auto engine = mini_as::CreateScriptEngine();
     auto* module = engine->GetModule("for-loop");

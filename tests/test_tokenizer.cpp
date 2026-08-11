@@ -198,3 +198,13 @@ TEST_CASE(tokenizer_recognizes_import_keyword_but_keeps_from_contextual) {
     CHECK(tokens[7].kind == mini_as::TokenKind::String);
 }
 
+TEST_CASE(tokenizer_recognizes_shared_entity_keyword) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("shared", "shared class Value {}", diagnostics);
+    const auto tokens = tokenizer.ScanAll();
+    CHECK(!diagnostics.HasErrors());
+    CHECK(tokens[0].kind == mini_as::TokenKind::Identifier);
+    CHECK(tokens[0].lexeme == "shared");
+    CHECK(tokens[1].kind == mini_as::TokenKind::KwClass);
+}
+

@@ -191,6 +191,18 @@ bool TypeChecker::Check(AstNode* root) {
     PredeclareFuncdefs(root);
     Predeclare(root);
     PredeclareGlobals(root);
+    for (const auto& funcdef : funcdefs_) {
+        if (!funcdef.shared) continue;
+        if (!IsSharedType(funcdef.signature.returnType))
+            diagnostics_.Report({"shared"}, Severity::Error,
+                "shared funcdef cannot return non-shared type '" +
+                funcdef.signature.returnType.Name() + "'");
+        for (const auto& parameter : funcdef.signature.parameters)
+            if (!IsSharedType(parameter))
+                diagnostics_.Report({"shared"}, Severity::Error,
+                    "shared funcdef cannot accept non-shared type '" +
+                    parameter.Name() + "'");
+    }
     for (AstNode* child : TopLevelDeclarations(root)) CheckNode(child);
     return !diagnostics_.HasErrors();
 }
@@ -232,6 +244,7 @@ void TypeChecker::PredeclareFuncdefs(AstNode* root) {
                                     false, 0, {}, {}, node->returnsReference,
                                     node->returnReferenceConst, false, MemberAccess::Public,
                                     false, false, false, false, {}};
+        signature.shared = node->isShared;
         for (AstNode* parameter = node->firstChild; parameter; parameter = parameter->nextSibling) {
             signature.parameters.push_back(parameter->declaredType);
             signature.parameterNames.push_back(parameter->token.lexeme);
@@ -240,7 +253,7 @@ void TypeChecker::PredeclareFuncdefs(AstNode* root) {
                 Error(parameter, "funcdef parameters cannot have default arguments");
         }
         funcdefs_.push_back({node->token.lexeme, std::move(signature), {},
-                            declaration.parentType});
+                            declaration.parentType, node->isShared});
     }
 }
 
@@ -297,6 +310,7 @@ void TypeChecker::PredeclareEnums(AstNode* root) {
         }
         EnumSignature signature;
         signature.name = node->token.lexeme;
+        signature.shared = node->isShared;
         const DataType enumType = DataType::Enum(signature.name);
         const std::string enumNamespace = NamespaceOf(signature.name);
         std::int64_t nextValue = 0;
@@ -370,6 +384,7 @@ void TypeChecker::Predeclare(AstNode* root) {
         ClassSignature type;
         type.name = node->token.lexeme;
         type.interfaceType = node->kind == NodeKind::InterfaceDecl;
+        type.shared = node->isShared;
         AstNode* child = node->firstChild;
         while (child && child->kind == NodeKind::Identifier) {
             type.inheritedTypes.push_back(child->token.lexeme);
@@ -390,6 +405,7 @@ void TypeChecker::Predeclare(AstNode* root) {
                                          false, false, false, false, {}};
                 method.access = child->memberAccess;
                 method.propertyAccessor = child->propertyAccessor;
+                method.shared = type.shared;
                 for (AstNode* parameter = child->firstChild;
                      parameter && parameter->kind == NodeKind::Parameter; parameter = parameter->nextSibling) {
                     method.parameters.push_back(parameter->declaredType);
@@ -597,6 +613,7 @@ void TypeChecker::Predeclare(AstNode* root) {
                                     MemberAccess::Public, false, false, false, false, {}};
         signature.imported = node->isImported;
         signature.sourceModule = node->sourceModule;
+        signature.shared = node->isShared;
         for (AstNode* child = node->firstChild; child && child->kind == NodeKind::Parameter;
              child = child->nextSibling) {
             signature.parameters.push_back(child->declaredType);
@@ -618,7 +635,7 @@ void TypeChecker::PredeclareGlobals(AstNode* root) {
     globals_ = registeredGlobals_;
     for (const auto& property : registeredGlobals_)
         Declare(Token{TokenKind::Identifier, property.name, {"registration"}},
-                property.type, property.isConst, true);
+                property.type, property.isConst, true, false);
     if (!root) return;
     std::vector<AstNode*> declarations;
     for (AstNode* node : TopLevelDeclarations(root)) {
@@ -632,7 +649,8 @@ void TypeChecker::PredeclareGlobals(AstNode* root) {
     }
     for (AstNode* declaration : declarations) {
         if (!declaration->isAuto)
-            Declare(declaration->token, declaration->declaredType, declaration->isConst, true);
+            Declare(declaration->token, declaration->declaredType,
+                    declaration->isConst, true, true);
     }
     for (AstNode* node : TopLevelDeclarations(root)) {
         std::vector<AstNode*> group;
@@ -655,7 +673,8 @@ void TypeChecker::PredeclareGlobals(AstNode* root) {
             if (!sharedAutoType.IsValid()) sharedAutoType = CheckExpression(declaration->firstChild);
             currentNamespace_ = previousNamespace;
             declaration->declaredType = sharedAutoType;
-            Declare(declaration->token, declaration->declaredType, declaration->isConst, true);
+            Declare(declaration->token, declaration->declaredType,
+                    declaration->isConst, true, true);
         }
     }
     for (AstNode* declaration : declarations) {
@@ -690,11 +709,18 @@ void TypeChecker::CheckNode(AstNode* node) {
         if (!node->isAuto && IsWeakRef(node->declaredType) &&
             !FindClass(node->declaredType.objectName))
             Error(node, "weakref subtype must name a script class");
+        if (currentShared_ && !node->isGlobal && !node->isAuto &&
+            !IsSharedType(node->declaredType))
+            Error(node, "shared code cannot use non-shared type '" +
+                        node->declaredType.Name() + "'");
         if (node->firstChild) {
             DataType value = CheckExpression(node->firstChild,
                                              node->isAuto ? std::nullopt
                                                           : std::optional<DataType>{node->declaredType});
             if (node->isAuto && !node->declaredType.IsValid()) node->declaredType = value;
+            if (currentShared_ && node->isAuto && !IsSharedType(node->declaredType))
+                Error(node, "shared code cannot infer non-shared type '" +
+                            node->declaredType.Name() + "'");
             if (!CanConvert(value, node->declaredType)) {
                 Error(node, "cannot initialize " + node->declaredType.Name() + " with " + value.Name());
             }
@@ -894,10 +920,25 @@ void TypeChecker::CheckNode(AstNode* node) {
     case NodeKind::ClassDecl: {
         const ClassSignature* previousClass = currentClass_;
         const std::string previousNamespace = currentNamespace_;
+        const bool previousShared = currentShared_;
         currentNamespace_ = NamespaceOf(node->token.lexeme);
         currentClass_ = FindClass(node->token.lexeme);
+        currentShared_ = currentClass_ && currentClass_->shared;
+        if (currentClass_ && currentClass_->shared) {
+            for (const auto& inherited : currentClass_->inheritedTypes) {
+                const ClassSignature* base = FindClass(inherited);
+                if (base && !base->host && !base->shared)
+                    Error(node, "shared type cannot inherit non-shared type '" +
+                                inherited + "'");
+            }
+        }
         bool hasConstructor = currentClass_ && currentClass_->defaultConstructorDeleted;
         for (AstNode* member = node->firstChild; member; member = member->nextSibling) {
+            if (currentClass_ && currentClass_->shared &&
+                member->kind == NodeKind::FieldDecl &&
+                !IsSharedType(member->declaredType))
+                Error(member, "shared type cannot contain non-shared field type '" +
+                              member->declaredType.Name() + "'");
             if (member->kind == NodeKind::FieldDecl && member->firstChild) {
                 const DataType value = CheckExpression(member->firstChild);
                 if (!CanConvert(value, member->declaredType)) {
@@ -935,6 +976,7 @@ void TypeChecker::CheckNode(AstNode* node) {
                             "constructor", defaultConstructor->name);
         }
         currentClass_ = previousClass;
+        currentShared_ = previousShared;
         currentNamespace_ = previousNamespace;
         break;
     }
@@ -952,6 +994,7 @@ void TypeChecker::CheckFunction(AstNode* node) {
     const std::string previousNamespace = currentNamespace_;
     const bool previousConstructor = currentConstructor_;
     const int previousSuperCallCount = superCallCount_;
+    const bool previousShared = currentShared_;
     currentNamespace_ = currentClass_ ? NamespaceOf(currentClass_->name)
                                       : NamespaceOf(node->token.lexeme);
     currentReturn_ = node->declaredType;
@@ -959,10 +1002,17 @@ void TypeChecker::CheckFunction(AstNode* node) {
         Error(node, "weakref subtype must name a script class");
     currentReturnsReference_ = node->returnsReference;
     currentConstructor_ = node->isConstructor;
+    currentShared_ = node->isShared || (currentClass_ && currentClass_->shared);
     superCallCount_ = 0;
+    if (currentShared_ && !IsSharedType(currentReturn_))
+        Error(node, "shared function cannot return non-shared type '" +
+                    currentReturn_.Name() + "'");
     scopes_.emplace_back();
     AstNode* child = node->firstChild;
     while (child && child->kind == NodeKind::Parameter) {
+        if (currentShared_ && !IsSharedType(child->declaredType))
+            Error(child, "shared function cannot accept non-shared type '" +
+                         child->declaredType.Name() + "'");
         if (child->declaredType.kind == TypeKind::Function && !child->declaredType.isHandle)
             Error(child, "funcdef parameters must be declared as handles");
         if (IsWeakRef(child->declaredType) && !FindClass(child->declaredType.objectName))
@@ -1010,6 +1060,7 @@ void TypeChecker::CheckFunction(AstNode* node) {
     currentReturn_ = previousReturn;
     currentReturnsReference_ = previousReturnsReference;
     currentConstructor_ = previousConstructor;
+    currentShared_ = previousShared;
     superCallCount_ = previousSuperCallCount;
     currentNamespace_ = previousNamespace;
 }
@@ -1041,7 +1092,12 @@ DataType TypeChecker::CheckExpression(AstNode* node, std::optional<DataType> exp
         break;
     case NodeKind::Identifier: {
         const auto type = Lookup(node->token.lexeme);
-        if (type) result = type->type;
+        if (type) {
+            result = type->type;
+            if (currentShared_ && type->moduleGlobal)
+                Error(node, "shared code cannot access non-shared global '" +
+                            node->token.lexeme + "'");
+        }
         if (!result.IsValid() && currentClass_) {
             for (const auto& field : currentClass_->fields) {
                 if (field.name == node->token.lexeme) {
@@ -1706,6 +1762,9 @@ DataType TypeChecker::CheckCall(AstNode* node) {
     }
     if (callee->kind == NodeKind::Identifier) {
         if (const ClassSignature* type = FindClass(callee->token.lexeme)) {
+            if (currentShared_ && !type->host && !type->shared)
+                Error(node, "shared code cannot construct non-shared type '" +
+                            type->name + "'");
             if (type->interfaceType) {
                 Error(node, "interface types cannot be constructed");
                 return DataType::Invalid();
@@ -1859,6 +1918,9 @@ DataType TypeChecker::CheckCall(AstNode* node) {
         Error(node, "no matching function for '" + callee->token.lexeme + "'");
         return DataType::Invalid();
     }
+    if (currentShared_ && !best->host && !best->shared)
+        Error(node, "shared code cannot call non-shared function '" +
+                    best->name + "'");
     ValidateReferenceArguments(*best, argumentNodes, argumentNames);
     node->returnsReference = best->returnsReference;
     node->returnReferenceConst = best->returnReferenceConst;
@@ -2209,6 +2271,12 @@ const FunctionSignature* TypeChecker::ResolveFunctionAddress(
         }
         return nullptr;
     }
+    if (currentShared_ && !selected->host && !selected->shared) {
+        if (reportErrors)
+            Error(node, "shared code cannot reference non-shared function '" +
+                        selected->name + "'");
+        return nullptr;
+    }
     node->operatorMethod = selected->Declaration();
     node->declaredType = DataType::Function(selectedType->name, true);
     node->firstChild->inferredType = node->declaredType;
@@ -2242,11 +2310,36 @@ void TypeChecker::CheckAccess(const AstNode* node, MemberAccess access,
 }
 
 void TypeChecker::Declare(const Token& name, const DataType& type, bool isConst,
-                          bool returnableReference) {
+                          bool returnableReference, bool moduleGlobal) {
     auto& scope = scopes_.back();
     if (scope.find(name.lexeme) != scope.end()) {
         diagnostics_.Report(name.location, Severity::Error, "duplicate variable '" + name.lexeme + "'");
-    } else scope.emplace(name.lexeme, VariableSymbol{type, isConst, returnableReference});
+    } else scope.emplace(name.lexeme,
+                         VariableSymbol{type, isConst, returnableReference, moduleGlobal});
+}
+
+bool TypeChecker::IsSharedType(const DataType& type) const {
+    if (type == DataType::Void() || type == DataType::Bool() || type.IsNumeric() ||
+        type == DataType::String()) return true;
+    if (type.kind == TypeKind::Object || IsWeakRef(type)) {
+        const ClassSignature* object = FindClass(type.objectName);
+        return object && (object->host || object->shared);
+    }
+    if (type.kind == TypeKind::Enum) {
+        for (const auto& value : registeredEnums_)
+            if (value.name == type.objectName) return true;
+        for (const auto& value : enums_)
+            if (value.name == type.objectName) return value.shared;
+        return false;
+    }
+    if (type.kind == TypeKind::Function) {
+        for (const auto& value : registeredFuncdefs_)
+            if (value.name == type.objectName) return true;
+        const FuncdefSignature* funcdef = FindFuncdef(type.objectName);
+        if (!funcdef) return false;
+        if (funcdef->shared) return true;
+    }
+    return false;
 }
 
 bool TypeChecker::CanConvert(const DataType& from, const DataType& to) const {

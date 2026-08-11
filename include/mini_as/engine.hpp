@@ -28,6 +28,7 @@ struct TypeMetadata {
     bool host = false;
     bool valueType = false;
     bool interfaceType = false;
+    bool shared = false;
     bool templateType = false;
     bool templateInstance = false;
     std::string templateBase;
@@ -274,6 +275,7 @@ private:
     std::unordered_map<std::string, FunctionId> functionIds_;
     std::unordered_map<std::string, TypeId> typeIds_;
     std::unordered_map<std::string, GlobalId> globalIds_;
+    std::unordered_map<std::string, std::string> sharedEntityFingerprints_;
     std::uint32_t nextFunctionId_ = 0;
     std::uint32_t nextTypeId_ = 0;
     std::uint32_t nextGlobalId_ = 0;

@@ -59,6 +59,16 @@ bool IsVisible(std::uint32_t registrationMask, std::uint32_t moduleMask) {
     return (registrationMask & moduleMask) != 0;
 }
 
+bool IsModulePortableType(const ScriptEngine& engine, const DataType& type) {
+    if (type == DataType::Void() || type == DataType::Bool() || type.IsNumeric() ||
+        type == DataType::String()) return true;
+    if (type.kind != TypeKind::Object && type.kind != TypeKind::Enum &&
+        type.kind != TypeKind::Function && type.kind != TypeKind::WeakRef &&
+        type.kind != TypeKind::ConstWeakRef) return false;
+    const TypeMetadata* metadata = engine.GetTypeMetadataByName(type.objectName);
+    return metadata && (metadata->host || metadata->shared);
+}
+
 std::optional<std::pair<std::string, std::vector<std::string>>>
 ParseTemplateTypeDeclaration(std::string_view declaration, DiagnosticSink& diagnostics) {
     Tokenizer tokenizer("registration", declaration, diagnostics);
@@ -146,6 +156,9 @@ bool UsesCallableDescriptor(OpCode opcode) {
 
 } // namespace
 
+static void AppendAstFingerprint(const AstNode* node, std::string& result);
+static std::string SharedEntityKey(const AstNode& node);
+
 std::string_view Version() { return "0.1.0-learning"; }
 
 ScriptModule::ScriptModule(ScriptEngine& engine, std::string name)
@@ -195,10 +208,47 @@ bool ScriptModule::Build() {
     for (const auto& signature : hostFuncdefs) checker.RegisterFuncdef(signature);
     const bool typed = !diagnostics.HasErrors() && checker.Check(tree.root);
     if (!typed) return false;
+    std::vector<std::pair<std::string, std::string>> pendingSharedEntities;
+    std::vector<AstNode*> declarations;
+    CollectDynamicDeclarations(tree.root, declarations);
+    for (const AstNode* declaration : declarations) {
+        const bool typeEntity = declaration->kind == NodeKind::ClassDecl ||
+            declaration->kind == NodeKind::InterfaceDecl ||
+            declaration->kind == NodeKind::EnumDecl ||
+            declaration->kind == NodeKind::FuncdefDecl;
+        if (typeEntity) {
+            const TypeMetadata* existingType =
+                engine_.GetTypeMetadataByName(declaration->token.lexeme);
+            if (existingType && !existingType->host &&
+                existingType->shared != declaration->isShared) {
+                diagnostics.Report(declaration->token.location, Severity::Error,
+                    "type '" + declaration->token.lexeme +
+                    "' conflicts with an existing " +
+                    (existingType->shared ? std::string("shared")
+                                          : std::string("non-shared")) + " type");
+            }
+        }
+        if (!declaration->isShared) continue;
+        std::string fingerprint;
+        AppendAstFingerprint(declaration, fingerprint);
+        const std::string key = SharedEntityKey(*declaration);
+        const auto existing = engine_.sharedEntityFingerprints_.find(key);
+        if (existing != engine_.sharedEntityFingerprints_.end() &&
+            existing->second != fingerprint) {
+            diagnostics.Report(declaration->token.location, Severity::Error,
+                "shared entity '" + declaration->token.lexeme +
+                "' does not match its existing definition");
+        } else if (existing == engine_.sharedEntityFingerprints_.end()) {
+            pendingSharedEntities.push_back({key, std::move(fingerprint)});
+        }
+    }
+    if (diagnostics.HasErrors()) return false;
     auto functions = checker.Functions();
     for (auto& function : functions) {
         if (!function.id.IsValid()) {
-            function.id = engine_.GetOrCreateFunctionId(name_ + "\n" + function.Declaration());
+            function.id = engine_.GetOrCreateFunctionId(
+                function.shared ? "$shared\n" + function.Declaration()
+                                : name_ + "\n" + function.Declaration());
         }
     }
     auto classes = checker.Classes();
@@ -209,7 +259,8 @@ bool ScriptModule::Build() {
             method.method = true;
             if (!method.id.IsValid())
                 method.id = engine_.GetOrCreateFunctionId(
-                    name_ + "\n" + type.name + "::" + method.Declaration());
+                    type.shared ? "$shared\n" + type.name + "::" + method.Declaration()
+                                : name_ + "\n" + type.name + "::" + method.Declaration());
         }
     }
     auto globals = checker.Globals();
@@ -313,6 +364,8 @@ bool ScriptModule::Build() {
     nextImage->definitionTrees.push_back(
         std::make_shared<SyntaxTree>(std::move(tree)));
     engine_.RegisterModuleImage(nextImage);
+    for (auto& entity : pendingSharedEntities)
+        engine_.sharedEntityFingerprints_.emplace(std::move(entity));
     image_ = std::move(nextImage);
     sections_.clear();
     return true;
@@ -346,6 +399,37 @@ const BytecodeFunction* ScriptModule::GetFunctionByName(std::string_view name) c
     return nullptr;
 }
 
+static void AppendAstFingerprint(const AstNode* node, std::string& result) {
+    if (!node) { result += "#"; return; }
+    result += std::to_string(static_cast<int>(node->kind)) + ":";
+    result += std::to_string(static_cast<int>(node->token.kind)) + ":";
+    result += node->token.lexeme + ":" + node->declaredType.Name() + ":";
+    result += node->isConst ? "c" : "-";
+    result += node->isShared ? "s" : "-";
+    result += node->returnsReference ? "r" : "-";
+    result += node->returnReferenceConst ? "k" : "-";
+    result += std::to_string(static_cast<int>(node->parameterMode)) + "[";
+    for (const AstNode* child = node->firstChild; child; child = child->nextSibling)
+        AppendAstFingerprint(child, result);
+    result += "]";
+}
+
+static std::string SharedEntityKey(const AstNode& node) {
+    std::string key = std::to_string(static_cast<int>(node.kind)) + ":" +
+                      node.token.lexeme;
+    if (node.kind == NodeKind::FunctionDecl || node.kind == NodeKind::FuncdefDecl) {
+        key += ":" + node.declaredType.Name() + "(";
+        for (const AstNode* parameter = node.firstChild;
+             parameter && parameter->kind == NodeKind::Parameter;
+             parameter = parameter->nextSibling) {
+            key += parameter->declaredType.Name() + ":" +
+                   std::to_string(static_cast<int>(parameter->parameterMode)) + ",";
+        }
+        key += ")";
+    }
+    return key;
+}
+
 std::size_t ScriptModule::GetImportedFunctionCount() const {
     return image_->bytecode.imports.size();
 }
@@ -374,9 +458,13 @@ bool ScriptModule::BindImportedFunction(std::size_t index,
                imported.returnsReference == target.returnsReference &&
                imported.returnReferenceConst == target.returnReferenceConst;
     };
+    const auto& imported = image_->bytecode.imports[index].signature;
+    if (!IsModulePortableType(engine_, imported.returnType) ||
+        std::any_of(imported.parameters.begin(), imported.parameters.end(),
+            [this](const DataType& type) { return !IsModulePortableType(engine_, type); }))
+        return false;
     if (!engine_.FindModuleImage(function) ||
-        !compatible(image_->bytecode.imports[index].signature,
-                    function->signature)) return false;
+        !compatible(imported, function->signature)) return false;
     image_->state->BindImportedFunction(
         image_->bytecode.imports[index].signature.id, function->signature.id);
     return true;
@@ -390,6 +478,10 @@ bool ScriptModule::BindImportedFunction(std::size_t index,
         function->signature.imported) return false;
     const auto& imported = image_->bytecode.imports[index].signature;
     const auto& target = function->signature;
+    if (!IsModulePortableType(engine_, imported.returnType) ||
+        std::any_of(imported.parameters.begin(), imported.parameters.end(),
+            [this](const DataType& type) { return !IsModulePortableType(engine_, type); }))
+        return false;
     if (imported.returnType != target.returnType ||
         imported.parameters != target.parameters ||
         imported.parameterModes != target.parameterModes ||
@@ -668,6 +760,43 @@ bool ScriptModule::LoadBytecode(std::istream& input) {
         return false;
     }
 
+    std::vector<std::pair<std::string, std::string>> pendingSharedEntities;
+    for (const auto& definitionTree : archive.definitionTrees) {
+        std::vector<AstNode*> declarations;
+        CollectDynamicDeclarations(definitionTree ? definitionTree->root : nullptr, declarations);
+        for (const AstNode* declaration : declarations) {
+            const bool typeEntity = declaration->kind == NodeKind::ClassDecl ||
+                declaration->kind == NodeKind::InterfaceDecl ||
+                declaration->kind == NodeKind::EnumDecl ||
+                declaration->kind == NodeKind::FuncdefDecl;
+            if (typeEntity) {
+                const TypeMetadata* existingType =
+                    engine_.GetTypeMetadataByName(declaration->token.lexeme);
+                if (existingType && !existingType->host &&
+                    existingType->shared != declaration->isShared) {
+                    engine_.ForwardDiagnostic({{"bytecode"}, Severity::Error,
+                        "bytecode load failed: type '" + declaration->token.lexeme +
+                        "' conflicts with an existing shared identity"});
+                    return false;
+                }
+            }
+            if (!declaration->isShared) continue;
+            std::string fingerprint;
+            AppendAstFingerprint(declaration, fingerprint);
+            const std::string key = SharedEntityKey(*declaration);
+            const auto existing = engine_.sharedEntityFingerprints_.find(key);
+            if (existing != engine_.sharedEntityFingerprints_.end() &&
+                existing->second != fingerprint) {
+                engine_.ForwardDiagnostic({{"bytecode"}, Severity::Error,
+                    "bytecode load failed: shared entity '" +
+                    declaration->token.lexeme + "' does not match its existing definition"});
+                return false;
+            }
+            if (existing == engine_.sharedEntityFingerprints_.end())
+                pendingSharedEntities.push_back({key, std::move(fingerprint)});
+        }
+    }
+
     for (const auto& archivedType : archive.environment.classes) {
         if (!archivedType.host || engine_.GetTypeInfo(archivedType.name)) continue;
         DiagnosticSink diagnostics([this](const Diagnostic& diagnostic) {
@@ -709,6 +838,10 @@ bool ScriptModule::LoadBytecode(std::istream& input) {
             for (const auto& host : engine_.hostFunctions_)
                 if (host.active && sameCallable(signature, host.signature)) replacement = host.signature.id;
             if (!replacement.IsValid()) { linked = false; return; }
+        } else if (signature.shared) {
+            replacement = engine_.GetOrCreateFunctionId(
+                "$shared\n" + (signature.method ? signature.objectType + "::" : std::string{}) +
+                signature.Declaration());
         } else {
             replacement = engine_.GetOrCreateFunctionId(
                 name_ + "\n$bytecode:" + std::to_string(old) + "\n" +
@@ -999,6 +1132,8 @@ bool ScriptModule::LoadBytecode(std::istream& input) {
     nextImage->removedFunctions = std::move(archive.removedFunctions);
     nextImage->definitionTrees = std::move(archive.definitionTrees);
     engine_.RegisterModuleImage(nextImage);
+    for (auto& entity : pendingSharedEntities)
+        engine_.sharedEntityFingerprints_.emplace(std::move(entity));
     dynamicImages_.push_back(image_);
     image_ = std::move(nextImage);
     sections_.clear();
@@ -2052,6 +2187,7 @@ void ScriptEngine::PublishObjectMetadata(const ClassSignature& signature) {
     metadata.host = signature.host;
     metadata.valueType = signature.valueType;
     metadata.interfaceType = signature.interfaceType;
+    metadata.shared = signature.shared;
     const auto registered = objectTypes_.find(signature.name);
     if (registered != objectTypes_.end()) {
         metadata.templateType = registered->second->templateDefinition;
@@ -2074,6 +2210,7 @@ void ScriptEngine::PublishEnumMetadata(const EnumSignature& signature, bool host
     metadata.name = signature.name;
     metadata.kind = TypeMetadataKind::Enum;
     metadata.host = host;
+    metadata.shared = signature.shared;
     metadata.enumValues = signature.values;
     PublishTypeMetadata(std::move(metadata));
 }
@@ -2094,6 +2231,7 @@ void ScriptEngine::PublishFuncdefMetadata(const FuncdefSignature& signature, boo
     metadata.name = signature.name;
     metadata.kind = TypeMetadataKind::Funcdef;
     metadata.host = host;
+    metadata.shared = signature.shared;
     metadata.funcdef = signature.signature;
     PublishTypeMetadata(std::move(metadata));
 }

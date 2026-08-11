@@ -183,6 +183,18 @@ SyntaxTree Parser::Parse() {
 }
 
 AstNode* Parser::ParseTopLevel() {
+    if (Check(TokenKind::Identifier) && Current().lexeme == "shared") {
+        Advance();
+        AstNode* declaration = ParseTopLevel();
+        if (!declaration || (declaration->kind != NodeKind::ClassDecl &&
+            declaration->kind != NodeKind::InterfaceDecl &&
+            declaration->kind != NodeKind::EnumDecl &&
+            declaration->kind != NodeKind::FuncdefDecl &&
+            declaration->kind != NodeKind::FunctionDecl)) {
+            Error(Previous(), "shared can only qualify classes, interfaces, enums, funcdefs, and functions");
+        } else declaration->isShared = true;
+        return declaration;
+    }
     if (Match(TokenKind::KwImport)) {
         const bool returnConst = Match(TokenKind::KwConst);
         DataType type = ParseType(true);

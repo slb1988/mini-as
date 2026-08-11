@@ -149,9 +149,9 @@ Do not stage generated build directories or unrelated user changes. Inspect
 
 The completed stage notes are authoritative. The latest alignment stage is:
 
-- Stage 81 imported functions with explicit module binding.
+- Stage 82 shared script entities and cross-module identity.
 
-The next planned item is Stage 82, shared script entities.
+The next planned item is Stage 83, external shared entities.
 Confirm the latest
 git history and `docs/stages/` before choosing the next stage number.
 
@@ -264,9 +264,18 @@ git history and `docs/stages/` before choosing the next stage number.
   state, image ownership, and finalizer context together. An unbound import is
   a located runtime exception, while binding requires an exact global-function
   callable shape (the implementation name may differ for manual binding).
-- Bytecode format version 3 persists imported signatures and source-module
-  names but deliberately does not persist live bindings; load produces an
-  unbound module that the host must bind again.
+- Bytecode persists imported signatures and source-module names but deliberately
+  does not persist live bindings; load produces an unbound module that the host
+  must bind again.
+- `shared` is contextual, not a globally reserved identifier: recognize it only
+  as a top-level entity modifier so legacy variables named `shared` continue to
+  parse like official AngelScript. Shared class/interface/enum/funcdef/function
+  definitions are structurally fingerprinted in the engine and published only
+  after a successful build. Shared code may use host registrations and other
+  shared entities, but never module globals or non-shared script entities.
+- Bytecode format version 4 persists shared flags and definition fingerprints
+  can be reconstructed from archived syntax trees. Shared function/method IDs
+  use engine-wide keys; ordinary script function IDs remain module-scoped.
 - Preserve the last successful module image on parser, type-check, bytecode, or
   global-initializer failure.
 - Do not edit compatibility expectations merely to make mini and official

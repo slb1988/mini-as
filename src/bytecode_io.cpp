@@ -11,7 +11,7 @@ namespace mini_as::detail {
 namespace {
 
 constexpr char kMagic[] = {'M', 'A', 'S', 'B'};
-constexpr std::uint32_t kVersion = 3;
+constexpr std::uint32_t kVersion = 4;
 constexpr std::uint64_t kMaxItems = 1'000'000;
 constexpr std::uint64_t kMaxString = 16 * 1024 * 1024;
 
@@ -211,6 +211,7 @@ void WriteFunctionSignature(Writer& writer, const FunctionSignature& signature) 
     writer.Scalar<std::uint8_t>(signature.readOnlyMethod ? 1 : 0);
     writer.Scalar<std::uint8_t>(signature.imported ? 1 : 0);
     writer.String(signature.sourceModule);
+    writer.Scalar<std::uint8_t>(signature.shared ? 1 : 0);
 }
 
 bool ReadBool(Reader& reader, bool& value) {
@@ -243,7 +244,8 @@ bool ReadFunctionSignature(Reader& reader, FunctionSignature& signature) {
         !ReadBool(reader, signature.factory) ||
         !ReadBool(reader, signature.readOnlyMethod) ||
         !ReadBool(reader, signature.imported) ||
-        !reader.String(signature.sourceModule)) return false;
+        !reader.String(signature.sourceModule) ||
+        !ReadBool(reader, signature.shared)) return false;
     signature.defaultArgumentCount = static_cast<std::size_t>(defaults);
     return signature.parameterNames.size() <= signature.parameters.size() &&
            signature.parameterModes.size() <= signature.parameters.size();
@@ -385,6 +387,7 @@ void WriteClass(Writer& writer, const ClassSignature& type, bool& valid) {
     WriteId(writer, type.id); writer.Scalar<std::uint8_t>(type.host ? 1 : 0);
     writer.Scalar<std::uint8_t>(type.valueType ? 1 : 0);
     WriteValue(writer, type.defaultValue, valid);
+    writer.Scalar<std::uint8_t>(type.shared ? 1 : 0);
 }
 
 bool ReadClass(Reader& reader, ClassSignature& type) {
@@ -401,7 +404,7 @@ bool ReadClass(Reader& reader, ClassSignature& type) {
         !ReadBool(reader, type.defaultCopyAssignmentDeleted) ||
         !ReadBool(reader, type.generatedCopyConstructor) || !ReadId(reader, type.id) ||
         !ReadBool(reader, type.host) || !ReadBool(reader, type.valueType) ||
-        !ReadValue(reader, type.defaultValue)) return false;
+        !ReadValue(reader, type.defaultValue) || !ReadBool(reader, type.shared)) return false;
     type.inheritedFieldCount = static_cast<std::size_t>(inheritedFields);
     return true;
 }
@@ -424,13 +427,14 @@ void WriteEnum(Writer& writer, const EnumSignature& type) {
         out.String(value.name); out.Scalar(value.value);
     });
     WriteId(writer, type.id);
+    writer.Scalar<std::uint8_t>(type.shared ? 1 : 0);
 }
 
 bool ReadEnum(Reader& reader, EnumSignature& type) {
     return reader.String(type.name) &&
         reader.Vector(type.values, [](Reader& in, EnumValueSignature& value) {
             return in.String(value.name) && in.Scalar(value.value);
-        }) && ReadId(reader, type.id);
+        }) && ReadId(reader, type.id) && ReadBool(reader, type.shared);
 }
 
 void WriteTypedef(Writer& writer, const TypedefSignature& type) {
@@ -442,10 +446,12 @@ bool ReadTypedef(Reader& reader, TypedefSignature& type) {
 void WriteFuncdef(Writer& writer, const FuncdefSignature& type) {
     writer.String(type.name); WriteFunctionSignature(writer, type.signature);
     WriteId(writer, type.id); writer.String(type.parentType);
+    writer.Scalar<std::uint8_t>(type.shared ? 1 : 0);
 }
 bool ReadFuncdef(Reader& reader, FuncdefSignature& type) {
     return reader.String(type.name) && ReadFunctionSignature(reader, type.signature) &&
-        ReadId(reader, type.id) && reader.String(type.parentType);
+        ReadId(reader, type.id) && reader.String(type.parentType) &&
+        ReadBool(reader, type.shared);
 }
 
 void WriteInstruction(Writer& writer, const Instruction& instruction) {
@@ -627,6 +633,7 @@ void WriteNode(Writer& writer, const AstNode* node) {
     writer.Scalar<std::uint8_t>(node->returnReferenceConst ? 1 : 0);
     writer.Scalar<std::uint8_t>(node->propertyAccessor ? 1 : 0);
     writer.Scalar<std::uint8_t>(node->isImported ? 1 : 0);
+    writer.Scalar<std::uint8_t>(node->isShared ? 1 : 0);
     writer.String(node->sourceModule);
     writer.String(node->operatorMethod);
     writer.Scalar<std::uint8_t>(node->operatorReversed ? 1 : 0);
@@ -663,7 +670,8 @@ bool ReadNode(Reader& reader, AstArena& arena, AstNode*& result,
         !ReadBool(reader, node->returnsReference) ||
         !ReadBool(reader, node->returnReferenceConst) ||
         !ReadBool(reader, node->propertyAccessor) ||
-        !ReadBool(reader, node->isImported) || !reader.String(node->sourceModule) ||
+        !ReadBool(reader, node->isImported) || !ReadBool(reader, node->isShared) ||
+        !reader.String(node->sourceModule) ||
         !reader.String(node->operatorMethod) ||
         !ReadBool(reader, node->operatorReversed) || !reader.String(node->propertyGetter) ||
         !reader.String(node->propertySetter) || !reader.String(node->delegateObjectType) ||

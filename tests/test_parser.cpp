@@ -567,3 +567,22 @@ TEST_CASE(parser_builds_imported_function_declarations) {
     CHECK(declaration->firstChild->nextSibling->parameterMode == mini_as::ParameterMode::In);
 }
 
+TEST_CASE(parser_marks_all_supported_shared_entity_kinds) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("shared",
+        "shared class C {} shared interface I {} shared enum E { A } "
+        "shared funcdef int F(int value); shared int Twice(int value) { return value * 2; }",
+        diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    CHECK(!diagnostics.HasErrors());
+    const auto declarations = tree.root->Children();
+    CHECK(declarations.size() == 5);
+    for (const auto* declaration : declarations) CHECK(declaration->isShared);
+    CHECK(declarations[0]->kind == mini_as::NodeKind::ClassDecl);
+    CHECK(declarations[1]->kind == mini_as::NodeKind::InterfaceDecl);
+    CHECK(declarations[2]->kind == mini_as::NodeKind::EnumDecl);
+    CHECK(declarations[3]->kind == mini_as::NodeKind::FuncdefDecl);
+    CHECK(declarations[4]->kind == mini_as::NodeKind::FunctionDecl);
+}
+

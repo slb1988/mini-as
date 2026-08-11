@@ -30,6 +30,7 @@ struct FunctionSignature {
     bool readOnlyMethod = false;
     bool imported = false;
     std::string sourceModule;
+    bool shared = false;
 
     std::string Declaration() const;
 };
@@ -60,6 +61,7 @@ struct ClassSignature {
     bool host = false;
     bool valueType = false;
     Value defaultValue;
+    bool shared = false;
 };
 
 struct GlobalSignature {
@@ -81,6 +83,7 @@ struct EnumSignature {
     std::string name;
     std::vector<EnumValueSignature> values;
     TypeId id;
+    bool shared = false;
 };
 
 struct TypedefSignature {
@@ -94,6 +97,7 @@ struct FuncdefSignature {
     FunctionSignature signature;
     TypeId id;
     std::string parentType;
+    bool shared = false;
 };
 
 class TypeChecker {
@@ -118,6 +122,7 @@ private:
         DataType type;
         bool isConst = false;
         bool returnableReference = false;
+        bool moduleGlobal = false;
     };
 
     void PredeclareTypedefs(AstNode* root);
@@ -167,8 +172,9 @@ private:
     void CheckAccess(const AstNode* node, MemberAccess access, std::string_view declaringType,
                      std::string_view memberKind, std::string_view memberName);
     void Declare(const Token& name, const DataType& type, bool isConst = false,
-                 bool returnableReference = false);
+                 bool returnableReference = false, bool moduleGlobal = false);
     bool CanReturnReference(const AstNode* node) const;
+    bool IsSharedType(const DataType& type) const;
     bool CanConvert(const DataType& from, const DataType& to) const;
     std::optional<int> ConversionCost(const DataType& from, const DataType& to) const;
     void Error(const AstNode* node, std::string message);
@@ -193,6 +199,7 @@ private:
     int loopDepth_ = 0;
     const ClassSignature* currentClass_ = nullptr;
     bool currentConstructor_ = false;
+    bool currentShared_ = false;
     int superCallCount_ = 0;
     std::string currentNamespace_;
     mutable std::vector<std::pair<AstNode*, std::size_t>> activeLambdas_;

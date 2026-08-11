@@ -267,10 +267,18 @@ int main(int argc, char** argv) {
     }
     const bool importedFunctions =
         std::string(argv[1]).find("imported_functions") != std::string::npos;
-    if (importedFunctions) {
-        asIScriptModule* sourceModule = engine->GetModule("math", asGM_ALWAYS_CREATE);
-        const char* sourceCode =
-            "int total = 40; int Add(int value) { total += value; return total; }";
+    const bool sharedEntities =
+        std::string(argv[1]).find("shared_entities") != std::string::npos;
+    if (importedFunctions || sharedEntities) {
+        asIScriptModule* sourceModule = engine->GetModule(
+            importedFunctions ? "math" : "shared-source", asGM_ALWAYS_CREATE);
+        const char* sourceCode = importedFunctions
+            ? "int total = 40; int Add(int value) { total += value; return total; }"
+            : "shared interface ICounter { int read(); } "
+              "shared class Counter : ICounter { int value; Counter(int start) { value = start; } "
+              "int read() { return value; } } "
+              "shared int Twice(int value) { return value * 2; } "
+              "Counter@ Make() { return Counter(40); }";
         sourceModule->AddScriptSection("math.as", sourceCode);
         if (sourceModule->Build() < 0) {
             engine->ShutDownAndRelease(); return 8;
@@ -281,7 +289,8 @@ int main(int argc, char** argv) {
     const std::string source = ReadFile(argv[1]);
     module->AddScriptSection("compat.as", source.c_str(), source.size());
     if (module->Build() < 0) { engine->ShutDownAndRelease(); return 8; }
-    if (importedFunctions && module->BindAllImportedFunctions() < 0) {
+    if ((importedFunctions || sharedEntities) &&
+        module->BindAllImportedFunctions() < 0) {
         engine->ShutDownAndRelease(); return 8;
     }
     if (hostControls && engine->RemoveConfigGroup("runtime") != asCONFIG_GROUP_IS_IN_USE) {

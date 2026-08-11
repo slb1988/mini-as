@@ -41,6 +41,7 @@ struct AstNode {
     bool returnReferenceConst = false;
     bool propertyAccessor = false;
     bool isImported = false;
+    bool isShared = false;
     std::string sourceModule;
     std::string operatorMethod;
     bool operatorReversed = false;

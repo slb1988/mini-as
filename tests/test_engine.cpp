@@ -3110,3 +3110,126 @@ TEST_CASE(imported_function_syntax_reports_missing_source_clause) {
     CHECK(missingFrom);
 }
 
+TEST_CASE(shared_entities_keep_identity_and_behavior_across_modules) {
+    auto engine = mini_as::CreateScriptEngine();
+    const std::string sharedDefinitions =
+        "shared enum SharedKind { Base = 40 } "
+        "shared funcdef int SharedTransform(int value); "
+        "shared interface ICounter { int read(); } "
+        "shared class Counter : ICounter { int value; "
+        "Counter(int start) { value = start; } int read() { return value; } } "
+        "shared int Twice(int value) { return value * 2; } ";
+    auto* source = engine->GetModule("shared-source");
+    source->AddScriptSection("shared-source", sharedDefinitions +
+        "Counter@ Make() { return Counter(40); }");
+    CHECK(source->Build());
+    auto* consumer = engine->GetModule("shared-consumer");
+    consumer->AddScriptSection("shared-consumer", sharedDefinitions +
+        "import Counter@ Make() from \"shared-source\"; "
+        "int main() { Counter@ value = Make(); ICounter@ view = value; "
+        "return view.read() + Twice(1); }");
+    CHECK(consumer->Build());
+    CHECK(consumer->BindAllImportedFunctions());
+
+    const auto* sourceType = engine->GetTypeMetadataByName("Counter");
+    CHECK(sourceType != nullptr);
+    CHECK(sourceType->shared);
+    const auto* sourceTwice = source->GetFunctionByDecl("int Twice(int)");
+    const auto* consumerTwice = consumer->GetFunctionByDecl("int Twice(int)");
+    CHECK(sourceTwice != nullptr);
+    CHECK(consumerTwice != nullptr);
+    CHECK(sourceTwice->signature.id == consumerTwice->signature.id);
+    CHECK(sourceTwice->signature.shared);
+
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(consumer->GetFunctionByDecl("int main()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+
+    std::stringstream sourceArchive(std::ios::in | std::ios::out | std::ios::binary);
+    std::stringstream consumerArchive(std::ios::in | std::ios::out | std::ios::binary);
+    CHECK(source->SaveBytecode(sourceArchive));
+    CHECK(consumer->SaveBytecode(consumerArchive));
+    auto loadedEngine = mini_as::CreateScriptEngine();
+    sourceArchive.seekg(0);
+    consumerArchive.seekg(0);
+    auto* loadedSource = loadedEngine->GetModule("shared-source");
+    auto* loadedConsumer = loadedEngine->GetModule("shared-consumer");
+    CHECK(loadedSource->LoadBytecode(sourceArchive));
+    CHECK(loadedConsumer->LoadBytecode(consumerArchive));
+    CHECK(loadedConsumer->BindAllImportedFunctions());
+    CHECK(loadedSource->GetFunctionByDecl("int Twice(int)")->signature.id ==
+          loadedConsumer->GetFunctionByDecl("int Twice(int)")->signature.id);
+    auto loadedContext = loadedEngine->CreateContext();
+    CHECK(loadedContext->Prepare(loadedConsumer->GetFunctionByDecl("int main()")));
+    CHECK(loadedContext->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(loadedContext->GetReturnInt() == 42);
+}
+
+TEST_CASE(shared_entities_reject_mismatched_definitions_and_non_shared_dependencies) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    auto* first = engine->GetModule("shared-first");
+    first->AddScriptSection("shared-first",
+        "shared class SharedValue { int value; int get() { return value; } }");
+    CHECK(first->Build());
+    auto* mismatch = engine->GetModule("shared-mismatch");
+    mismatch->AddScriptSection("shared-mismatch",
+        "shared class SharedValue { int other; int get() { return other + 1; } }");
+    CHECK(!mismatch->Build());
+    bool mismatched = false;
+    for (const auto& diagnostic : diagnostics)
+        mismatched = mismatched || diagnostic.message.find("does not match") != std::string::npos;
+    CHECK(mismatched);
+
+    diagnostics.clear();
+    auto* invalid = engine->GetModule("shared-invalid");
+    invalid->AddScriptSection("shared-invalid",
+        "class Local {} int moduleValue = 1; int helper() { return moduleValue; } "
+        "shared funcdef void BadCallback(Local@ value); "
+        "shared int Bad() { Local@ value = Local(); return helper() + moduleValue; }");
+    CHECK(!invalid->Build());
+    bool nonSharedType = false, nonSharedCall = false, nonSharedGlobal = false;
+    for (const auto& diagnostic : diagnostics) {
+        nonSharedType = nonSharedType || diagnostic.message.find("non-shared type") != std::string::npos;
+        nonSharedCall = nonSharedCall || diagnostic.message.find("non-shared function") != std::string::npos;
+        nonSharedGlobal = nonSharedGlobal || diagnostic.message.find("non-shared global") != std::string::npos;
+    }
+    CHECK(nonSharedType);
+    CHECK(nonSharedCall);
+    CHECK(nonSharedGlobal);
+
+    auto* localSource = engine->GetModule("local-source");
+    localSource->AddScriptSection("local-source",
+        "class LocalAcrossModules {} LocalAcrossModules@ MakeLocal() { "
+        "return LocalAcrossModules(); }");
+    CHECK(localSource->Build());
+    auto* localConsumer = engine->GetModule("local-consumer");
+    localConsumer->AddScriptSection("local-consumer",
+        "class LocalAcrossModules {} "
+        "import LocalAcrossModules@ MakeLocal() from \"local-source\"; "
+        "int main() { return MakeLocal() is null ? 0 : 1; }");
+    CHECK(localConsumer->Build());
+    CHECK(!localConsumer->BindAllImportedFunctions());
+}
+
+TEST_CASE(shared_function_runtime_errors_retain_the_shared_source_location) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("shared-error");
+    module->AddScriptSection("shared-error",
+        "shared int Divide(int value) {\n"
+        "  return 1 / value;\n"
+        "}\n"
+        "int main() { return Divide(0); }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int main()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Exception);
+    CHECK(context->GetExceptionString().find("division by zero") != std::string::npos);
+    CHECK(context->GetExceptionLocation().section == "shared-error");
+    CHECK(context->GetExceptionLocation().row == 2);
+}
+

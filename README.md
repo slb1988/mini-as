@@ -9,12 +9,13 @@ Implemented concepts:
 
 - hand-written tokenizer and recursive-descent parser;
 - one arena-owned AST node shape using first-child/next-sibling links;
-- static types, lexical scopes, function predeclaration, and `int -> float` conversion;
-- typed bytecode, disassembly, jump backpatching, and a heap-backed stack VM;
-- Engine/Module/Context ownership, script calls, recursion, suspension, and stack traces;
-- portable GenericCall host bindings parsed from declaration strings;
-- host reference objects, script class fields, intrusive handles, and interface validation;
-- reference counting plus stop-the-world trial-deletion cycle collection.
+- static types, structured control flow, namespaces, references, overloads, and exceptions;
+- classes, interfaces, inheritance, funcdefs, delegates, closures, and weak references;
+- typed bytecode, transactional module images, debug metadata, and a heap-backed VM;
+- portable `GenericCall` host bindings, registered types/properties/methods, and reflection;
+- registered templates plus array, dictionary, any, and ref add-ons;
+- imports, shared/external entities, mixins, context pools, and cooperative coroutines;
+- reference counting, incremental cycle detection, and live-state serialization.
 
 ## Build
 
@@ -24,7 +25,9 @@ cmake --build build --config Debug
 ctest --test-dir build -C Debug --output-on-failure
 ```
 
-See `docs/stages/` for the design notes attached to each stage.
+See `docs/stages/` for the design notes attached to each stage and
+`docs/compatibility-v0.6.md` for the final AngelScript 2.38.0 compatibility
+report.
 
 ## Tutorial
 
@@ -47,16 +50,15 @@ context->SetArgFloat(1, 2.71f);
 context->Execute();
 ```
 
-## Language subset
+## Compatibility scope
 
-The parser accepts `void`, `bool`, `int`, `float`, `string`, object handles,
-locals, blocks, assignment, arithmetic/comparison/logical expressions,
-`if/else`, `while`, functions, forward calls, recursion, classes with fields,
-default factories, and minimal interfaces. Strings format primitive operands
-when used with `+` to support the tutorial.
+The v0.2-v0.6 roadmap aligns a substantial source-level and embedding subset
+with AngelScript 2.38.0. Optional differential tests execute the same scripts
+in mini_angelscript and the official engine. String remains a built-in `Value`,
+and all host calls use the portable generic interface.
 
-This is not ABI- or source-compatible with the full AngelScript SDK. Native ABI
-bridges, inheritance, templates, exceptions in script, delegates, JIT,
-serialization, incremental GC, and the production optimizer are deliberately
-out of scope. See `docs/architecture.md` and the stage notes for exact design
-tradeoffs and upstream comparisons.
+This project is not ABI-, header-, or bytecode-compatible with the official
+SDK. Native calling conventions, JIT integration, production optimization,
+and hard-real-time runtime guarantees remain outside its teaching-oriented
+scope. See `docs/architecture.md`, the stage notes, and the compatibility
+reports for exact boundaries.

@@ -100,9 +100,13 @@ cmake --build build-compat --parallel
 ctest --test-dir build-compat --output-on-failure -R '^compat_'
 ```
 
-The compatibility build downloads the archive pinned in `CMakeLists.txt` and
-checks script output, execution state, and normalized diagnostics. It does not
-compare bytecode or ABI. The official runner enables
+An AngelScript source repository is available at `D:\Github\angelscript2`, but
+its current working tree identifies itself as `2.39.0 WIP` even though its Git
+history contains tag `v2.38.0`. Use it for source-history inspection with an
+explicit tag; do not point the differential build at the current working tree.
+CMake downloads the hash-pinned 2.38.0 archive declared in `CMakeLists.txt`.
+The suite checks script output, execution state, and normalized diagnostics,
+not bytecode or ABI. The official runner enables
 `asEP_ALLOW_UNSAFE_REFERENCES` so primitive `&inout` cases are executable.
 
 CI builds GCC, Clang, and MSVC, runs the differential corpus against exactly
@@ -110,11 +114,10 @@ AngelScript 2.38.0, and has an ASan/UBSan job. Keep
 `-Wall -Wextra -Wpedantic` and MSVC `/W4` free of new warnings.
 
 On this Windows workstation, prioritize the MSVC `/W4` build and the locally
-validated GCC toolchain. Run Clang locally only after loading the Visual Studio
-developer environment. Do not use the interactive Windows Clang sanitizer
-configuration: its runtime can open a blocking crash dialog during C++
-exception tests. Leave ASan/UBSan enforcement to the non-interactive CI/Linux
-job unless a local sanitizer toolchain is known to run cleanly.
+validated GCC toolchain. Do not invoke local Clang in unattended work unless
+the user explicitly requests it: the installed path can open a blocking crash
+dialog during C++ exception tests. Leave Clang and ASan/UBSan enforcement to
+the non-interactive CI/Linux jobs.
 
 Test placement:
 

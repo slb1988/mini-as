@@ -1,6 +1,8 @@
 #include "test.hpp"
 #include "mini_as/engine.hpp"
 
+#include <sstream>
+
 TEST_CASE(engine_module_context_pipeline_executes_function) {
     auto engine = mini_as::CreateScriptEngine();
     auto* module = engine->GetModule("math", mini_as::ModulePolicy::AlwaysCreate);
@@ -159,7 +161,6 @@ TEST_CASE(script_type_reflection_publishes_successful_rebuilds_atomically) {
         "enum Mode { Ready = 41, Done } typedef uint Bits; "
         "funcdef int Callback(int value); int main() { return Done; }");
     CHECK(module->Build());
-
     const auto* box = engine->GetTypeMetadataByName("Box");
     CHECK(box != nullptr);
     CHECK(!box->host);
@@ -628,6 +629,161 @@ TEST_CASE(detached_and_method_functions_cannot_be_removed_from_module_scope) {
         if (candidate.signature.method && candidate.signature.name == "read") method = &candidate;
     CHECK(method != nullptr);
     CHECK(!module->RemoveFunction(method));
+}
+
+TEST_CASE(versioned_bytecode_round_trips_runtime_metadata_and_retired_functions) {
+    auto sourceEngine = mini_as::CreateScriptEngine();
+    auto* source = sourceEngine->GetModule("bytecode-source");
+    source->AddScriptSection("source",
+        "enum Offset { Bonus = 2 } int seed = 40; "
+        "class Box { int value; Box(int input) { value = input; } "
+        "int read() { return value; } } "
+        "int retired() { return 40; } int caller() { return retired() + 2; } "
+        "int defaulted(int value = seed) { return value + 2; } "
+        "int main() { Box@ box = Box(seed); return box.read() + Bonus; }");
+    CHECK(source->Build());
+    const auto* retired = source->GetFunctionByDecl("int retired()");
+    CHECK(retired != nullptr);
+    CHECK(source->RemoveFunction(retired));
+    CHECK(source->CompileFunction(
+        "dynamic", "int dynamic_value() { return main(); }") != nullptr);
+
+    std::stringstream bytes(std::ios::in | std::ios::out | std::ios::binary);
+    CHECK(source->SaveBytecode(bytes));
+    CHECK(!bytes.str().empty());
+
+    auto loadedEngine = mini_as::CreateScriptEngine();
+    auto* loaded = loadedEngine->GetModule("bytecode-loaded");
+    bytes.seekg(0);
+    CHECK(loaded->LoadBytecode(bytes));
+    CHECK(loaded->GetFunctionByDecl("int retired()") == nullptr);
+    CHECK(loaded->GetFunctionByDecl("int dynamic_value()") != nullptr);
+    CHECK(loaded->GetGlobalMetadataByName("seed") != nullptr);
+    CHECK(loadedEngine->GetTypeMetadataByName("Box") != nullptr);
+    CHECK(loadedEngine->GetTypeMetadataByName("Offset") != nullptr);
+
+    auto mainContext = loadedEngine->CreateContext();
+    CHECK(mainContext->Prepare(loaded->GetFunctionByDecl("int main()")));
+    CHECK(mainContext->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(mainContext->GetReturnInt() == 42);
+    auto callerContext = loadedEngine->CreateContext();
+    CHECK(callerContext->Prepare(loaded->GetFunctionByDecl("int caller()")));
+    CHECK(callerContext->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(callerContext->GetReturnInt() == 42);
+    const auto* afterLoad = loaded->CompileFunction(
+        "after-load", "int after_load() { return defaulted(); }");
+    CHECK(afterLoad != nullptr);
+    auto afterLoadContext = loadedEngine->CreateContext();
+    CHECK(afterLoadContext->Prepare(afterLoad));
+    CHECK(afterLoadContext->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(afterLoadContext->GetReturnInt() == 42);
+}
+
+TEST_CASE(bytecode_load_rebinds_host_symbols_and_rejects_mismatches_atomically) {
+    auto sourceEngine = mini_as::CreateScriptEngine();
+    mini_as::Value sourceBase(std::int32_t{40});
+    CHECK(sourceEngine->RegisterGlobalProperty("int hostBase", &sourceBase));
+    CHECK(sourceEngine->RegisterGlobalFunction("int HostAdd(int value)",
+        [](mini_as::GenericCall& call) { call.SetReturnInt(call.GetArgInt(0) + 2); }));
+    auto* source = sourceEngine->GetModule("host-bytecode-source");
+    source->AddScriptSection("source", "int main() { return HostAdd(hostBase); }");
+    CHECK(source->Build());
+    std::stringstream bytes(std::ios::in | std::ios::out | std::ios::binary);
+    CHECK(source->SaveBytecode(bytes));
+
+    auto targetEngine = mini_as::CreateScriptEngine();
+    mini_as::Value targetBase(std::int32_t{40});
+    CHECK(targetEngine->RegisterGlobalProperty("int hostBase", &targetBase));
+    CHECK(targetEngine->RegisterGlobalFunction("int HostAdd(int value)",
+        [](mini_as::GenericCall& call) { call.SetReturnInt(call.GetArgInt(0) + 2); }));
+    auto* target = targetEngine->GetModule("host-bytecode-loaded");
+    bytes.seekg(0);
+    CHECK(target->LoadBytecode(bytes));
+    auto context = targetEngine->CreateContext();
+    CHECK(context->Prepare(target->GetFunctionByDecl("int main()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+
+    auto mismatchEngine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    mismatchEngine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    auto* mismatch = mismatchEngine->GetModule("bytecode-mismatch");
+    mismatch->AddScriptSection("preserved", "int preserved() { return 7; }");
+    CHECK(mismatch->Build());
+    const auto* preserved = mismatch->GetFunctionByDecl("int preserved()");
+    bytes.clear();
+    bytes.seekg(0);
+    CHECK(!mismatch->LoadBytecode(bytes));
+    CHECK(mismatch->GetFunctionByDecl("int preserved()") == preserved);
+    bool registrationError = false;
+    for (const auto& diagnostic : diagnostics)
+        registrationError = registrationError ||
+            diagnostic.message.find("registered symbols do not match") != std::string::npos;
+    CHECK(registrationError);
+}
+
+TEST_CASE(bytecode_load_rejects_versions_truncation_and_corruption_without_replacement) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    auto* module = engine->GetModule("bytecode-corruption");
+    module->AddScriptSection("source", "int preserved() { return 42; }");
+    CHECK(module->Build());
+    const auto* preserved = module->GetFunctionByDecl("int preserved()");
+    std::stringstream output(std::ios::in | std::ios::out | std::ios::binary);
+    CHECK(module->SaveBytecode(output));
+    const std::string valid = output.str();
+    CHECK(valid.size() > 24);
+
+    std::string wrongVersion = valid;
+    wrongVersion[4] = static_cast<char>(99);
+    std::stringstream versionStream(wrongVersion, std::ios::in | std::ios::binary);
+    CHECK(!module->LoadBytecode(versionStream));
+    std::stringstream truncatedStream(valid.substr(0, valid.size() - 3),
+                                      std::ios::in | std::ios::binary);
+    CHECK(!module->LoadBytecode(truncatedStream));
+    std::string corrupted = valid;
+    corrupted[20] = static_cast<char>(corrupted[20] ^ 0x5a);
+    std::stringstream corruptedStream(corrupted, std::ios::in | std::ios::binary);
+    CHECK(!module->LoadBytecode(corruptedStream));
+    CHECK(module->GetFunctionByDecl("int preserved()") == preserved);
+    CHECK(diagnostics.size() >= 3);
+}
+
+TEST_CASE(bytecode_load_global_initializer_failure_preserves_previous_image) {
+    auto sourceEngine = mini_as::CreateScriptEngine();
+    mini_as::Value sourceDivisor(std::int32_t{1});
+    CHECK(sourceEngine->RegisterGlobalProperty("int hostDivisor", &sourceDivisor));
+    auto* source = sourceEngine->GetModule("initializer-bytecode-source");
+    source->AddScriptSection("source",
+        "int initialized = 42 / hostDivisor; int main() { return initialized; }");
+    CHECK(source->Build());
+    std::stringstream bytes(std::ios::in | std::ios::out | std::ios::binary);
+    CHECK(source->SaveBytecode(bytes));
+
+    auto targetEngine = mini_as::CreateScriptEngine();
+    mini_as::Value targetDivisor(std::int32_t{0});
+    CHECK(targetEngine->RegisterGlobalProperty("int hostDivisor", &targetDivisor));
+    std::vector<mini_as::Diagnostic> diagnostics;
+    targetEngine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    auto* target = targetEngine->GetModule("initializer-bytecode-target");
+    target->AddScriptSection("preserved", "int preserved() { return 7; }");
+    CHECK(target->Build());
+    const auto* preserved = target->GetFunctionByDecl("int preserved()");
+    bytes.seekg(0);
+    CHECK(!target->LoadBytecode(bytes));
+    CHECK(target->GetFunctionByDecl("int preserved()") == preserved);
+    bool initializerFailure = false;
+    for (const auto& diagnostic : diagnostics)
+        initializerFailure = initializerFailure ||
+            diagnostic.message.find("global initialization failed") != std::string::npos;
+    CHECK(initializerFailure);
 }
 
 TEST_CASE(for_loops_execute_initializer_condition_and_increment) {

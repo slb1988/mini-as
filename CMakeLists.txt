@@ -10,6 +10,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(mini_angelscript
   src/bytecode.cpp
+  src/bytecode_io.cpp
   src/constant_evaluator.cpp
   src/core.cpp
   src/engine.cpp

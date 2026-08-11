@@ -111,7 +111,16 @@ int main(int argc, char** argv) {
             module->GetFunctionByDecl("int dynamic_probe()") != added) return 13;
         const auto* caller = module->CompileFunction(
             "dynamic-caller", "int dynamic_caller() { return dynamic_probe(); }");
-        if (!caller || !module->RemoveFunction(added) ||
+        if (!caller) return 13;
+        std::stringstream bytecode(std::ios::in | std::ios::out | std::ios::binary);
+        if (!module->SaveBytecode(bytecode)) return 13;
+        bytecode.seekg(0);
+        auto* loaded = engine->GetModule("compat-loaded", mini_as::ModulePolicy::AlwaysCreate);
+        if (!loaded->LoadBytecode(bytecode) ||
+            !loaded->GetFunctionByDecl("int main()") ||
+            !loaded->GetFunctionByDecl("int dynamic_caller()") ||
+            !loaded->GetFunctionByDecl("int dynamic_probe()") ||
+            !module->RemoveFunction(added) ||
             module->GetFunctionByDecl("int dynamic_probe()") ||
             !module->GetFunctionByDecl("int dynamic_caller()")) return 13;
     }

@@ -149,10 +149,11 @@ Do not stage generated build directories or unrelated user changes. Inspect
 
 The completed stage notes are authoritative. The latest alignment stage is:
 
-- Stage 69 dynamic function removal as a scope change: hidden bytecode remains
-  executable for old callers and pointers while new compilation cannot see it.
+- Stage 70 transactional versioned bytecode save/load with checksum validation,
+  target-engine id remapping, host rebinding, and global reinitialization.
 
-The next planned feature is versioned bytecode save and load. Confirm the latest
+The next planned feature is debug stack-local and instruction-location exposure.
+Confirm the latest
 git history and `docs/stages/` before choosing the next stage number.
 
 ## Common pitfalls
@@ -205,6 +206,12 @@ git history and `docs/stages/` before choosing the next stage number.
 - Removing a function adds its id to `ModuleImage::removedFunctions` and removes
   only its compilation signature. Keep retired bytecode in subsequent images so
   old call descriptors continue resolving the original id.
+- Bytecode archives never reuse serialized numeric ids directly. Remap every
+  function/type/global reference for the target engine, rebind host pointers,
+  run the global initializer in a candidate state, and publish only on success.
+- Persist typed definition trees with bytecode so post-load incremental calls
+  retain default-argument expressions. Live global/object state is deliberately
+  outside bytecode and belongs to the later serialization stages.
 - Preserve the last successful module image on parser, type-check, bytecode, or
   global-initializer failure.
 - Do not edit compatibility expectations merely to make mini and official

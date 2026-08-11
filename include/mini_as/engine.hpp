@@ -6,6 +6,7 @@
 
 #include <functional>
 #include <deque>
+#include <iosfwd>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -78,6 +79,8 @@ public:
     const BytecodeFunction* CompileFunction(std::string sectionName, std::string source,
                                             bool addToModule = true, int lineOffset = 0);
     bool RemoveFunction(const BytecodeFunction* function);
+    bool SaveBytecode(std::ostream& output) const;
+    bool LoadBytecode(std::istream& input);
     const FunctionMetadata* GetFunctionMetadataByDecl(std::string_view declaration) const;
     std::size_t GetGlobalMetadataCount() const;
     const GlobalMetadata* GetGlobalMetadataByIndex(std::size_t index) const;

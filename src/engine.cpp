@@ -1,7 +1,9 @@
 #include "mini_as/engine.hpp"
+#include "bytecode_io.hpp"
 
 #include <utility>
 #include <algorithm>
+#include <unordered_map>
 
 namespace mini_as {
 namespace {
@@ -337,8 +339,8 @@ const BytecodeFunction* ScriptModule::CompileFunction(std::string sectionName,
         definitionRoots.push_back(definitions->root);
     BytecodeModule candidate = compiler.Compile(
         tree.root, functions, classes, globals, enums, funcdefs, definitionRoots);
-    candidate.globalInitializer = image_->bytecode.globalInitializer;
     if (diagnostics.HasErrors()) return nullptr;
+    candidate.globalInitializer = image_->bytecode.globalInitializer;
 
     const std::size_t callableOffset = image_->bytecode.callables.size();
     std::vector<CallableRef> dynamicCallables = std::move(candidate.callables);
@@ -443,6 +445,327 @@ bool ScriptModule::RemoveFunction(const BytecodeFunction* function) {
     engine_.RegisterModuleImage(nextImage);
     dynamicImages_.push_back(image_);
     image_ = std::move(nextImage);
+    return true;
+}
+
+bool ScriptModule::SaveBytecode(std::ostream& output) const {
+    detail::BytecodeArchive archive;
+    archive.bytecode = image_->bytecode;
+    archive.environment = image_->environment;
+    archive.removedFunctions = image_->removedFunctions;
+    archive.definitionTrees = image_->definitionTrees;
+    std::string error;
+    if (detail::WriteBytecodeArchive(output, archive, error)) return true;
+    engine_.ForwardDiagnostic({{"bytecode"}, Severity::Error,
+                               "bytecode save failed: " + error});
+    return false;
+}
+
+bool ScriptModule::LoadBytecode(std::istream& input) {
+    detail::BytecodeArchive archive;
+    std::string error;
+    if (!detail::ReadBytecodeArchive(input, archive, error)) {
+        engine_.ForwardDiagnostic({{"bytecode"}, Severity::Error,
+                                   "bytecode load failed: " + error});
+        return false;
+    }
+
+    std::unordered_map<std::uint32_t, FunctionId> functionIds;
+    std::unordered_map<std::uint32_t, TypeId> typeIds;
+    std::unordered_map<std::uint32_t, GlobalId> globalIds;
+    bool linked = true;
+    const auto sameCallable = [](const FunctionSignature& left,
+                                 const FunctionSignature& right) {
+        return left.Declaration() == right.Declaration() &&
+               left.objectType == right.objectType && left.method == right.method &&
+               left.factory == right.factory && left.constructor == right.constructor &&
+               left.destructor == right.destructor;
+    };
+    const auto remapFunction = [&](FunctionSignature& signature) {
+        if (!signature.id.IsValid()) return;
+        const std::uint32_t old = signature.id.value;
+        const auto known = functionIds.find(old);
+        if (known != functionIds.end()) { signature.id = known->second; return; }
+        FunctionId replacement;
+        if (signature.host) {
+            for (const auto& host : engine_.hostFunctions_)
+                if (sameCallable(signature, host.signature)) replacement = host.signature.id;
+            if (!replacement.IsValid()) { linked = false; return; }
+        } else {
+            replacement = engine_.GetOrCreateFunctionId(
+                name_ + "\n$bytecode:" + std::to_string(old) + "\n" +
+                (signature.method ? signature.objectType + "::" : std::string{}) +
+                signature.Declaration());
+        }
+        functionIds.emplace(old, replacement);
+        signature.id = replacement;
+    };
+    for (auto& function : archive.environment.functions) remapFunction(function);
+    for (auto& type : archive.environment.classes)
+        for (auto& method : type.methods) remapFunction(method);
+    for (auto& function : archive.bytecode.functions) remapFunction(function.signature);
+
+    const auto remapType = [&](TypeId& id, std::string_view name, bool host) {
+        if (!id.IsValid()) return;
+        const std::uint32_t old = id.value;
+        const auto known = typeIds.find(old);
+        if (known != typeIds.end()) { id = known->second; return; }
+        TypeId replacement;
+        if (host) {
+            const TypeInfo* current = engine_.GetTypeInfo(name);
+            if (current) replacement = current->id;
+            for (const auto& type : engine_.hostEnums_) if (type.name == name) replacement = type.id;
+            for (const auto& type : engine_.hostTypedefs_) if (type.name == name) replacement = type.id;
+            for (const auto& type : engine_.hostFuncdefs_) if (type.name == name) replacement = type.id;
+            if (!replacement.IsValid()) { linked = false; return; }
+        } else replacement = engine_.GetOrCreateTypeId(name);
+        typeIds.emplace(old, replacement);
+        id = replacement;
+    };
+    for (auto& type : archive.environment.classes) remapType(type.id, type.name, type.host);
+    for (auto& type : archive.environment.enums) {
+        bool host = false;
+        for (const auto& current : engine_.hostEnums_) {
+            if (current.name != type.name) continue;
+            host = true;
+            if (current.values.size() != type.values.size()) linked = false;
+            for (std::size_t index = 0;
+                 index < current.values.size() && index < type.values.size(); ++index)
+                if (current.values[index].name != type.values[index].name ||
+                    current.values[index].value != type.values[index].value) linked = false;
+        }
+        remapType(type.id, type.name, host);
+    }
+    for (auto& type : archive.environment.typedefs) {
+        bool host = false;
+        for (const auto& current : engine_.hostTypedefs_) {
+            if (current.name != type.name) continue;
+            host = true;
+            if (current.underlyingType != type.underlyingType) linked = false;
+        }
+        remapType(type.id, type.name, host);
+    }
+    for (auto& type : archive.environment.funcdefs) {
+        bool host = false;
+        for (const auto& current : engine_.hostFuncdefs_) {
+            if (current.name != type.name) continue;
+            host = true;
+            if (current.signature.Declaration() != type.signature.Declaration()) linked = false;
+        }
+        remapType(type.id, type.name, host);
+    }
+    for (auto& type : archive.bytecode.funcdefs) {
+        const auto found = typeIds.find(type.id.value);
+        if (type.id.IsValid() && found != typeIds.end()) type.id = found->second;
+        else if (type.id.IsValid()) linked = false;
+    }
+
+    const auto remapGlobal = [&](GlobalSignature& signature) {
+        if (!signature.id.IsValid()) return;
+        const std::uint32_t old = signature.id.value;
+        const auto known = globalIds.find(old);
+        if (known != globalIds.end()) { signature.id = known->second; return; }
+        GlobalId replacement;
+        if (signature.host) {
+            for (const auto& host : engine_.hostProperties_)
+                if (host.signature.name == signature.name &&
+                    host.signature.type == signature.type &&
+                    host.signature.isConst == signature.isConst)
+                    replacement = host.signature.id;
+            if (!replacement.IsValid()) { linked = false; return; }
+        } else replacement = engine_.GetOrCreateGlobalId(name_ + "\n" + signature.name);
+        globalIds.emplace(old, replacement);
+        signature.id = replacement;
+    };
+    for (auto& global : archive.environment.globals) remapGlobal(global);
+    for (auto& global : archive.bytecode.globals) remapGlobal(global.signature);
+
+    const auto mapFunctionId = [&](FunctionId& id) {
+        if (!id.IsValid()) return;
+        const auto found = functionIds.find(id.value);
+        if (found == functionIds.end()) linked = false;
+        else id = found->second;
+    };
+    const auto mapTypeId = [&](TypeId& id) {
+        if (!id.IsValid()) return;
+        const auto found = typeIds.find(id.value);
+        if (found == typeIds.end()) linked = false;
+        else id = found->second;
+    };
+    for (auto& callable : archive.bytecode.callables) {
+        mapFunctionId(callable.function);
+        mapTypeId(callable.objectType);
+        mapTypeId(callable.signatureType);
+    }
+    for (auto& dispatch : archive.bytecode.virtualDispatch) {
+        mapTypeId(dispatch.concreteType); mapTypeId(dispatch.interfaceType);
+        mapFunctionId(dispatch.implementation);
+    }
+    for (auto& destructor : archive.bytecode.destructors) {
+        mapTypeId(destructor.first); mapFunctionId(destructor.second);
+    }
+    for (auto& id : archive.removedFunctions) mapFunctionId(id);
+
+    const auto remapValue = [&](Value& value) {
+        const auto& raw = value.Raw();
+        if (const auto* handle = std::get_if<FunctionHandle>(&raw)) {
+            FunctionHandle replacement = *handle;
+            mapFunctionId(replacement.function);
+            mapTypeId(replacement.signature);
+            mapTypeId(replacement.dispatchType);
+            value = Value(std::move(replacement));
+        } else if (const auto* reference = std::get_if<ReferenceStorage>(&raw)) {
+            ReferenceStorage replacement = *reference;
+            if (replacement.kind == ReferenceKind::Global) {
+                const auto found = globalIds.find(replacement.slot);
+                if (found == globalIds.end()) linked = false;
+                else replacement.slot = found->second.value;
+            }
+            value = Value(std::move(replacement));
+        } else if (const auto* host = std::get_if<HostValueStorage>(&raw)) {
+            const TypeInfo* type = engine_.GetTypeInfo(host->typeName);
+            if (!type || !type->valueType) linked = false;
+            else value = type->defaultValue;
+        }
+    };
+    const auto remapFunctionBody = [&](BytecodeFunction& function) {
+        for (auto& constant : function.constants) remapValue(constant);
+        for (auto& instruction : function.code) {
+            if (UsesCallableDescriptor(instruction.opcode)) {
+                if (instruction.operand < 0 ||
+                    static_cast<std::size_t>(instruction.operand) >=
+                        archive.bytecode.callables.size()) linked = false;
+            } else if (instruction.opcode == OpCode::LoadGlobal ||
+                       instruction.opcode == OpCode::StoreGlobal ||
+                       instruction.opcode == OpCode::MakeGlobalReference) {
+                const auto found = globalIds.find(static_cast<std::uint32_t>(instruction.operand));
+                if (instruction.operand < 0 || found == globalIds.end()) linked = false;
+                else instruction.operand = static_cast<std::int32_t>(found->second.value);
+            } else if (instruction.opcode == OpCode::CastObject ||
+                       instruction.opcode == OpCode::NewObject) {
+                const auto found = typeIds.find(static_cast<std::uint32_t>(instruction.operand));
+                if (instruction.operand < 0 || found == typeIds.end()) linked = false;
+                else instruction.operand = static_cast<std::int32_t>(found->second.value);
+            }
+        }
+    };
+    for (auto& function : archive.bytecode.functions) remapFunctionBody(function);
+    remapFunctionBody(archive.bytecode.globalInitializer);
+    if (!linked) {
+        engine_.ForwardDiagnostic({{"bytecode"}, Severity::Error,
+                                   "bytecode load failed: registered symbols do not match"});
+        return false;
+    }
+
+    std::vector<const TypeInfo*> linkedTypes;
+    const auto currentHostTypes = engine_.HostTypeSignatures();
+    for (auto& type : archive.environment.classes) {
+        if (type.host) {
+            const TypeInfo* current = engine_.GetTypeInfo(type.name);
+            if (!current || current->valueType != type.valueType) linked = false;
+            else {
+                const ClassSignature* currentSignature = nullptr;
+                for (const auto& candidate : currentHostTypes)
+                    if (candidate.name == type.name) currentSignature = &candidate;
+                if (!currentSignature || currentSignature->fields.size() != type.fields.size())
+                    linked = false;
+                if (currentSignature) {
+                    for (std::size_t index = 0;
+                         index < currentSignature->fields.size() && index < type.fields.size();
+                         ++index) {
+                        const auto& left = currentSignature->fields[index];
+                        const auto& right = type.fields[index];
+                        if (left.name != right.name || left.type != right.type ||
+                            left.isConst != right.isConst) linked = false;
+                    }
+                }
+                type.defaultValue = current->defaultValue;
+                linkedTypes.push_back(current);
+            }
+        } else {
+            const TypeInfo* current = engine_.RegisterScriptType(type);
+            if (!current) linked = false;
+            else linkedTypes.push_back(current);
+        }
+    }
+    if (!linked) {
+        engine_.ForwardDiagnostic({{"bytecode"}, Severity::Error,
+                                   "bytecode load failed: object types do not match"});
+        return false;
+    }
+    for (const auto& type : archive.environment.classes)
+        if (!type.host) engine_.LinkScriptType(type);
+    for (const auto& host : engine_.hostFunctions_)
+        archive.bytecode.hostFunctions.push_back({host.signature.id, &host});
+    for (auto& binding : archive.bytecode.globals) {
+        if (!binding.signature.host) continue;
+        for (const auto& host : engine_.hostProperties_)
+            if (host.signature.id == binding.signature.id) binding.host = &host;
+        if (!binding.host) linked = false;
+    }
+    for (const auto* type : linkedTypes)
+        archive.bytecode.objectTypes.push_back({type->id, type});
+    if (!linked) {
+        engine_.ForwardDiagnostic({{"bytecode"}, Severity::Error,
+                                   "bytecode load failed: host bindings are unavailable"});
+        return false;
+    }
+
+    auto state = std::make_shared<ModuleState>();
+    state->globals.reserve(archive.bytecode.globals.size());
+    for (const auto& global : archive.bytecode.globals) {
+        state->globals.push_back(global.host && global.host->storage
+            ? *global.host->storage : DefaultGlobalValue(global.signature.type, engine_));
+    }
+    VirtualMachine initializer;
+    auto finalizerModule = std::make_shared<BytecodeModule>(archive.bytecode);
+    initializer.SetFinalizerContext(&engine_, finalizerModule, state,
+                                    [this] { engine_.DrainFinalizers(); });
+    const auto initialized = initializer.Execute(
+        archive.bytecode.globalInitializer, {}, &archive.bytecode, state.get());
+    engine_.DrainFinalizers();
+    if (initialized.state != ExecutionState::Finished) {
+        engine_.ForwardDiagnostic({initialized.location, Severity::Error,
+            "bytecode load failed: global initialization failed: " + initialized.exception});
+        return false;
+    }
+
+    for (const auto& type : archive.environment.classes)
+        if (!type.host) engine_.PublishObjectMetadata(type);
+    for (const auto& type : archive.environment.enums) {
+        bool host = false;
+        for (const auto& current : engine_.hostEnums_) host = host || current.name == type.name;
+        if (!host) engine_.PublishEnumMetadata(type, false);
+    }
+    for (const auto& type : archive.environment.typedefs) {
+        bool host = false;
+        for (const auto& current : engine_.hostTypedefs_) host = host || current.name == type.name;
+        if (!host) engine_.PublishTypedefMetadata(type, false);
+    }
+    for (const auto& type : archive.environment.funcdefs) {
+        bool host = false;
+        for (const auto& current : engine_.hostFuncdefs_) host = host || current.name == type.name;
+        if (!host) engine_.PublishFuncdefMetadata(type, false);
+    }
+    for (const auto& function : archive.environment.functions)
+        if (!function.host) engine_.PublishFunctionMetadata(function, name_);
+    for (const auto& type : archive.environment.classes)
+        if (!type.host) for (const auto& method : type.methods)
+            engine_.PublishFunctionMetadata(method, name_);
+    for (const auto& global : archive.environment.globals)
+        if (!global.host) engine_.PublishGlobalMetadata(global, name_);
+
+    auto nextImage = std::make_shared<ModuleImage>();
+    nextImage->bytecode = std::move(archive.bytecode);
+    nextImage->finalizerBytecode = std::move(finalizerModule);
+    nextImage->state = std::move(state);
+    nextImage->environment = std::move(archive.environment);
+    nextImage->removedFunctions = std::move(archive.removedFunctions);
+    nextImage->definitionTrees = std::move(archive.definitionTrees);
+    engine_.RegisterModuleImage(nextImage);
+    dynamicImages_.push_back(image_);
+    image_ = std::move(nextImage);
+    sections_.clear();
     return true;
 }
 

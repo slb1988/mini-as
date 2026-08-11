@@ -1,11 +1,14 @@
 #include <angelscript.h>
 #include <weakref.h>
 
+#include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <new>
 #include <sstream>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -24,6 +27,28 @@ private:
 
 struct CompatValue {
     int value = 42;
+};
+
+class MemoryBytecodeStream final : public asIBinaryStream {
+public:
+    int Read(void* output, asUINT size) override {
+        if (position_ + size > bytes_.size()) return -1;
+        std::memcpy(output, bytes_.data() + position_, size);
+        position_ += size;
+        return 0;
+    }
+
+    int Write(const void* input, asUINT size) override {
+        const auto* bytes = static_cast<const std::uint8_t*>(input);
+        bytes_.insert(bytes_.end(), bytes, bytes + size);
+        return 0;
+    }
+
+    void Rewind() { position_ = 0; }
+
+private:
+    std::vector<std::uint8_t> bytes_;
+    std::size_t position_ = 0;
 };
 
 void CompatValueConstruct(asIScriptGeneric* call) {
@@ -173,6 +198,21 @@ int main(int argc, char** argv) {
         if (!added || module->CompileFunction("dynamic-caller",
                 "int dynamic_caller() { return dynamic_probe(); }", 0,
                 asCOMP_ADD_TO_MODULE, nullptr) < 0 ||
+            !module->GetFunctionByDecl("int dynamic_caller()")) {
+            engine->ShutDownAndRelease();
+            return 8;
+        }
+        MemoryBytecodeStream bytecode;
+        if (module->SaveByteCode(&bytecode) < 0) {
+            engine->ShutDownAndRelease();
+            return 8;
+        }
+        bytecode.Rewind();
+        asIScriptModule* loaded = engine->GetModule("compat-loaded", asGM_ALWAYS_CREATE);
+        if (loaded->LoadByteCode(&bytecode) < 0 ||
+            !loaded->GetFunctionByDecl("int main()") ||
+            !loaded->GetFunctionByDecl("int dynamic_caller()") ||
+            !loaded->GetFunctionByDecl("int dynamic_probe()") ||
             module->RemoveFunction(added) < 0 ||
             module->GetFunctionByDecl("int dynamic_probe()") ||
             !module->GetFunctionByDecl("int dynamic_caller()")) {

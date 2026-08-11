@@ -1291,6 +1291,10 @@ bool ScriptModule::SetDefaultNamespace(std::string nameSpace) {
 const std::string& ScriptModule::GetDefaultNamespace() const { return defaultNamespace_; }
 
 ScriptContext::ScriptContext(ScriptEngine& engine) : engine_(engine) {
+    ConfigureVirtualMachine();
+}
+
+void ScriptContext::ConfigureVirtualMachine() {
     vm_.SetLineCallback([this](const SourceLocation& location) {
         if (lineCallback_) lineCallback_(*this, location);
     });
@@ -1319,6 +1323,19 @@ bool ScriptContext::Prepare(const BytecodeFunction* function) {
     arguments_.assign(function_->signature.parameters.size(), Value{});
     result_ = {};
     result_.state = ExecutionState::Prepared;
+    return true;
+}
+
+bool ScriptContext::Unprepare() {
+    if (result_.state == ExecutionState::Active ||
+        result_.state == ExecutionState::Suspended) return false;
+    function_ = nullptr;
+    arguments_.clear();
+    image_.reset();
+    result_ = {};
+    vm_ = VirtualMachine{};
+    ConfigureVirtualMachine();
+    engine_.DrainFinalizers();
     return true;
 }
 
@@ -2107,6 +2124,24 @@ ScriptModule* ScriptEngine::GetModule(std::string name, ModulePolicy policy) {
 
 std::unique_ptr<ScriptContext> ScriptEngine::CreateContext() {
     return std::make_unique<ScriptContext>(*this);
+}
+
+ScriptContext* ScriptEngine::RequestContext() {
+    return requestContextCallback_ ? requestContextCallback_(*this)
+                                   : CreateContext().release();
+}
+
+void ScriptEngine::ReturnContext(ScriptContext* context) {
+    if (returnContextCallback_) returnContextCallback_(*this, context);
+    else delete context;
+}
+
+bool ScriptEngine::SetContextCallbacks(RequestContextCallback request,
+                                       ReturnContextCallback release) {
+    if (static_cast<bool>(request) != static_cast<bool>(release)) return false;
+    requestContextCallback_ = std::move(request);
+    returnContextCallback_ = std::move(release);
+    return true;
 }
 
 void ScriptEngine::ForwardDiagnostic(const Diagnostic& diagnostic) const {

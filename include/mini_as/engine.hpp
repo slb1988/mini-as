@@ -126,6 +126,7 @@ public:
     using LineCallback = std::function<void(ScriptContext&, const SourceLocation&)>;
     explicit ScriptContext(ScriptEngine& engine);
     bool Prepare(const BytecodeFunction* function);
+    bool Unprepare();
     bool SetArgInt(std::size_t index, std::int32_t value);
     bool SetArgFloat(std::size_t index, float value);
     bool SetArgDouble(std::size_t index, double value);
@@ -151,6 +152,7 @@ public:
     std::vector<LocalVariableInfo> GetLocals(std::size_t stackLevel = 0) const;
 
 private:
+    void ConfigureVirtualMachine();
     bool SetArgument(std::size_t index, Value value);
     ScriptEngine& engine_;
     std::shared_ptr<const ModuleImage> image_;
@@ -166,6 +168,8 @@ public:
     using MessageCallback = std::function<void(const Diagnostic&)>;
     using GarbageCollectionStatistics = GarbageCollector::Statistics;
     using CircularReferenceCallback = GarbageCollector::CircularReferenceCallback;
+    using RequestContextCallback = std::function<ScriptContext*(ScriptEngine&)>;
+    using ReturnContextCallback = std::function<void(ScriptEngine&, ScriptContext*)>;
     using TemplateValidator =
         std::function<bool(const std::vector<DataType>&, std::string&)>;
     using TemplateInstanceCallback =
@@ -217,6 +221,10 @@ public:
     ScriptModule* GetModule(std::string name = {},
                             ModulePolicy policy = ModulePolicy::CreateIfMissing);
     std::unique_ptr<ScriptContext> CreateContext();
+    ScriptContext* RequestContext();
+    void ReturnContext(ScriptContext* context);
+    bool SetContextCallbacks(RequestContextCallback request,
+                             ReturnContextCallback release);
 
 private:
     friend class ScriptModule;
@@ -301,6 +309,8 @@ private:
     std::string defaultNamespace_;
     std::string currentConfigGroup_;
     std::unordered_set<std::string> configGroups_;
+    RequestContextCallback requestContextCallback_;
+    ReturnContextCallback returnContextCallback_;
 };
 
 std::unique_ptr<ScriptEngine> CreateScriptEngine();

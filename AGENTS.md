@@ -149,9 +149,9 @@ Do not stage generated build directories or unrelated user changes. Inspect
 
 The completed stage notes are authoritative. The latest alignment stage is:
 
-- Stage 86 GC statistics and circular-reference callbacks.
+- Stage 87 context pooling.
 
-The next planned item is Stage 87, context pooling.
+The next planned item is Stage 88, cooperative coroutines.
 Confirm the latest
 git history and `docs/stages/` before choosing the next stage number.
 
@@ -296,6 +296,11 @@ git history and `docs/stages/` before choosing the next stage number.
   callbacks after classification but before acquiring collector holds or
   clearing references; callbacks are inspection-only and must receive stable,
   read-only object and type pointers.
+- Context pools use the paired `RequestContext` / `ReturnContext` callback
+  contract. A return callback owns the raw pointer and should call `Unprepare`
+  before storing it under `unique_ptr`; active and suspended contexts must be
+  finished or aborted first. Unprepare keeps context configuration such as the
+  line callback but releases execution state and the retained module image.
 - Preserve the last successful module image on parser, type-check, bytecode, or
   global-initializer failure.
 - Do not edit compatibility expectations merely to make mini and official

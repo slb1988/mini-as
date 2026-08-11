@@ -103,6 +103,7 @@ class ScriptContext {
 public:
     using LineCallback = std::function<void(ScriptContext&, const SourceLocation&)>;
     int Prepare(const BytecodeFunction* function);
+    int Unprepare();
     int SetArgDWord(std::size_t index, std::uint32_t value);
     int SetArgQWord(std::size_t index, std::uint64_t value);
     int SetArgFloat(std::size_t index, float value);
@@ -146,6 +147,8 @@ class ScriptEngine {
 public:
     using MessageCallback = mini_as::ScriptEngine::MessageCallback;
     using CircularReferenceCallback = mini_as::ScriptEngine::CircularReferenceCallback;
+    using RequestContextCallback = std::function<ScriptContext*(ScriptEngine&)>;
+    using ReturnContextCallback = std::function<void(ScriptEngine&, ScriptContext*)>;
 
     int SetMessageCallback(MessageCallback callback);
     std::uint32_t SetDefaultAccessMask(std::uint32_t accessMask);
@@ -171,6 +174,10 @@ public:
     ScriptModule* GetModule(const char* name = "",
                             int flag = asGM_CREATE_IF_NOT_EXISTS);
     std::unique_ptr<ScriptContext> CreateContext();
+    ScriptContext* RequestContext();
+    void ReturnContext(ScriptContext* context);
+    int SetContextCallbacks(RequestContextCallback request,
+                            ReturnContextCallback release);
     mini_as::ScriptEngine& Native();
     const mini_as::ScriptEngine& Native() const;
 
@@ -179,6 +186,8 @@ private:
     ScriptEngine();
     std::unique_ptr<mini_as::ScriptEngine> engine_;
     std::unordered_map<std::string, std::unique_ptr<ScriptModule>> modules_;
+    RequestContextCallback requestContextCallback_;
+    ReturnContextCallback returnContextCallback_;
 };
 
 std::unique_ptr<ScriptEngine> CreateScriptEngine();

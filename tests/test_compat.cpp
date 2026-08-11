@@ -202,6 +202,42 @@ TEST_CASE(compat_facade_exposes_official_style_gc_controls_and_statistics) {
     CHECK(detected == 1);
 }
 
+TEST_CASE(compat_facade_exposes_official_style_context_pooling) {
+    using namespace mini_as::compat;
+    auto engine = CreateScriptEngine();
+    auto* module = engine->GetModule("context-pool", asGM_ALWAYS_CREATE);
+    CHECK(module->AddScriptSection("pool.as", "int answer() { return 42; }") == asSUCCESS);
+    CHECK(module->Build() == asSUCCESS);
+
+    std::vector<std::unique_ptr<ScriptContext>> pool;
+    ScriptEngine::RequestContextCallback request =
+        [&](ScriptEngine& owner) -> ScriptContext* {
+            if (pool.empty()) return owner.CreateContext().release();
+            auto context = std::move(pool.back());
+            pool.pop_back();
+            return context.release();
+        };
+    CHECK(engine->SetContextCallbacks(request, {}) == asINVALID_ARG);
+    CHECK(engine->SetContextCallbacks(request,
+        [&](ScriptEngine&, ScriptContext* context) {
+            CHECK(context->Unprepare() == asSUCCESS);
+            pool.emplace_back(context);
+        }) == asSUCCESS);
+
+    auto* first = engine->RequestContext();
+    CHECK(first != nullptr);
+    CHECK(first->Prepare(module->GetFunctionByDecl("int answer()")) == asSUCCESS);
+    CHECK(first->Execute() == asEXECUTION_FINISHED);
+    CHECK(first->GetReturnDWord() == 42);
+    engine->ReturnContext(first);
+    CHECK(pool.size() == 1);
+    auto* second = engine->RequestContext();
+    CHECK(second == first);
+    CHECK(second->GetState() == asEXECUTION_UNINITIALIZED);
+    engine->ReturnContext(second);
+    CHECK(engine->SetContextCallbacks({}, {}) == asSUCCESS);
+}
+
 TEST_CASE(official_style_facade_exposes_import_binding_controls) {
     using namespace mini_as::compat;
     auto engine = CreateScriptEngine();

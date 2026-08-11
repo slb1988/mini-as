@@ -104,6 +104,9 @@ ScriptContext::ScriptContext(std::unique_ptr<mini_as::ScriptContext> context)
 int ScriptContext::Prepare(const BytecodeFunction* function) {
     return context_->Prepare(function) ? asSUCCESS : asNO_FUNCTION;
 }
+int ScriptContext::Unprepare() {
+    return context_->Unprepare() ? asSUCCESS : asCONTEXT_ACTIVE;
+}
 int ScriptContext::SetArgDWord(std::size_t index, std::uint32_t value) {
     return context_->SetArgInt(index, static_cast<std::int32_t>(value)) ? asSUCCESS : asINVALID_ARG;
 }
@@ -308,6 +311,27 @@ ScriptModule* ScriptEngine::GetModule(const char* name, int flag) {
 }
 std::unique_ptr<ScriptContext> ScriptEngine::CreateContext() {
     return std::unique_ptr<ScriptContext>(new ScriptContext(engine_->CreateContext()));
+}
+ScriptContext* ScriptEngine::RequestContext() {
+    if (requestContextCallback_) return requestContextCallback_(*this);
+    auto* native = engine_->RequestContext();
+    return native ? new ScriptContext(std::unique_ptr<mini_as::ScriptContext>(native)) : nullptr;
+}
+void ScriptEngine::ReturnContext(ScriptContext* context) {
+    if (returnContextCallback_) {
+        returnContextCallback_(*this, context);
+        return;
+    }
+    if (!context) return;
+    engine_->ReturnContext(context->context_.release());
+    delete context;
+}
+int ScriptEngine::SetContextCallbacks(RequestContextCallback request,
+                                      ReturnContextCallback release) {
+    if (static_cast<bool>(request) != static_cast<bool>(release)) return asINVALID_ARG;
+    requestContextCallback_ = std::move(request);
+    returnContextCallback_ = std::move(release);
+    return asSUCCESS;
 }
 mini_as::ScriptEngine& ScriptEngine::Native() { return *engine_; }
 const mini_as::ScriptEngine& ScriptEngine::Native() const { return *engine_; }

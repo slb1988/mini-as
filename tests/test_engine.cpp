@@ -19,6 +19,82 @@ TEST_CASE(engine_module_context_pipeline_executes_function) {
     CHECK(context->GetReturnInt() == 43);
 }
 
+TEST_CASE(engine_context_callbacks_support_safe_context_pooling) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("context-pool");
+    module->AddScriptSection("context-pool.as",
+        "int addTwo(int value) { return value + 2; }\n"
+        "int answer() { return 42; }\n");
+    CHECK(module->Build());
+
+    std::vector<std::unique_ptr<mini_as::ScriptContext>> pool;
+    std::size_t allocations = 0;
+    mini_as::ScriptEngine::RequestContextCallback request =
+        [&](mini_as::ScriptEngine& owner) -> mini_as::ScriptContext* {
+            if (!pool.empty()) {
+                auto context = std::move(pool.back());
+                pool.pop_back();
+                return context.release();
+            }
+            ++allocations;
+            return owner.CreateContext().release();
+        };
+    CHECK(!engine->SetContextCallbacks(request, {}));
+    CHECK(engine->SetContextCallbacks(request,
+        [&](mini_as::ScriptEngine&, mini_as::ScriptContext* context) {
+            CHECK(context != nullptr);
+            CHECK(context->Unprepare());
+            pool.emplace_back(context);
+        }));
+
+    auto* first = engine->RequestContext();
+    CHECK(first != nullptr);
+    CHECK(first->GetState() == mini_as::ExecutionState::Uninitialized);
+    CHECK(first->Prepare(module->GetFunctionByDecl("int addTwo(int)")));
+    CHECK(first->SetArgInt(0, 40));
+    bool rejectedWhileActive = false;
+    first->SetLineCallback([&](mini_as::ScriptContext& current,
+                               const mini_as::SourceLocation&) {
+        rejectedWhileActive = !current.Unprepare();
+    });
+    CHECK(first->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(first->GetReturnInt() == 42);
+    CHECK(rejectedWhileActive);
+    engine->ReturnContext(first);
+    CHECK(pool.size() == 1);
+
+    auto* second = engine->RequestContext();
+    CHECK(second == first);
+    CHECK(allocations == 1);
+    CHECK(second->GetState() == mini_as::ExecutionState::Uninitialized);
+    CHECK(second->GetCallStackSize() == 0);
+    CHECK(second->Prepare(module->GetFunctionByDecl("int answer()")));
+    CHECK(second->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(second->GetReturnInt() == 42);
+    engine->ReturnContext(second);
+
+    CHECK(engine->SetContextCallbacks({}, {}));
+    auto* fallback = engine->RequestContext();
+    CHECK(fallback != nullptr);
+    engine->ReturnContext(fallback);
+}
+
+TEST_CASE(context_unprepare_rejects_suspended_execution_until_abort) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("suspended-unprepare");
+    module->AddScriptSection("suspended.as", "int run() { return 42; }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    context->SetLineCallback([](mini_as::ScriptContext& current,
+                                const mini_as::SourceLocation&) { current.Suspend(); });
+    CHECK(context->Execute() == mini_as::ExecutionState::Suspended);
+    CHECK(!context->Unprepare());
+    context->Abort();
+    CHECK(context->Unprepare());
+    CHECK(context->GetState() == mini_as::ExecutionState::Uninitialized);
+}
+
 TEST_CASE(engine_forwards_build_diagnostics_and_honors_module_policy) {
     auto engine = mini_as::CreateScriptEngine();
     std::vector<mini_as::Diagnostic> messages;

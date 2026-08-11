@@ -1,7 +1,9 @@
 #include "mini_as/engine.hpp"
 #include "mini_as/compat.hpp"
+#include "mini_as/addons/any.hpp"
 #include "mini_as/addons/array.hpp"
 #include "mini_as/addons/dictionary.hpp"
+#include "mini_as/addons/ref.hpp"
 
 #include <cstdint>
 #include <fstream>
@@ -51,6 +53,10 @@ int main(int argc, char** argv) {
         return 0;
     }
     auto engine = mini_as::CreateScriptEngine();
+    const bool anyRefObjects =
+        std::string(argv[1]).find("any_ref_objects") != std::string::npos;
+    if (anyRefObjects && (!mini_as::addons::RegisterScriptRef(*engine) ||
+                          !mini_as::addons::RegisterScriptAny(*engine))) return 3;
     const bool hostControls = std::string(argv[1]).find("host_controls") != std::string::npos;
     const bool registeredTemplates =
         std::string(argv[1]).find("registered_template_types") != std::string::npos;

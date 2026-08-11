@@ -1,7 +1,9 @@
 #include <angelscript.h>
+#include <scriptany.h>
 #include <weakref.h>
 #include <scriptarray.h>
 #include <scriptdictionary.h>
+#include <scripthandle.h>
 #include <scriptstdstring.h>
 
 #include <cstdint>
@@ -154,6 +156,10 @@ int main(int argc, char** argv) {
     if (argc != 2) return 2;
     asIScriptEngine* engine = asCreateScriptEngine(ANGELSCRIPT_VERSION);
     if (!engine) return 3;
+    if (std::string(argv[1]).find("any_ref_objects") != std::string::npos) {
+        RegisterScriptHandle(engine);
+        RegisterScriptAny(engine);
+    }
     int hostCounter = 40;
     const bool hostControls = std::string(argv[1]).find("host_controls") != std::string::npos;
     const bool registeredTemplates =

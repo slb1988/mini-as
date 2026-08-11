@@ -1,8 +1,23 @@
 #include "test.hpp"
+#include "mini_as/addons/any.hpp"
 #include "mini_as/addons/array.hpp"
 #include "mini_as/addons/dictionary.hpp"
+#include "mini_as/addons/ref.hpp"
 
 #include <sstream>
+
+namespace {
+
+class RefPayload final : public mini_as::RefObject {
+public:
+    RefPayload(const mini_as::TypeInfo* type, int value) : RefObject(type), value(value) {}
+    int value = 0;
+
+private:
+    ~RefPayload() override = default;
+};
+
+} // namespace
 
 TEST_CASE(array_addon_constructs_resizes_and_stores_typed_values) {
     auto engine = mini_as::CreateScriptEngine();
@@ -459,6 +474,132 @@ TEST_CASE(dictionary_addon_enumerates_cycles_for_collection) {
     dictionary->Set("self", mini_as::Value(handle));
     handle = {};
     CHECK(engine->GetTrackedObjectCount() == 1);
+    CHECK(engine->CollectGarbage() == 1);
+    CHECK(engine->GetTrackedObjectCount() == 0);
+}
+
+TEST_CASE(any_and_ref_addons_store_retrieve_compare_and_round_trip) {
+    auto engine = mini_as::CreateScriptEngine();
+    CHECK(mini_as::addons::RegisterScriptRef(*engine));
+    CHECK(mini_as::addons::RegisterScriptAny(*engine));
+    auto* module = engine->GetModule("any-ref-addon");
+    module->AddScriptSection("any-ref-addon",
+        "int run() { any@ box = any(int64(40)); int64 stored = 0; "
+        "bool loaded = box.retrieve(stored); box.store(double(2)); double extra = 0; "
+        "bool loadedExtra = box.retrieve(extra); ref first; ref second; "
+        "bool refs = first == second && first.isNull(); "
+        "return loaded && loadedExtra && refs ? int(stored + int64(extra)) : 0; }");
+    CHECK(module->Build());
+    const auto* function = module->GetFunctionByDecl("int run()");
+    CHECK(function != nullptr);
+    std::size_t hostCalls = 0;
+    for (const auto& instruction : function->code)
+        if (instruction.opcode == mini_as::OpCode::CallHost) ++hostCalls;
+    CHECK(hostCalls >= 6);
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(function));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+
+    std::stringstream archive(std::ios::in | std::ios::out | std::ios::binary);
+    CHECK(module->SaveBytecode(archive));
+    auto loadedEngine = mini_as::CreateScriptEngine();
+    CHECK(mini_as::addons::RegisterScriptRef(*loadedEngine));
+    CHECK(mini_as::addons::RegisterScriptAny(*loadedEngine));
+    auto* loadedModule = loadedEngine->GetModule("any-ref-loaded");
+    archive.seekg(0);
+    CHECK(loadedModule->LoadBytecode(archive));
+    auto loadedContext = loadedEngine->CreateContext();
+    CHECK(loadedContext->Prepare(loadedModule->GetFunctionByDecl("int run()")));
+    CHECK(loadedContext->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(loadedContext->GetReturnInt() == 42);
+}
+
+TEST_CASE(ref_addon_bridges_arbitrary_registered_object_handles) {
+    auto engine = mini_as::CreateScriptEngine();
+    CHECK(mini_as::addons::RegisterScriptRef(*engine));
+    const auto* type = engine->RegisterObjectType("RefPayload");
+    CHECK(type != nullptr);
+    const bool factoryRegistered = engine->RegisterObjectFactory(
+        "RefPayload", "RefPayload@ f(int value)",
+        [type](mini_as::GenericCall& call) {
+            call.SetReturnObject(mini_as::ObjectHandle(
+                new RefPayload(type, call.GetArgInt(0))));
+        });
+    CHECK(factoryRegistered);
+    const bool methodRegistered = engine->RegisterObjectMethod(
+        "RefPayload", "int get() const",
+        [](mini_as::GenericCall& call) {
+            auto* payload = dynamic_cast<RefPayload*>(call.GetObject().Get());
+            CHECK(payload != nullptr);
+            call.SetReturnInt(payload->value);
+        });
+    CHECK(methodRegistered);
+    const bool wrapRegistered = engine->RegisterGlobalFunction(
+        "ref Wrap(RefPayload@ value)",
+        [](mini_as::GenericCall& call) {
+            call.SetReturn(mini_as::addons::MakeScriptRef(call.GetArgObject(0)));
+        });
+    CHECK(wrapRegistered);
+    const bool unwrapRegistered = engine->RegisterGlobalFunction(
+        "RefPayload@ Unwrap(ref value)",
+        [](mini_as::GenericCall& call) {
+            call.SetReturnObject(mini_as::addons::GetScriptRef(call.GetArg(0)));
+        });
+    CHECK(unwrapRegistered);
+    auto* module = engine->GetModule("ref-bridge");
+    module->AddScriptSection("ref-bridge",
+        "int run() { RefPayload@ original = RefPayload(42); ref stored = Wrap(original); "
+        "@original = null; RefPayload@ restored = Unwrap(stored); "
+        "return stored.typeName() == \"RefPayload\" ? restored.get() : 0; }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+}
+
+TEST_CASE(any_and_ref_addons_report_invalid_overloads_and_collect_cycles) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    CHECK(mini_as::addons::RegisterScriptRef(*engine));
+    CHECK(mini_as::addons::RegisterScriptAny(*engine));
+    auto* invalid = engine->GetModule("invalid-any-store");
+    invalid->AddScriptSection("invalid-any-store",
+        "class Node {} int run() { any@ value = any(); Node@ node = Node(); "
+        "value.store(node); return 0; }");
+    CHECK(!invalid->Build());
+    bool rejected = false;
+    for (const auto& diagnostic : diagnostics)
+        rejected = rejected || diagnostic.message.find("no matching method for 'store'") !=
+            std::string::npos;
+    CHECK(rejected);
+
+    const auto* anyType = engine->GetTypeInfo("any");
+    CHECK(anyType != nullptr);
+    mini_as::ObjectHandle anyHandle(new mini_as::addons::ScriptAny(anyType));
+    auto* any = dynamic_cast<mini_as::addons::ScriptAny*>(anyHandle.Get());
+    CHECK(any != nullptr);
+    any->Store(mini_as::Value(anyHandle));
+    anyHandle = {};
+    CHECK(engine->CollectGarbage() == 1);
+
+    auto* cycleModule = engine->GetModule("ref-cycle");
+    cycleModule->AddScriptSection("ref-cycle",
+        "class RefNode { ref link; } RefNode@ make() { return RefNode(); }");
+    CHECK(cycleModule->Build());
+    auto cycleContext = engine->CreateContext();
+    CHECK(cycleContext->Prepare(cycleModule->GetFunctionByDecl("RefNode@ make()")));
+    CHECK(cycleContext->Execute() == mini_as::ExecutionState::Finished);
+    mini_as::ObjectHandle root = cycleContext->GetReturnValue().As<mini_as::ObjectHandle>();
+    cycleContext.reset();
+    auto* object = dynamic_cast<mini_as::ScriptObject*>(root.Get());
+    CHECK(object != nullptr);
+    object->SetField(0, mini_as::addons::MakeScriptRef(root));
+    root = {};
     CHECK(engine->CollectGarbage() == 1);
     CHECK(engine->GetTrackedObjectCount() == 0);
 }

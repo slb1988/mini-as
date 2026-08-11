@@ -149,9 +149,9 @@ Do not stage generated build directories or unrelated user changes. Inspect
 
 The completed stage notes are authoritative. The latest alignment stage is:
 
-- Stage 79 garbage-collected dictionary add-on and dictionaryValue iteration.
+- Stage 80 garbage-collected any and ref add-ons.
 
-The next planned item is Stage 80, the v0.6 any and ref add-ons.
+The next planned item is Stage 81, imported functions across modules.
 Confirm the latest
 git history and `docs/stages/` before choosing the next stage number.
 
@@ -254,6 +254,10 @@ git history and `docs/stages/` before choosing the next stage number.
   `Value::ManagedHostValue` and provide enumerate/clear callbacks. Containers
   and script fields delegate GC traversal to `Value`; do not inspect the
   variant and assume every object-typed value is an `ObjectHandle`.
+- Register the `ref` add-on before `any` when both are needed. The current
+  script surface exposes typed `any` overloads and explicit C++ `MakeScriptRef`
+  / `GetScriptRef` bridges; wildcard parameters and generic script casts remain
+  deferred to the variadic-argument stage.
 - Preserve the last successful module image on parser, type-check, bytecode, or
   global-initializer failure.
 - Do not edit compatibility expectations merely to make mini and official

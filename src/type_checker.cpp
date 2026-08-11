@@ -2007,9 +2007,10 @@ const FunctionSignature* TypeChecker::FindExactMethod(
 const FunctionSignature* TypeChecker::FindOperatorMethod(
     const DataType& object, std::string_view name, const std::vector<DataType>& arguments,
     std::optional<DataType> requiredReturn) const {
-    if (object.kind != TypeKind::Object || !object.isHandle) return nullptr;
+    if (object.kind != TypeKind::Object) return nullptr;
     const std::vector<std::string> unnamed(arguments.size());
     const ClassSignature* type = FindClass(object.objectName);
+    if (!object.isHandle && (!type || !type->valueType)) return nullptr;
     while (type) {
         const FunctionSignature* best = nullptr;
         int bestCost = 1000000;

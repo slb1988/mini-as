@@ -1,6 +1,7 @@
 #include "mini_as/engine.hpp"
 #include "mini_as/compat.hpp"
 #include "mini_as/addons/array.hpp"
+#include "mini_as/addons/dictionary.hpp"
 
 #include <cstdint>
 #include <fstream>
@@ -57,8 +58,11 @@ int main(int argc, char** argv) {
         std::string(argv[1]).find("array_template_object") != std::string::npos ||
         std::string(argv[1]).find("initialization_lists") != std::string::npos ||
         std::string(argv[1]).find("indexing_expressions") != std::string::npos ||
-        std::string(argv[1]).find("foreach_operator_protocol") != std::string::npos;
+        std::string(argv[1]).find("foreach_operator_protocol") != std::string::npos ||
+        std::string(argv[1]).find("dictionary_object") != std::string::npos;
     if (arrayTemplate && !mini_as::addons::RegisterScriptArray(*engine)) return 3;
+    if (std::string(argv[1]).find("dictionary_object") != std::string::npos &&
+        !mini_as::addons::RegisterScriptDictionary(*engine)) return 3;
     if (registeredTemplates &&
         !engine->RegisterObjectType("HostBox<class T>")) return 3;
     if (hostControls) {

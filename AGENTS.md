@@ -149,9 +149,9 @@ Do not stage generated build directories or unrelated user changes. Inspect
 
 The completed stage notes are authoritative. The latest alignment stage is:
 
-- Stage 78 protocol-based foreach loops for registered and script ranges.
+- Stage 79 garbage-collected dictionary add-on and dictionaryValue iteration.
 
-The next planned item is Stage 79, the v0.6 dictionary add-on.
+The next planned item is Stage 80, the v0.6 any and ref add-ons.
 Confirm the latest
 git history and `docs/stages/` before choosing the next stage number.
 
@@ -246,6 +246,10 @@ git history and `docs/stages/` before choosing the next stage number.
 - Foreach resolves exact `opForBegin`, `opForEnd`, `opForNext`, and
   `opForValue`/numbered value signatures. The range and iterator live in hidden
   locals; keep `continue` targeting next rather than the end condition.
+- Dictionary depends on the array template registration for `array<string>`.
+  It stores arbitrary C++ `Value`s, but scripts currently see typed overloads;
+  preserve that boundary until wildcard parameters are implemented. Registered
+  GC reference types must opt in through `RegisterObjectType(name, true)`.
 - Preserve the last successful module image on parser, type-check, bytecode, or
   global-initializer failure.
 - Do not edit compatibility expectations merely to make mini and official

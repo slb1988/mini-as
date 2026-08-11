@@ -172,7 +172,7 @@ public:
     bool RemoveConfigGroup(std::string_view name);
     bool RegisterGlobalFunction(std::string declaration, GenericFunction callback);
     bool RegisterGlobalProperty(std::string declaration, Value* storage);
-    const TypeInfo* RegisterObjectType(std::string name);
+    const TypeInfo* RegisterObjectType(std::string name, bool garbageCollected = false);
     const TypeInfo* RegisterTemplateType(std::string declaration,
                                          TemplateValidator validator = {},
                                          TemplateInstanceCallback instanceCallback = {},

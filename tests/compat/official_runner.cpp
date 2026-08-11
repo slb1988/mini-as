@@ -1,6 +1,8 @@
 #include <angelscript.h>
 #include <weakref.h>
 #include <scriptarray.h>
+#include <scriptdictionary.h>
+#include <scriptstdstring.h>
 
 #include <cstdint>
 #include <cstring>
@@ -156,12 +158,17 @@ int main(int argc, char** argv) {
     const bool hostControls = std::string(argv[1]).find("host_controls") != std::string::npos;
     const bool registeredTemplates =
         std::string(argv[1]).find("registered_template_types") != std::string::npos;
+    const bool dictionaryObject =
+        std::string(argv[1]).find("dictionary_object") != std::string::npos;
     const bool arrayTemplate =
         std::string(argv[1]).find("array_template_object") != std::string::npos ||
         std::string(argv[1]).find("initialization_lists") != std::string::npos ||
         std::string(argv[1]).find("indexing_expressions") != std::string::npos ||
-        std::string(argv[1]).find("foreach_operator_protocol") != std::string::npos;
+        std::string(argv[1]).find("foreach_operator_protocol") != std::string::npos ||
+        dictionaryObject;
+    if (dictionaryObject) RegisterStdString(engine);
     if (arrayTemplate) RegisterScriptArray(engine, false);
+    if (dictionaryObject) RegisterScriptDictionary(engine);
     if (registeredTemplates && engine->RegisterObjectType(
             "HostBox<class T>", 0,
             asOBJ_REF | asOBJ_TEMPLATE | asOBJ_NOCOUNT) < 0) {

@@ -1,5 +1,6 @@
 #include "test.hpp"
 #include "mini_as/addons/array.hpp"
+#include "mini_as/addons/dictionary.hpp"
 
 #include <sstream>
 
@@ -347,4 +348,117 @@ TEST_CASE(foreach_reports_invalid_protocol_and_runtime_locations) {
     CHECK(context->Execute() == mini_as::ExecutionState::Exception);
     CHECK(context->GetExceptionString().find("division by zero") != std::string::npos);
     CHECK(context->GetExceptionLocation().row == 5);
+}
+
+TEST_CASE(dictionary_addon_stores_converts_indexes_lists_and_iterates_values) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    CHECK(mini_as::addons::RegisterScriptArray(*engine));
+    CHECK(mini_as::addons::RegisterScriptDictionary(*engine));
+    auto* module = engine->GetModule("dictionary-addon");
+    module->AddScriptSection("dictionary-addon",
+        "int run() { dictionary@ values = dictionary(); "
+        "values.set(\"a\", int64(20)); values.set(\"b\", int64(21)); "
+        "values.set(\"c\", int64(1)); int64 read = 0; "
+        "bool found = values.get(\"a\", read); int64 indexed = int64(values[\"b\"]); "
+        "array<string>@ keys = values.getKeys(); int64 total = 0; "
+        "foreach (auto value, auto key : values) total += int64(value); "
+        "bool erased = values.delete(\"c\"); "
+        "bool valid = found && erased && read == 20 && indexed == 21 && "
+        "keys.length() == 3 && values.getSize() == 2 && !values.exists(\"c\"); "
+        "return valid ? int(total) : 0; }");
+    if (!module->Build()) {
+        std::string message;
+        for (const auto& diagnostic : diagnostics)
+            message += (message.empty() ? std::string{} : " | ") + diagnostic.message;
+        throw std::runtime_error(message);
+    }
+    const auto* dictionaryType = engine->GetTypeInfo("dictionary");
+    CHECK(dictionaryType != nullptr);
+    CHECK(dictionaryType->collector != nullptr);
+    const auto* function = module->GetFunctionByDecl("int run()");
+    CHECK(function != nullptr);
+    std::size_t hostCalls = 0;
+    for (const auto& instruction : function->code)
+        if (instruction.opcode == mini_as::OpCode::CallHost) ++hostCalls;
+    CHECK(hostCalls >= 18);
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(function));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+
+    std::stringstream archive(std::ios::in | std::ios::out | std::ios::binary);
+    CHECK(module->SaveBytecode(archive));
+    auto loadedEngine = mini_as::CreateScriptEngine();
+    CHECK(mini_as::addons::RegisterScriptArray(*loadedEngine));
+    CHECK(mini_as::addons::RegisterScriptDictionary(*loadedEngine));
+    auto* loaded = loadedEngine->GetModule("dictionary-loaded");
+    archive.seekg(0);
+    CHECK(loaded->LoadBytecode(archive));
+    auto loadedContext = loadedEngine->CreateContext();
+    CHECK(loadedContext->Prepare(loaded->GetFunctionByDecl("int run()")));
+    CHECK(loadedContext->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(loadedContext->GetReturnInt() == 42);
+}
+
+TEST_CASE(dictionary_addon_requires_array_and_reports_bad_value_conversions) {
+    auto missingArray = mini_as::CreateScriptEngine();
+    CHECK(!mini_as::addons::RegisterScriptDictionary(*missingArray));
+
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    CHECK(mini_as::addons::RegisterScriptArray(*engine));
+    CHECK(mini_as::addons::RegisterScriptDictionary(*engine));
+    auto* invalid = engine->GetModule("invalid-dictionary-call");
+    invalid->AddScriptSection("invalid-dictionary-call",
+        "int run() { dictionary@ values = dictionary(); "
+        "values.set(1, int64(2)); return 0; }");
+    CHECK(!invalid->Build());
+    bool invalidKey = false;
+    for (const auto& diagnostic : diagnostics)
+        invalidKey = invalidKey || diagnostic.message.find("no matching method for 'set'") !=
+            std::string::npos;
+    CHECK(invalidKey);
+
+    auto* module = engine->GetModule("dictionary-conversion-error");
+    module->AddScriptSection("dictionary-conversion-error",
+        "int run() {\n"
+        "  dictionary@ values = dictionary();\n"
+        "  values.set(\"text\", \"not a number\");\n"
+        "  return int(int64(values[\"text\"]));\n"
+        "}\n");
+    if (!module->Build()) {
+        std::string message;
+        for (const auto& diagnostic : diagnostics)
+            message += (message.empty() ? std::string{} : " | ") + diagnostic.message;
+        throw std::runtime_error(message);
+    }
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Exception);
+    CHECK(context->GetExceptionString().find("cannot convert to int64") != std::string::npos);
+    CHECK(context->GetExceptionLocation().row == 4);
+}
+
+TEST_CASE(dictionary_addon_enumerates_cycles_for_collection) {
+    auto engine = mini_as::CreateScriptEngine();
+    CHECK(mini_as::addons::RegisterScriptArray(*engine));
+    CHECK(mini_as::addons::RegisterScriptDictionary(*engine));
+    const auto* type = engine->GetTypeInfo("dictionary");
+    CHECK(type != nullptr);
+    CHECK(type->collector != nullptr);
+    mini_as::ObjectHandle handle(new mini_as::addons::ScriptDictionary(type));
+    auto* dictionary = dynamic_cast<mini_as::addons::ScriptDictionary*>(handle.Get());
+    CHECK(dictionary != nullptr);
+    dictionary->Set("self", mini_as::Value(handle));
+    handle = {};
+    CHECK(engine->GetTrackedObjectCount() == 1);
+    CHECK(engine->CollectGarbage() == 1);
+    CHECK(engine->GetTrackedObjectCount() == 0);
 }

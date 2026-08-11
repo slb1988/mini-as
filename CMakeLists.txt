@@ -20,6 +20,7 @@ add_library(mini_angelscript
   src/object.cpp
   src/parser.cpp
   src/script_array.cpp
+  src/script_dictionary.cpp
   src/tokenizer.cpp
   src/type_checker.cpp
   src/vm.cpp
@@ -78,9 +79,13 @@ if(MINI_AS_BUILD_COMPAT_TESTS)
   add_executable(angelscript_compat_runner
     tests/compat/official_runner.cpp
     ${angelscript_238_SOURCE_DIR}/add_on/scriptarray/scriptarray.cpp
+    ${angelscript_238_SOURCE_DIR}/add_on/scriptdictionary/scriptdictionary.cpp
+    ${angelscript_238_SOURCE_DIR}/add_on/scriptstdstring/scriptstdstring.cpp
     ${angelscript_238_SOURCE_DIR}/add_on/weakref/weakref.cpp)
   target_include_directories(angelscript_compat_runner PRIVATE
     ${angelscript_238_SOURCE_DIR}/add_on/scriptarray
+    ${angelscript_238_SOURCE_DIR}/add_on/scriptdictionary
+    ${angelscript_238_SOURCE_DIR}/add_on/scriptstdstring
     ${angelscript_238_SOURCE_DIR}/add_on/weakref)
   target_link_libraries(angelscript_compat_runner PRIVATE angelscript)
 
@@ -495,5 +500,12 @@ if(MINI_AS_BUILD_COMPAT_TESTS)
       -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
       -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
       -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/foreach_operator_protocol.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_dictionary_object
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/dictionary_object.as
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
 endif()

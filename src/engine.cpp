@@ -1222,15 +1222,16 @@ bool ScriptEngine::RegisterGlobalFunction(std::string declaration, GenericFuncti
     return true;
 }
 
-const TypeInfo* ScriptEngine::RegisterObjectType(std::string name) {
+const TypeInfo* ScriptEngine::RegisterObjectType(std::string name, bool garbageCollected) {
     if (name.find('<') != std::string::npos)
-        return RegisterTemplateType(std::move(name));
+        return RegisterTemplateType(std::move(name), {}, {}, garbageCollected);
     name = QualifyName(defaultNamespace_, std::move(name));
     if (name.empty() || HasRegisteredType(name)) return nullptr;
     auto type = std::make_unique<TypeInfo>();
     type->name = name;
     type->id = GetOrCreateTypeId(name);
     type->host = true;
+    type->collector = garbageCollected ? &garbageCollector_ : nullptr;
     type->accessMask = defaultAccessMask_;
     type->configGroup = currentConfigGroup_;
     const TypeInfo* result = type.get();

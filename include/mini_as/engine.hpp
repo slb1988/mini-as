@@ -11,6 +11,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace mini_as {
 
@@ -88,6 +89,10 @@ public:
     const GlobalMetadata* GetGlobalMetadataByName(std::string_view name) const;
     const GlobalMetadata* GetGlobalMetadataByDecl(std::string_view declaration) const;
     const BytecodeModule& Bytecode() const;
+    std::uint32_t SetAccessMask(std::uint32_t accessMask);
+    std::uint32_t GetAccessMask() const;
+    bool SetDefaultNamespace(std::string nameSpace);
+    const std::string& GetDefaultNamespace() const;
 
 private:
     friend class ScriptEngine;
@@ -98,6 +103,8 @@ private:
     std::shared_ptr<const ModuleImage> image_;
     std::vector<std::shared_ptr<const ModuleImage>> dynamicImages_;
     std::uint64_t nextDynamicFunctionSerial_ = 0;
+    std::uint32_t accessMask_ = ~std::uint32_t{0};
+    std::string defaultNamespace_;
 };
 
 class ScriptContext {
@@ -147,6 +154,13 @@ public:
     ~ScriptEngine() override;
 
     void SetMessageCallback(MessageCallback callback);
+    std::uint32_t SetDefaultAccessMask(std::uint32_t accessMask);
+    std::uint32_t GetDefaultAccessMask() const;
+    bool SetDefaultNamespace(std::string nameSpace);
+    const std::string& GetDefaultNamespace() const;
+    bool BeginConfigGroup(std::string name);
+    bool EndConfigGroup();
+    bool RemoveConfigGroup(std::string_view name);
     bool RegisterGlobalFunction(std::string declaration, GenericFunction callback);
     bool RegisterGlobalProperty(std::string declaration, Value* storage);
     const TypeInfo* RegisterObjectType(std::string name);
@@ -180,9 +194,12 @@ private:
     friend class ScriptModule;
     friend class ScriptContext;
     void ForwardDiagnostic(const Diagnostic& diagnostic) const;
-    std::vector<FunctionSignature> HostSignatures() const;
-    std::vector<GlobalSignature> HostPropertySignatures() const;
-    std::vector<ClassSignature> HostTypeSignatures() const;
+    std::vector<FunctionSignature> HostSignatures(std::uint32_t accessMask) const;
+    std::vector<GlobalSignature> HostPropertySignatures(std::uint32_t accessMask) const;
+    std::vector<ClassSignature> HostTypeSignatures(std::uint32_t accessMask) const;
+    std::vector<EnumSignature> HostEnums(std::uint32_t accessMask) const;
+    std::vector<TypedefSignature> HostTypedefs(std::uint32_t accessMask) const;
+    std::vector<FuncdefSignature> HostFuncdefs(std::uint32_t accessMask) const;
     DataType ResolveRegisteredType(DataType type) const;
     void ResolveRegisteredTypes(FunctionSignature& signature) const;
     bool HasRegisteredType(std::string_view name) const;
@@ -225,6 +242,16 @@ private:
     std::uint32_t nextTypeId_ = 0;
     std::uint32_t nextGlobalId_ = 0;
     std::unordered_map<const BytecodeFunction*, std::weak_ptr<const ModuleImage>> moduleImages_;
+    struct RegistrationControl {
+        std::uint32_t accessMask = ~std::uint32_t{0};
+        std::string configGroup;
+        bool active = true;
+    };
+    std::unordered_map<std::uint32_t, RegistrationControl> typeControls_;
+    std::uint32_t defaultAccessMask_ = ~std::uint32_t{0};
+    std::string defaultNamespace_;
+    std::string currentConfigGroup_;
+    std::unordered_set<std::string> configGroups_;
 };
 
 std::unique_ptr<ScriptEngine> CreateScriptEngine();

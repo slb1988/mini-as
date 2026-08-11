@@ -100,6 +100,14 @@ void MessageCallback(const asSMessageInfo* message, void*) {
     std::cerr << message->row << ':' << message->col << ':' << message->message << '\n';
 }
 
+void Scoped(asIScriptGeneric* call) {
+    call->SetReturnDWord(call->GetArgDWord(0) + 2);
+}
+
+void Hidden(asIScriptGeneric* call) {
+    call->SetReturnDWord(99);
+}
+
 struct DebugProbe {
     bool printed = false;
 };
@@ -144,6 +152,23 @@ int main(int argc, char** argv) {
     asIScriptEngine* engine = asCreateScriptEngine(ANGELSCRIPT_VERSION);
     if (!engine) return 3;
     int hostCounter = 40;
+    const bool hostControls = std::string(argv[1]).find("host_controls") != std::string::npos;
+    if (hostControls) {
+        if (engine->SetDefaultNamespace("HostTools") < 0 ||
+            engine->SetDefaultAccessMask(0x1u) != ~asDWORD(0) ||
+            engine->BeginConfigGroup("runtime") < 0 ||
+            engine->RegisterGlobalFunction("int Scoped(int value)",
+                asFUNCTION(Scoped), asCALL_GENERIC) < 0 ||
+            engine->EndConfigGroup() < 0) {
+            engine->ShutDownAndRelease(); return 3;
+        }
+        engine->SetDefaultAccessMask(0x2u);
+        if (engine->RegisterGlobalFunction("int Hidden()", asFUNCTION(Hidden), asCALL_GENERIC) < 0 ||
+            engine->SetDefaultNamespace("") < 0) {
+            engine->ShutDownAndRelease(); return 3;
+        }
+        engine->SetDefaultAccessMask(~asDWORD(0));
+    }
     engine->SetEngineProperty(asEP_ALLOW_UNSAFE_REFERENCES, true);
     engine->SetMessageCallback(asFUNCTION(MessageCallback), nullptr, asCALL_CDECL);
     RegisterScriptWeakRef(engine);
@@ -207,9 +232,13 @@ int main(int argc, char** argv) {
         return 7;
     }
     asIScriptModule* module = engine->GetModule("compat", asGM_ALWAYS_CREATE);
+    if (hostControls) module->SetAccessMask(0x1u);
     const std::string source = ReadFile(argv[1]);
     module->AddScriptSection("compat.as", source.c_str(), source.size());
     if (module->Build() < 0) { engine->ShutDownAndRelease(); return 8; }
+    if (hostControls && engine->RemoveConfigGroup("runtime") != asCONFIG_GROUP_IS_IN_USE) {
+        engine->ShutDownAndRelease(); return 8;
+    }
     if (std::string(argv[1]).find("registered_named_types") != std::string::npos &&
         (module->GetGlobalVarCount() != 2 ||
          module->GetGlobalVarIndexByDecl("HostColor selected") < 0 ||

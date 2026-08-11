@@ -49,6 +49,20 @@ int main(int argc, char** argv) {
         return 0;
     }
     auto engine = mini_as::CreateScriptEngine();
+    const bool hostControls = std::string(argv[1]).find("host_controls") != std::string::npos;
+    if (hostControls) {
+        if (!engine->SetDefaultNamespace("HostTools") ||
+            engine->SetDefaultAccessMask(0x1u) != ~std::uint32_t{0} ||
+            !engine->BeginConfigGroup("runtime") ||
+            !engine->RegisterGlobalFunction("int Scoped(int value)",
+                [](mini_as::GenericCall& call) { call.SetReturnInt(call.GetArgInt(0) + 2); }) ||
+            !engine->EndConfigGroup()) return 3;
+        engine->SetDefaultAccessMask(0x2u);
+        if (!engine->RegisterGlobalFunction("int Hidden()",
+                [](mini_as::GenericCall& call) { call.SetReturnInt(99); }) ||
+            !engine->SetDefaultNamespace("")) return 3;
+        engine->SetDefaultAccessMask(~std::uint32_t{0});
+    }
     mini_as::Value hostCounter(std::int32_t{40});
     engine->SetMessageCallback([](const mini_as::Diagnostic& diagnostic) {
         std::cerr << diagnostic.location.row << ':' << diagnostic.location.column
@@ -111,8 +125,10 @@ int main(int argc, char** argv) {
             call.SetReturnInt(value->value);
         })) return 12;
     auto* module = engine->GetModule("compat", mini_as::ModulePolicy::AlwaysCreate);
+    if (hostControls) module->SetAccessMask(0x1u);
     module->AddScriptSection("compat.as", ReadFile(argv[1]));
     if (!module->Build()) return 13;
+    if (hostControls && engine->RemoveConfigGroup("runtime")) return 13;
     if (std::string(argv[1]).find("registered_named_types") != std::string::npos) {
         const auto* selected = module->GetGlobalMetadataByDecl("HostColor selected");
         const auto* transform = module->GetGlobalMetadataByName("transform");

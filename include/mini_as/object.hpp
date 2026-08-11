@@ -39,6 +39,9 @@ struct TypeInfo {
     bool script = false;
     bool host = false;
     bool valueType = false;
+    std::uint32_t accessMask = ~std::uint32_t{0};
+    std::string configGroup;
+    bool active = true;
     Value defaultValue;
     std::string baseClass;
     const TypeInfo* baseType = nullptr;

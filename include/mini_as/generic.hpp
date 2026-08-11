@@ -52,17 +52,26 @@ using GenericPropertySetter = std::function<void(const ObjectHandle&, Value)>;
 struct RegisteredHostFunction {
     FunctionSignature signature;
     GenericFunction callback;
+    std::uint32_t accessMask = ~std::uint32_t{0};
+    std::string configGroup;
+    bool active = true;
 };
 
 struct RegisteredHostProperty {
     GlobalSignature signature;
     Value* storage = nullptr;
+    std::uint32_t accessMask = ~std::uint32_t{0};
+    std::string configGroup;
+    bool active = true;
 };
 
 struct RegisteredHostObjectProperty {
     FieldSignature signature;
     GenericPropertyGetter getter;
     GenericPropertySetter setter;
+    std::uint32_t accessMask = ~std::uint32_t{0};
+    std::string configGroup;
+    bool active = true;
 };
 
 std::optional<FunctionSignature> ParseFunctionDeclaration(

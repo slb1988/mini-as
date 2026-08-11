@@ -105,3 +105,65 @@ TEST_CASE(compat_facade_supports_dynamic_functions_bytecode_and_debug_queries) {
     CHECK(module->RemoveFunction(dynamic) == asSUCCESS);
     CHECK(module->RemoveFunction(dynamic) == asNO_FUNCTION);
 }
+
+TEST_CASE(host_namespaces_access_masks_and_configuration_groups_control_modules) {
+    using namespace mini_as::compat;
+    auto engine = CreateScriptEngine();
+    CHECK(engine->SetDefaultNamespace("HostTools") == asSUCCESS);
+    CHECK(std::string(engine->GetDefaultNamespace()) == "HostTools");
+    CHECK(engine->SetDefaultAccessMask(0x1u) == ~std::uint32_t{0});
+    CHECK(engine->BeginConfigGroup("runtime") == asSUCCESS);
+    CHECK(engine->BeginConfigGroup("nested") == asINVALID_ARG);
+    CHECK(engine->RegisterGlobalFunction("int Scoped(int value)",
+        [](mini_as::GenericCall& call) { call.SetReturnInt(call.GetArgInt(0) + 2); }) == asSUCCESS);
+    CHECK(engine->EndConfigGroup() == asSUCCESS);
+    CHECK(engine->EndConfigGroup() == asERROR);
+    CHECK(engine->SetDefaultAccessMask(0x2u) == 0x1u);
+    CHECK(engine->RegisterGlobalFunction("int Hidden()",
+        [](mini_as::GenericCall& call) { call.SetReturnInt(99); }) == asSUCCESS);
+    CHECK(engine->SetDefaultNamespace("") == asSUCCESS);
+
+    auto* visible = engine->GetModule("visible-controls", asGM_ALWAYS_CREATE);
+    CHECK(visible->SetAccessMask(0x1u) == 0x2u);
+    CHECK(visible->GetAccessMask() == 0x1u);
+    CHECK(visible->AddScriptSection("visible.as",
+        "namespace Scripts { int entry() { return HostTools::Scoped(40); } }") == asSUCCESS);
+    CHECK(visible->Build() == asSUCCESS);
+    CHECK(visible->SetDefaultNamespace("Scripts") == asSUCCESS);
+    CHECK(std::string(visible->GetDefaultNamespace()) == "Scripts");
+    CHECK(visible->GetFunctionByName("entry") != nullptr);
+    CHECK(visible->GetFunctionByDecl("int entry()") != nullptr);
+    const mini_as::BytecodeFunction* dynamic = nullptr;
+    CHECK(visible->CompileFunction("dynamic-controls",
+        "int dynamicEntry() { return entry(); }", 0, asCOMP_ADD_TO_MODULE,
+        &dynamic) == asSUCCESS);
+    CHECK(dynamic != nullptr);
+    CHECK(dynamic->signature.name == "Scripts::dynamicEntry");
+    CHECK(visible->GetFunctionByName("dynamicEntry") == dynamic);
+    CHECK(engine->RemoveConfigGroup("runtime") == asCONFIG_GROUP_IS_IN_USE);
+
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(visible->GetFunctionByName("entry")) == asSUCCESS);
+    CHECK(context->Execute() == asEXECUTION_FINISHED);
+    CHECK(context->GetReturnDWord() == 42);
+    CHECK(context->Prepare(dynamic) == asSUCCESS);
+    CHECK(context->Execute() == asEXECUTION_FINISHED);
+    CHECK(context->GetReturnDWord() == 42);
+
+    auto* hidden = engine->GetModule("hidden-controls", asGM_ALWAYS_CREATE);
+    hidden->SetAccessMask(0x1u);
+    CHECK(hidden->AddScriptSection("hidden.as",
+        "int main() { return HostTools::Hidden(); }") == asSUCCESS);
+    CHECK(hidden->Build() == asERROR);
+    CHECK(hidden->SetDefaultNamespace("bad::") == asINVALID_NAME);
+
+    auto removable = CreateScriptEngine();
+    CHECK(removable->BeginConfigGroup("temporary") == asSUCCESS);
+    CHECK(removable->RegisterGlobalFunction("int Temporary()",
+        [](mini_as::GenericCall& call) { call.SetReturnInt(1); }) == asSUCCESS);
+    CHECK(removable->EndConfigGroup() == asSUCCESS);
+    CHECK(removable->RemoveConfigGroup("temporary") == asSUCCESS);
+    auto* removed = removable->GetModule("removed-controls", asGM_ALWAYS_CREATE);
+    CHECK(removed->AddScriptSection("removed.as", "int main() { return Temporary(); }") == asSUCCESS);
+    CHECK(removed->Build() == asERROR);
+}

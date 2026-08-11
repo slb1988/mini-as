@@ -49,6 +49,16 @@ int ScriptModule::SaveByteCode(std::ostream& output) const {
 int ScriptModule::LoadByteCode(std::istream& input) {
     return module_->LoadBytecode(input) ? asSUCCESS : asERROR;
 }
+std::uint32_t ScriptModule::SetAccessMask(std::uint32_t accessMask) {
+    return module_->SetAccessMask(accessMask);
+}
+std::uint32_t ScriptModule::GetAccessMask() const { return module_->GetAccessMask(); }
+int ScriptModule::SetDefaultNamespace(const char* nameSpace) {
+    return nameSpace && module_->SetDefaultNamespace(nameSpace) ? asSUCCESS : asINVALID_NAME;
+}
+const char* ScriptModule::GetDefaultNamespace() const {
+    return module_->GetDefaultNamespace().c_str();
+}
 mini_as::ScriptModule& ScriptModule::Native() { return *module_; }
 const mini_as::ScriptModule& ScriptModule::Native() const { return *module_; }
 
@@ -162,6 +172,24 @@ ScriptEngine::ScriptEngine() : engine_(mini_as::CreateScriptEngine()) {}
 int ScriptEngine::SetMessageCallback(MessageCallback callback) {
     engine_->SetMessageCallback(std::move(callback));
     return asSUCCESS;
+}
+std::uint32_t ScriptEngine::SetDefaultAccessMask(std::uint32_t accessMask) {
+    return engine_->SetDefaultAccessMask(accessMask);
+}
+int ScriptEngine::SetDefaultNamespace(const char* nameSpace) {
+    return nameSpace && engine_->SetDefaultNamespace(nameSpace) ? asSUCCESS : asINVALID_NAME;
+}
+const char* ScriptEngine::GetDefaultNamespace() const {
+    return engine_->GetDefaultNamespace().c_str();
+}
+int ScriptEngine::BeginConfigGroup(const char* name) {
+    return name && engine_->BeginConfigGroup(name) ? asSUCCESS : asINVALID_ARG;
+}
+int ScriptEngine::EndConfigGroup() {
+    return engine_->EndConfigGroup() ? asSUCCESS : asERROR;
+}
+int ScriptEngine::RemoveConfigGroup(const char* name) {
+    return name && engine_->RemoveConfigGroup(name) ? asSUCCESS : asCONFIG_GROUP_IS_IN_USE;
 }
 int ScriptEngine::RegisterGlobalFunction(const char* declaration, GenericFunction callback) {
     if (!declaration || !*declaration) return asINVALID_DECLARATION;

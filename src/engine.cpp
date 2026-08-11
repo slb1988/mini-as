@@ -4,6 +4,7 @@
 #include <utility>
 #include <algorithm>
 #include <unordered_map>
+#include <cctype>
 
 namespace mini_as {
 namespace {
@@ -29,6 +30,33 @@ Value DefaultGlobalValue(const DataType& type, const ScriptEngine& engine) {
     if (type.kind == TypeKind::WeakRef || type.kind == TypeKind::ConstWeakRef)
         return Value(WeakObjectHandle(type.objectName, type.kind == TypeKind::ConstWeakRef));
     return Value{};
+}
+
+std::string QualifyName(std::string_view nameSpace, std::string name) {
+    if (nameSpace.empty() || name.find("::") != std::string::npos) return name;
+    return std::string(nameSpace) + "::" + name;
+}
+
+bool IsValidNamespace(std::string_view nameSpace) {
+    if (nameSpace.empty()) return true;
+    std::size_t begin = 0;
+    while (begin < nameSpace.size()) {
+        const std::size_t end = nameSpace.find("::", begin);
+        const auto part = nameSpace.substr(begin,
+            end == std::string_view::npos ? nameSpace.size() - begin : end - begin);
+        if (part.empty() || (!std::isalpha(static_cast<unsigned char>(part.front())) &&
+                             part.front() != '_')) return false;
+        for (const char character : part)
+            if (!std::isalnum(static_cast<unsigned char>(character)) && character != '_')
+                return false;
+        if (end == std::string_view::npos) return true;
+        begin = end + 2;
+    }
+    return false;
+}
+
+bool IsVisible(std::uint32_t registrationMask, std::uint32_t moduleMask) {
+    return (registrationMask & moduleMask) != 0;
 }
 
 void CollectDynamicDeclarations(AstNode* node, std::vector<AstNode*>& declarations) {
@@ -66,7 +94,8 @@ bool UsesCallableDescriptor(OpCode opcode) {
 std::string_view Version() { return "0.1.0-learning"; }
 
 ScriptModule::ScriptModule(ScriptEngine& engine, std::string name)
-    : engine_(engine), name_(std::move(name)), image_(std::make_shared<ModuleImage>()) {}
+    : engine_(engine), name_(std::move(name)), image_(std::make_shared<ModuleImage>()),
+      accessMask_(engine.GetDefaultAccessMask()) {}
 
 const std::string& ScriptModule::GetName() const { return name_; }
 
@@ -87,20 +116,23 @@ bool ScriptModule::Build() {
     SourceLocation endLocation{sections_.empty() ? name_ : sections_.back().name};
     tokens.push_back({TokenKind::End, {}, std::move(endLocation)});
     Parser parser(std::move(tokens), diagnostics);
-    for (const auto& type : engine_.hostEnums_) parser.RegisterEnumType(type.name);
-    for (const auto& type : engine_.hostTypedefs_)
+    const auto hostEnums = engine_.HostEnums(accessMask_);
+    const auto hostTypedefs = engine_.HostTypedefs(accessMask_);
+    const auto hostFuncdefs = engine_.HostFuncdefs(accessMask_);
+    for (const auto& type : hostEnums) parser.RegisterEnumType(type.name);
+    for (const auto& type : hostTypedefs)
         parser.RegisterTypedefType(type.name, type.underlyingType);
-    for (const auto& type : engine_.hostFuncdefs_) parser.RegisterFuncdefType(type.name);
+    for (const auto& type : hostFuncdefs) parser.RegisterFuncdefType(type.name);
     auto tree = parser.Parse();
     TypeChecker checker(diagnostics);
-    for (const auto& signature : engine_.HostSignatures()) checker.RegisterFunction(signature);
-    for (const auto& signature : engine_.HostPropertySignatures())
+    for (const auto& signature : engine_.HostSignatures(accessMask_)) checker.RegisterFunction(signature);
+    for (const auto& signature : engine_.HostPropertySignatures(accessMask_))
         checker.RegisterGlobalProperty(signature);
-    for (const auto& signature : engine_.HostTypeSignatures())
+    for (const auto& signature : engine_.HostTypeSignatures(accessMask_))
         checker.RegisterObjectType(signature);
-    for (const auto& signature : engine_.hostEnums_) checker.RegisterEnum(signature);
-    for (const auto& signature : engine_.hostTypedefs_) checker.RegisterTypedef(signature);
-    for (const auto& signature : engine_.hostFuncdefs_) checker.RegisterFuncdef(signature);
+    for (const auto& signature : hostEnums) checker.RegisterEnum(signature);
+    for (const auto& signature : hostTypedefs) checker.RegisterTypedef(signature);
+    for (const auto& signature : hostFuncdefs) checker.RegisterFuncdef(signature);
     const bool typed = !diagnostics.HasErrors() && checker.Check(tree.root);
     if (!typed) return false;
     auto functions = checker.Functions();
@@ -142,10 +174,12 @@ bool ScriptModule::Build() {
     }
     for (const auto& type : classes) if (!type.host) engine_.LinkScriptType(type);
     for (const auto& host : engine_.hostFunctions_)
-        candidate.hostFunctions.push_back({host.signature.id, &host});
+        if (host.active && IsVisible(host.accessMask, accessMask_))
+            candidate.hostFunctions.push_back({host.signature.id, &host});
     for (auto& binding : candidate.globals) {
         if (!binding.signature.host) continue;
         for (const auto& host : engine_.hostProperties_) {
+            if (!host.active || !IsVisible(host.accessMask, accessMask_)) continue;
             if (host.signature.id == binding.signature.id) {
                 binding.host = &host;
                 break;
@@ -222,19 +256,29 @@ bool ScriptModule::Build() {
 }
 
 const BytecodeFunction* ScriptModule::GetFunctionByDecl(std::string_view declaration) const {
+    std::string requested(declaration);
+    if (!defaultNamespace_.empty()) {
+        DiagnosticSink diagnostics;
+        auto parsed = ParseFunctionDeclaration(declaration, diagnostics);
+        if (parsed && parsed->name.find("::") == std::string::npos) {
+            parsed->name = QualifyName(defaultNamespace_, parsed->name);
+            requested = parsed->Declaration();
+        }
+    }
     for (const auto& function : image_->bytecode.functions) {
         if (std::find(image_->removedFunctions.begin(), image_->removedFunctions.end(),
                       function.signature.id) != image_->removedFunctions.end()) continue;
-        if (function.signature.Declaration() == declaration) return &function;
+        if (function.signature.Declaration() == requested) return &function;
     }
     return nullptr;
 }
 
 const BytecodeFunction* ScriptModule::GetFunctionByName(std::string_view name) const {
+    const std::string requested = QualifyName(defaultNamespace_, std::string(name));
     for (const auto& function : image_->bytecode.functions) {
         if (std::find(image_->removedFunctions.begin(), image_->removedFunctions.end(),
                       function.signature.id) != image_->removedFunctions.end()) continue;
-        if (function.signature.name == name) return &function;
+        if (function.signature.name == requested) return &function;
     }
     return nullptr;
 }
@@ -266,6 +310,8 @@ const BytecodeFunction* ScriptModule::CompileFunction(std::string sectionName,
     DiagnosticSink diagnostics([this](const Diagnostic& diagnostic) {
         engine_.ForwardDiagnostic(diagnostic);
     });
+    if (!defaultNamespace_.empty())
+        source = "namespace " + defaultNamespace_ + " { " + source + " }";
     Tokenizer tokenizer(sectionName, source, diagnostics);
     auto tokens = tokenizer.ScanAll();
     for (auto& token : tokens) token.location.row += lineOffset;
@@ -273,12 +319,12 @@ const BytecodeFunction* ScriptModule::CompileFunction(std::string sectionName,
 
     ModuleCompilationEnvironment base = image_->environment;
     if (!image_->state) {
-        base.functions = engine_.HostSignatures();
-        base.globals = engine_.HostPropertySignatures();
-        base.classes = engine_.HostTypeSignatures();
-        base.enums = engine_.hostEnums_;
-        base.typedefs = engine_.hostTypedefs_;
-        base.funcdefs = engine_.hostFuncdefs_;
+        base.functions = engine_.HostSignatures(accessMask_);
+        base.globals = engine_.HostPropertySignatures(accessMask_);
+        base.classes = engine_.HostTypeSignatures(accessMask_);
+        base.enums = engine_.HostEnums(accessMask_);
+        base.typedefs = engine_.HostTypedefs(accessMask_);
+        base.funcdefs = engine_.HostFuncdefs(accessMask_);
     }
     for (const auto& type : base.enums) parser.RegisterEnumType(type.name);
     for (const auto& type : base.typedefs)
@@ -365,10 +411,12 @@ const BytecodeFunction* ScriptModule::CompileFunction(std::string sectionName,
         if (!candidate.FindFunction(existing.signature.id))
             candidate.functions.push_back(existing);
     for (const auto& host : engine_.hostFunctions_)
-        candidate.hostFunctions.push_back({host.signature.id, &host});
+        if (host.active && IsVisible(host.accessMask, accessMask_))
+            candidate.hostFunctions.push_back({host.signature.id, &host});
     for (auto& binding : candidate.globals) {
         if (!binding.signature.host) continue;
         for (const auto& host : engine_.hostProperties_) {
+            if (!host.active || !IsVisible(host.accessMask, accessMask_)) continue;
             if (host.signature.id == binding.signature.id) {
                 binding.host = &host;
                 break;
@@ -489,7 +537,7 @@ bool ScriptModule::LoadBytecode(std::istream& input) {
         FunctionId replacement;
         if (signature.host) {
             for (const auto& host : engine_.hostFunctions_)
-                if (sameCallable(signature, host.signature)) replacement = host.signature.id;
+                if (host.active && sameCallable(signature, host.signature)) replacement = host.signature.id;
             if (!replacement.IsValid()) { linked = false; return; }
         } else {
             replacement = engine_.GetOrCreateFunctionId(
@@ -514,9 +562,16 @@ bool ScriptModule::LoadBytecode(std::istream& input) {
         if (host) {
             const TypeInfo* current = engine_.GetTypeInfo(name);
             if (current) replacement = current->id;
-            for (const auto& type : engine_.hostEnums_) if (type.name == name) replacement = type.id;
-            for (const auto& type : engine_.hostTypedefs_) if (type.name == name) replacement = type.id;
-            for (const auto& type : engine_.hostFuncdefs_) if (type.name == name) replacement = type.id;
+            const auto active = [&](TypeId candidate) {
+                const auto control = engine_.typeControls_.find(candidate.value);
+                return control != engine_.typeControls_.end() && control->second.active;
+            };
+            for (const auto& type : engine_.hostEnums_)
+                if (type.name == name && active(type.id)) replacement = type.id;
+            for (const auto& type : engine_.hostTypedefs_)
+                if (type.name == name && active(type.id)) replacement = type.id;
+            for (const auto& type : engine_.hostFuncdefs_)
+                if (type.name == name && active(type.id)) replacement = type.id;
             if (!replacement.IsValid()) { linked = false; return; }
         } else replacement = engine_.GetOrCreateTypeId(name);
         typeIds.emplace(old, replacement);
@@ -526,6 +581,8 @@ bool ScriptModule::LoadBytecode(std::istream& input) {
     for (auto& type : archive.environment.enums) {
         bool host = false;
         for (const auto& current : engine_.hostEnums_) {
+            const auto control = engine_.typeControls_.find(current.id.value);
+            if (control == engine_.typeControls_.end() || !control->second.active) continue;
             if (current.name != type.name) continue;
             host = true;
             if (current.values.size() != type.values.size()) linked = false;
@@ -539,6 +596,8 @@ bool ScriptModule::LoadBytecode(std::istream& input) {
     for (auto& type : archive.environment.typedefs) {
         bool host = false;
         for (const auto& current : engine_.hostTypedefs_) {
+            const auto control = engine_.typeControls_.find(current.id.value);
+            if (control == engine_.typeControls_.end() || !control->second.active) continue;
             if (current.name != type.name) continue;
             host = true;
             if (current.underlyingType != type.underlyingType) linked = false;
@@ -548,6 +607,8 @@ bool ScriptModule::LoadBytecode(std::istream& input) {
     for (auto& type : archive.environment.funcdefs) {
         bool host = false;
         for (const auto& current : engine_.hostFuncdefs_) {
+            const auto control = engine_.typeControls_.find(current.id.value);
+            if (control == engine_.typeControls_.end() || !control->second.active) continue;
             if (current.name != type.name) continue;
             host = true;
             if (current.signature.Declaration() != type.signature.Declaration()) linked = false;
@@ -568,7 +629,7 @@ bool ScriptModule::LoadBytecode(std::istream& input) {
         GlobalId replacement;
         if (signature.host) {
             for (const auto& host : engine_.hostProperties_)
-                if (host.signature.name == signature.name &&
+                if (host.active && host.signature.name == signature.name &&
                     host.signature.type == signature.type &&
                     host.signature.isConst == signature.isConst)
                     replacement = host.signature.id;
@@ -658,7 +719,7 @@ bool ScriptModule::LoadBytecode(std::istream& input) {
     }
 
     std::vector<const TypeInfo*> linkedTypes;
-    const auto currentHostTypes = engine_.HostTypeSignatures();
+    const auto currentHostTypes = engine_.HostTypeSignatures(~std::uint32_t{0});
     for (auto& type : archive.environment.classes) {
         if (type.host) {
             const TypeInfo* current = engine_.GetTypeInfo(type.name);
@@ -696,11 +757,11 @@ bool ScriptModule::LoadBytecode(std::istream& input) {
     for (const auto& type : archive.environment.classes)
         if (!type.host) engine_.LinkScriptType(type);
     for (const auto& host : engine_.hostFunctions_)
-        archive.bytecode.hostFunctions.push_back({host.signature.id, &host});
+        if (host.active) archive.bytecode.hostFunctions.push_back({host.signature.id, &host});
     for (auto& binding : archive.bytecode.globals) {
         if (!binding.signature.host) continue;
         for (const auto& host : engine_.hostProperties_)
-            if (host.signature.id == binding.signature.id) binding.host = &host;
+            if (host.active && host.signature.id == binding.signature.id) binding.host = &host;
         if (!binding.host) linked = false;
     }
     for (const auto* type : linkedTypes)
@@ -792,6 +853,19 @@ const GlobalMetadata* ScriptModule::GetGlobalMetadataByDecl(
 }
 
 const BytecodeModule& ScriptModule::Bytecode() const { return image_->bytecode; }
+
+std::uint32_t ScriptModule::SetAccessMask(std::uint32_t accessMask) {
+    const auto previous = accessMask_;
+    accessMask_ = accessMask;
+    return previous;
+}
+std::uint32_t ScriptModule::GetAccessMask() const { return accessMask_; }
+bool ScriptModule::SetDefaultNamespace(std::string nameSpace) {
+    if (!IsValidNamespace(nameSpace)) return false;
+    defaultNamespace_ = std::move(nameSpace);
+    return true;
+}
+const std::string& ScriptModule::GetDefaultNamespace() const { return defaultNamespace_; }
 
 ScriptContext::ScriptContext(ScriptEngine& engine) : engine_(engine) {
     vm_.SetLineCallback([this](const SourceLocation& location) {
@@ -929,6 +1003,90 @@ bool ScriptContext::SetArgument(std::size_t index, Value value) {
 
 void ScriptEngine::SetMessageCallback(MessageCallback callback) { messageCallback_ = std::move(callback); }
 
+std::uint32_t ScriptEngine::SetDefaultAccessMask(std::uint32_t accessMask) {
+    const auto previous = defaultAccessMask_;
+    defaultAccessMask_ = accessMask;
+    return previous;
+}
+std::uint32_t ScriptEngine::GetDefaultAccessMask() const { return defaultAccessMask_; }
+bool ScriptEngine::SetDefaultNamespace(std::string nameSpace) {
+    if (!IsValidNamespace(nameSpace)) return false;
+    defaultNamespace_ = std::move(nameSpace);
+    return true;
+}
+const std::string& ScriptEngine::GetDefaultNamespace() const { return defaultNamespace_; }
+bool ScriptEngine::BeginConfigGroup(std::string name) {
+    if (name.empty() || !currentConfigGroup_.empty() || configGroups_.count(name)) return false;
+    currentConfigGroup_ = std::move(name);
+    configGroups_.insert(currentConfigGroup_);
+    return true;
+}
+bool ScriptEngine::EndConfigGroup() {
+    if (currentConfigGroup_.empty()) return false;
+    currentConfigGroup_.clear();
+    return true;
+}
+bool ScriptEngine::RemoveConfigGroup(std::string_view name) {
+    if (name.empty() || !currentConfigGroup_.empty() || !configGroups_.count(std::string(name)))
+        return false;
+    const auto functionInGroup = [&](FunctionId id) {
+        for (const auto& host : hostFunctions_)
+            if (host.active && host.signature.id == id && host.configGroup == name) return true;
+        return false;
+    };
+    const auto globalInGroup = [&](GlobalId id) {
+        for (const auto& host : hostProperties_)
+            if (host.active && host.signature.id == id && host.configGroup == name) return true;
+        return false;
+    };
+    const auto typeInGroup = [&](TypeId id) {
+        const auto found = typeControls_.find(id.value);
+        return found != typeControls_.end() && found->second.active &&
+               found->second.configGroup == name;
+    };
+    const auto environmentUsesGroup = [&](const ModuleCompilationEnvironment& environment) {
+        for (const auto& function : environment.functions)
+            if (function.host && functionInGroup(function.id)) return true;
+        for (const auto& global : environment.globals)
+            if (global.host && globalInGroup(global.id)) return true;
+        for (const auto& type : environment.classes) {
+            if (!type.host) continue;
+            if (typeInGroup(type.id)) return true;
+            for (const auto& method : type.methods)
+                if (functionInGroup(method.id)) return true;
+            for (const auto& field : type.fields)
+                for (const auto& property : hostObjectProperties_)
+                    if (property.active && property.configGroup == name &&
+                        property.signature.objectType == type.name &&
+                        property.signature.name == field.name) return true;
+        }
+        for (const auto& type : environment.enums) if (typeInGroup(type.id)) return true;
+        for (const auto& type : environment.typedefs) if (typeInGroup(type.id)) return true;
+        for (const auto& type : environment.funcdefs) if (typeInGroup(type.id)) return true;
+        return false;
+    };
+    std::unordered_set<const ModuleImage*> checked;
+    for (const auto& entry : modules_) {
+        if (!entry.second->image_ || !entry.second->image_->state) continue;
+        checked.insert(entry.second->image_.get());
+        if (environmentUsesGroup(entry.second->image_->environment)) return false;
+    }
+    for (const auto& entry : moduleImages_) {
+        const auto image = entry.second.lock();
+        if (!image || !image->state || !checked.insert(image.get()).second) continue;
+        if (environmentUsesGroup(image->environment)) return false;
+    }
+    for (auto& host : hostFunctions_) if (host.configGroup == name) host.active = false;
+    for (auto& host : hostProperties_) if (host.configGroup == name) host.active = false;
+    for (auto& host : hostObjectProperties_) if (host.configGroup == name) host.active = false;
+    for (auto& entry : objectTypes_)
+        if (entry.second->configGroup == name) entry.second->active = false;
+    for (auto& entry : typeControls_)
+        if (entry.second.configGroup == name) entry.second.active = false;
+    configGroups_.erase(std::string(name));
+    return true;
+}
+
 ScriptEngine::~ScriptEngine() {
     for (auto& entry : modules_) {
         if (!entry.second->image_ || !entry.second->image_->state) continue;
@@ -945,6 +1103,7 @@ bool ScriptEngine::RegisterGlobalFunction(std::string declaration, GenericFuncti
     DiagnosticSink diagnostics([this](const Diagnostic& diagnostic) { ForwardDiagnostic(diagnostic); });
     auto signature = ParseFunctionDeclaration(declaration, diagnostics);
     if (!signature || !callback) return false;
+    signature->name = QualifyName(defaultNamespace_, std::move(signature->name));
     ResolveRegisteredTypes(*signature);
     if (signature->readOnlyMethod) {
         diagnostics.Report({"registration"}, Severity::Error,
@@ -957,6 +1116,7 @@ bool ScriptEngine::RegisterGlobalFunction(std::string declaration, GenericFuncti
         return false;
     }
     for (const auto& existing : hostFunctions_) {
+        if (!existing.active) continue;
         if (existing.signature.factory || existing.signature.method) continue;
         if (existing.signature.name == signature->name &&
             existing.signature.parameters == signature->parameters) {
@@ -966,28 +1126,34 @@ bool ScriptEngine::RegisterGlobalFunction(std::string declaration, GenericFuncti
         }
     }
     signature->id = GetOrCreateFunctionId("$host\n" + signature->Declaration());
-    hostFunctions_.push_back({std::move(*signature), std::move(callback)});
+    hostFunctions_.push_back({std::move(*signature), std::move(callback),
+                              defaultAccessMask_, currentConfigGroup_, true});
     PublishFunctionMetadata(hostFunctions_.back().signature);
     return true;
 }
 
 const TypeInfo* ScriptEngine::RegisterObjectType(std::string name) {
+    name = QualifyName(defaultNamespace_, std::move(name));
     if (name.empty() || HasRegisteredType(name)) return nullptr;
     auto type = std::make_unique<TypeInfo>();
     type->name = name;
     type->id = GetOrCreateTypeId(name);
     type->host = true;
+    type->accessMask = defaultAccessMask_;
+    type->configGroup = currentConfigGroup_;
     const TypeInfo* result = type.get();
-    objectTypes_.emplace(std::move(name), std::move(type));
+    objectTypes_.insert_or_assign(std::move(name), std::move(type));
     ClassSignature signature;
     signature.name = result->name;
     signature.id = result->id;
     signature.host = true;
+    typeControls_[result->id.value] = {defaultAccessMask_, currentConfigGroup_, true};
     PublishObjectMetadata(signature);
     return result;
 }
 
 const TypeInfo* ScriptEngine::RegisterValueType(std::string name, Value defaultValue) {
+    name = QualifyName(defaultNamespace_, std::move(name));
     if (name.empty() || HasRegisteredType(name) ||
         defaultValue.Type() != DataType::Object(name, false)) return nullptr;
     auto type = std::make_unique<TypeInfo>();
@@ -995,28 +1161,38 @@ const TypeInfo* ScriptEngine::RegisterValueType(std::string name, Value defaultV
     type->id = GetOrCreateTypeId(name);
     type->host = true;
     type->valueType = true;
+    type->accessMask = defaultAccessMask_;
+    type->configGroup = currentConfigGroup_;
     type->defaultValue = std::move(defaultValue);
     const TypeInfo* result = type.get();
-    objectTypes_.emplace(std::move(name), std::move(type));
+    objectTypes_.insert_or_assign(std::move(name), std::move(type));
     ClassSignature signature;
     signature.name = result->name;
     signature.id = result->id;
     signature.host = true;
     signature.valueType = true;
     signature.defaultValue = result->defaultValue;
+    typeControls_[result->id.value] = {defaultAccessMask_, currentConfigGroup_, true};
     PublishObjectMetadata(signature);
     return result;
 }
 
 bool ScriptEngine::RegisterEnum(std::string name) {
     DiagnosticSink diagnostics([this](const Diagnostic& diagnostic) { ForwardDiagnostic(diagnostic); });
+    name = QualifyName(defaultNamespace_, std::move(name));
     if (name.empty() || HasRegisteredType(name)) {
         diagnostics.Report({"registration"}, Severity::Error,
                            "duplicate or invalid registered enum '" + name + "'");
         return false;
     }
+    hostEnums_.erase(std::remove_if(hostEnums_.begin(), hostEnums_.end(),
+        [&](const auto& existing) {
+            const auto control = typeControls_.find(existing.id.value);
+            return existing.name == name && control != typeControls_.end() && !control->second.active;
+        }), hostEnums_.end());
     hostEnums_.push_back({std::move(name), {}, {}});
     hostEnums_.back().id = GetOrCreateTypeId(hostEnums_.back().name);
+    typeControls_[hostEnums_.back().id.value] = {defaultAccessMask_, currentConfigGroup_, true};
     PublishEnumMetadata(hostEnums_.back(), true);
     return true;
 }
@@ -1024,6 +1200,7 @@ bool ScriptEngine::RegisterEnum(std::string name) {
 bool ScriptEngine::RegisterEnumValue(std::string enumName, std::string valueName,
                                      std::int32_t value) {
     DiagnosticSink diagnostics([this](const Diagnostic& diagnostic) { ForwardDiagnostic(diagnostic); });
+    enumName = QualifyName(defaultNamespace_, std::move(enumName));
     const auto type = std::find_if(hostEnums_.begin(), hostEnums_.end(),
         [&](const auto& candidate) { return candidate.name == enumName; });
     if (type == hostEnums_.end()) {
@@ -1053,6 +1230,7 @@ bool ScriptEngine::RegisterEnumValue(std::string enumName, std::string valueName
 
 bool ScriptEngine::RegisterTypedef(std::string name, DataType underlyingType) {
     DiagnosticSink diagnostics([this](const Diagnostic& diagnostic) { ForwardDiagnostic(diagnostic); });
+    name = QualifyName(defaultNamespace_, std::move(name));
     const bool primitive = underlyingType == DataType::Bool() || underlyingType.IsInteger() ||
         underlyingType == DataType::Float() || underlyingType == DataType::Double();
     if (name.empty() || HasRegisteredType(name) || !primitive ||
@@ -1061,8 +1239,14 @@ bool ScriptEngine::RegisterTypedef(std::string name, DataType underlyingType) {
                            "registered typedef requires a unique name and primitive type");
         return false;
     }
+    hostTypedefs_.erase(std::remove_if(hostTypedefs_.begin(), hostTypedefs_.end(),
+        [&](const auto& existing) {
+            const auto control = typeControls_.find(existing.id.value);
+            return existing.name == name && control != typeControls_.end() && !control->second.active;
+        }), hostTypedefs_.end());
     hostTypedefs_.push_back({std::move(name), std::move(underlyingType), {}});
     hostTypedefs_.back().id = GetOrCreateTypeId(hostTypedefs_.back().name);
+    typeControls_[hostTypedefs_.back().id.value] = {defaultAccessMask_, currentConfigGroup_, true};
     PublishTypedefMetadata(hostTypedefs_.back(), true);
     return true;
 }
@@ -1071,6 +1255,7 @@ bool ScriptEngine::RegisterFuncdef(std::string declaration) {
     DiagnosticSink diagnostics([this](const Diagnostic& diagnostic) { ForwardDiagnostic(diagnostic); });
     auto signature = ParseFunctionDeclaration(declaration, diagnostics);
     if (!signature) return false;
+    signature->name = QualifyName(defaultNamespace_, std::move(signature->name));
     ResolveRegisteredTypes(*signature);
     if (signature->name.empty() || HasRegisteredType(signature->name) ||
         signature->readOnlyMethod) {
@@ -1078,9 +1263,15 @@ bool ScriptEngine::RegisterFuncdef(std::string declaration) {
                            "duplicate or invalid registered funcdef '" + signature->name + "'");
         return false;
     }
+    hostFuncdefs_.erase(std::remove_if(hostFuncdefs_.begin(), hostFuncdefs_.end(),
+        [&](const auto& existing) {
+            const auto control = typeControls_.find(existing.id.value);
+            return existing.name == signature->name && control != typeControls_.end() && !control->second.active;
+        }), hostFuncdefs_.end());
     signature->host = false;
     FuncdefSignature type{signature->name, std::move(*signature), {}, {}};
     type.id = GetOrCreateTypeId(type.name);
+    typeControls_[type.id.value] = {defaultAccessMask_, currentConfigGroup_, true};
     hostFuncdefs_.push_back(std::move(type));
     PublishFuncdefMetadata(hostFuncdefs_.back(), true);
     return true;
@@ -1089,6 +1280,7 @@ bool ScriptEngine::RegisterFuncdef(std::string declaration) {
 bool ScriptEngine::RegisterObjectFactory(std::string typeName, std::string declaration,
                                          GenericFunction callback) {
     DiagnosticSink diagnostics([this](const Diagnostic& diagnostic) { ForwardDiagnostic(diagnostic); });
+    typeName = QualifyName(defaultNamespace_, std::move(typeName));
     const auto type = objectTypes_.find(typeName);
     if (type == objectTypes_.end() || !type->second->host || type->second->valueType) {
         diagnostics.Report({"registration"}, Severity::Error,
@@ -1111,6 +1303,7 @@ bool ScriptEngine::RegisterObjectFactory(std::string typeName, std::string decla
         return false;
     }
     for (const auto& existing : hostFunctions_) {
+        if (!existing.active) continue;
         if (!existing.signature.factory || existing.signature.objectType != typeName ||
             existing.signature.parameters != signature->parameters) continue;
         diagnostics.Report({"registration"}, Severity::Error,
@@ -1121,9 +1314,10 @@ bool ScriptEngine::RegisterObjectFactory(std::string typeName, std::string decla
     signature->objectType = typeName;
     signature->id = GetOrCreateFunctionId("$factory\n" + typeName + "\n" +
                                           signature->Declaration());
-    hostFunctions_.push_back({std::move(*signature), std::move(callback)});
+    hostFunctions_.push_back({std::move(*signature), std::move(callback),
+                              defaultAccessMask_, currentConfigGroup_, true});
     PublishFunctionMetadata(hostFunctions_.back().signature);
-    for (const auto& registered : HostTypeSignatures())
+    for (const auto& registered : HostTypeSignatures(~std::uint32_t{0}))
         if (registered.name == typeName) PublishObjectMetadata(registered);
     return true;
 }
@@ -1131,6 +1325,7 @@ bool ScriptEngine::RegisterObjectFactory(std::string typeName, std::string decla
 bool ScriptEngine::RegisterObjectMethod(std::string typeName, std::string declaration,
                                         GenericFunction callback) {
     DiagnosticSink diagnostics([this](const Diagnostic& diagnostic) { ForwardDiagnostic(diagnostic); });
+    typeName = QualifyName(defaultNamespace_, std::move(typeName));
     const auto type = objectTypes_.find(typeName);
     if (type == objectTypes_.end() || !type->second->host) {
         diagnostics.Report({"registration"}, Severity::Error,
@@ -1156,6 +1351,7 @@ bool ScriptEngine::RegisterObjectMethod(std::string typeName, std::string declar
         return false;
     }
     for (const auto& existing : hostFunctions_) {
+        if (!existing.active) continue;
         if (!existing.signature.method || existing.signature.objectType != typeName ||
             existing.signature.name != signature->name ||
             existing.signature.parameters != signature->parameters) continue;
@@ -1167,9 +1363,10 @@ bool ScriptEngine::RegisterObjectMethod(std::string typeName, std::string declar
     signature->objectType = typeName;
     signature->id = GetOrCreateFunctionId("$host-method\n" + typeName + "\n" +
                                           signature->Declaration());
-    hostFunctions_.push_back({std::move(*signature), std::move(callback)});
+    hostFunctions_.push_back({std::move(*signature), std::move(callback),
+                              defaultAccessMask_, currentConfigGroup_, true});
     PublishFunctionMetadata(hostFunctions_.back().signature);
-    for (const auto& registered : HostTypeSignatures())
+    for (const auto& registered : HostTypeSignatures(~std::uint32_t{0}))
         if (registered.name == typeName) PublishObjectMetadata(registered);
     return true;
 }
@@ -1178,6 +1375,7 @@ bool ScriptEngine::RegisterObjectProperty(std::string typeName, std::string decl
                                           GenericPropertyGetter getter,
                                           GenericPropertySetter setter) {
     DiagnosticSink diagnostics([this](const Diagnostic& diagnostic) { ForwardDiagnostic(diagnostic); });
+    typeName = QualifyName(defaultNamespace_, std::move(typeName));
     const auto type = objectTypes_.find(typeName);
     if (type == objectTypes_.end() || !type->second->host || type->second->valueType) {
         diagnostics.Report({"registration"}, Severity::Error,
@@ -1217,6 +1415,7 @@ bool ScriptEngine::RegisterObjectProperty(std::string typeName, std::string decl
         return false;
     }
     for (const auto& existing : hostObjectProperties_) {
+        if (!existing.active) continue;
         if (existing.signature.objectType != typeName ||
             existing.signature.name != parsed->name) continue;
         diagnostics.Report({"registration"}, Severity::Error,
@@ -1226,49 +1425,90 @@ bool ScriptEngine::RegisterObjectProperty(std::string typeName, std::string decl
     FieldSignature signature{parsed->name, parsed->type, typeName, MemberAccess::Public,
                              parsed->isConst, true};
     hostObjectProperties_.push_back(
-        {std::move(signature), std::move(getter), std::move(setter)});
+        {std::move(signature), std::move(getter), std::move(setter),
+         defaultAccessMask_, currentConfigGroup_, true});
     const auto* property = &hostObjectProperties_.back();
     type->second->fields.emplace_back(property->signature.name, property->signature.type);
     type->second->hostProperties.push_back(property);
-    for (const auto& registered : HostTypeSignatures())
+    for (const auto& registered : HostTypeSignatures(~std::uint32_t{0}))
         if (registered.name == typeName) PublishObjectMetadata(registered);
     return true;
 }
 
 const TypeInfo* ScriptEngine::GetTypeInfo(std::string_view name) const {
-    const auto found = objectTypes_.find(std::string(name));
-    return found == objectTypes_.end() ? nullptr : found->second.get();
+    auto found = objectTypes_.find(std::string(name));
+    if (found == objectTypes_.end() && name.find("::") == std::string_view::npos)
+        found = objectTypes_.find(QualifyName(defaultNamespace_, std::string(name)));
+    return found == objectTypes_.end() || !found->second->active ? nullptr : found->second.get();
 }
 
-std::size_t ScriptEngine::GetTypeMetadataCount() const { return typeMetadata_.size(); }
+std::size_t ScriptEngine::GetTypeMetadataCount() const {
+    std::size_t count = 0;
+    for (const auto& metadata : typeMetadata_) {
+        const auto control = typeControls_.find(metadata.id.value);
+        if (control == typeControls_.end() || control->second.active) ++count;
+    }
+    return count;
+}
 
 const TypeMetadata* ScriptEngine::GetTypeMetadataByIndex(std::size_t index) const {
-    return index < typeMetadata_.size() ? &typeMetadata_[index] : nullptr;
+    for (const auto& metadata : typeMetadata_) {
+        const auto control = typeControls_.find(metadata.id.value);
+        if (control != typeControls_.end() && !control->second.active) continue;
+        if (index-- == 0) return &metadata;
+    }
+    return nullptr;
 }
 
 const TypeMetadata* ScriptEngine::GetTypeMetadataById(TypeId id) const {
     for (const auto& metadata : typeMetadata_)
-        if (metadata.id == id) return &metadata;
+        if (metadata.id == id) {
+            const auto control = typeControls_.find(id.value);
+            return control == typeControls_.end() || control->second.active ? &metadata : nullptr;
+        }
     return nullptr;
 }
 
 const TypeMetadata* ScriptEngine::GetTypeMetadataByName(std::string_view name) const {
+    const std::string requested = QualifyName(defaultNamespace_, std::string(name));
     for (const auto& metadata : typeMetadata_)
-        if (metadata.name == name) return &metadata;
+        if (metadata.name == name || metadata.name == requested) {
+            const auto control = typeControls_.find(metadata.id.value);
+            return control == typeControls_.end() || control->second.active ? &metadata : nullptr;
+        }
     return nullptr;
 }
 
 std::size_t ScriptEngine::GetFunctionMetadataCount() const {
-    return functionMetadata_.size();
+    std::size_t count = 0;
+    for (const auto& metadata : functionMetadata_) {
+        bool host = false, active = false;
+        for (const auto& candidate : hostFunctions_)
+            if (candidate.signature.id == metadata.id) { host = true; active = active || candidate.active; }
+        if (!host || active) ++count;
+    }
+    return count;
 }
 
 const FunctionMetadata* ScriptEngine::GetFunctionMetadataByIndex(std::size_t index) const {
-    return index < functionMetadata_.size() ? &functionMetadata_[index] : nullptr;
+    for (const auto& metadata : functionMetadata_) {
+        bool host = false, active = false;
+        for (const auto& candidate : hostFunctions_)
+            if (candidate.signature.id == metadata.id) { host = true; active = active || candidate.active; }
+        if (host && !active) continue;
+        if (index-- == 0) return &metadata;
+    }
+    return nullptr;
 }
 
 const FunctionMetadata* ScriptEngine::GetFunctionMetadataById(FunctionId id) const {
     for (const auto& metadata : functionMetadata_)
-        if (metadata.id == id) return &metadata;
+        if (metadata.id == id) {
+            bool host = false, active = false;
+            for (const auto& candidate : hostFunctions_)
+                if (candidate.signature.id == id) { host = true; active = active || candidate.active; }
+            return !host || active ? &metadata : nullptr;
+        }
     return nullptr;
 }
 
@@ -1287,6 +1527,7 @@ bool ScriptEngine::RegisterGlobalProperty(std::string declaration, Value* storag
                                "global property storage cannot be null");
         return false;
     }
+    signature->name = QualifyName(defaultNamespace_, std::move(signature->name));
     signature->type = ResolveRegisteredType(std::move(signature->type));
     if (!signature->type.IsNumeric() && signature->type != DataType::Bool() &&
         signature->type != DataType::String()) {
@@ -1300,13 +1541,15 @@ bool ScriptEngine::RegisterGlobalProperty(std::string declaration, Value* storag
         return false;
     }
     for (const auto& existing : hostProperties_) {
+        if (!existing.active) continue;
         if (existing.signature.name != signature->name) continue;
         diagnostics.Report({"registration"}, Severity::Error,
                            "duplicate global property '" + signature->name + "'");
         return false;
     }
     signature->id = GetOrCreateGlobalId("$host\n" + signature->name);
-    hostProperties_.push_back({std::move(*signature), storage});
+    hostProperties_.push_back({std::move(*signature), storage,
+                               defaultAccessMask_, currentConfigGroup_, true});
     return true;
 }
 std::size_t ScriptEngine::GetTrackedObjectCount() const { return garbageCollector_.TrackedCount(); }
@@ -1381,25 +1624,29 @@ void ScriptEngine::ForwardDiagnostic(const Diagnostic& diagnostic) const {
     if (messageCallback_) messageCallback_(diagnostic);
 }
 
-std::vector<FunctionSignature> ScriptEngine::HostSignatures() const {
+std::vector<FunctionSignature> ScriptEngine::HostSignatures(std::uint32_t accessMask) const {
     std::vector<FunctionSignature> signatures;
     signatures.reserve(hostFunctions_.size());
     for (const auto& host : hostFunctions_)
-        if (!host.signature.method) signatures.push_back(host.signature);
+        if (host.active && !host.signature.method && IsVisible(host.accessMask, accessMask))
+            signatures.push_back(host.signature);
     return signatures;
 }
 
-std::vector<GlobalSignature> ScriptEngine::HostPropertySignatures() const {
+std::vector<GlobalSignature> ScriptEngine::HostPropertySignatures(std::uint32_t accessMask) const {
     std::vector<GlobalSignature> signatures;
     signatures.reserve(hostProperties_.size());
-    for (const auto& host : hostProperties_) signatures.push_back(host.signature);
+    for (const auto& host : hostProperties_)
+        if (host.active && IsVisible(host.accessMask, accessMask))
+            signatures.push_back(host.signature);
     return signatures;
 }
 
-std::vector<ClassSignature> ScriptEngine::HostTypeSignatures() const {
+std::vector<ClassSignature> ScriptEngine::HostTypeSignatures(std::uint32_t accessMask) const {
     std::vector<ClassSignature> signatures;
     for (const auto& entry : objectTypes_) {
-        if (!entry.second->host) continue;
+        if (!entry.second->host || !entry.second->active ||
+            !IsVisible(entry.second->accessMask, accessMask)) continue;
         ClassSignature signature;
         signature.name = entry.second->name;
         signature.id = entry.second->id;
@@ -1407,13 +1654,43 @@ std::vector<ClassSignature> ScriptEngine::HostTypeSignatures() const {
         signature.valueType = entry.second->valueType;
         signature.defaultValue = entry.second->defaultValue;
         for (const auto* property : entry.second->hostProperties)
-            if (property) signature.fields.push_back(property->signature);
+            if (property && property->active && IsVisible(property->accessMask, accessMask))
+                signature.fields.push_back(property->signature);
         for (const auto& function : hostFunctions_)
-            if (function.signature.method && function.signature.objectType == signature.name)
+            if (function.active && IsVisible(function.accessMask, accessMask) &&
+                function.signature.method && function.signature.objectType == signature.name)
                 signature.methods.push_back(function.signature);
         signatures.push_back(std::move(signature));
     }
     return signatures;
+}
+
+std::vector<EnumSignature> ScriptEngine::HostEnums(std::uint32_t accessMask) const {
+    std::vector<EnumSignature> result;
+    for (const auto& type : hostEnums_) {
+        const auto control = typeControls_.find(type.id.value);
+        if (control != typeControls_.end() && control->second.active &&
+            IsVisible(control->second.accessMask, accessMask)) result.push_back(type);
+    }
+    return result;
+}
+std::vector<TypedefSignature> ScriptEngine::HostTypedefs(std::uint32_t accessMask) const {
+    std::vector<TypedefSignature> result;
+    for (const auto& type : hostTypedefs_) {
+        const auto control = typeControls_.find(type.id.value);
+        if (control != typeControls_.end() && control->second.active &&
+            IsVisible(control->second.accessMask, accessMask)) result.push_back(type);
+    }
+    return result;
+}
+std::vector<FuncdefSignature> ScriptEngine::HostFuncdefs(std::uint32_t accessMask) const {
+    std::vector<FuncdefSignature> result;
+    for (const auto& type : hostFuncdefs_) {
+        const auto control = typeControls_.find(type.id.value);
+        if (control != typeControls_.end() && control->second.active &&
+            IsVisible(control->second.accessMask, accessMask)) result.push_back(type);
+    }
+    return result;
 }
 
 void ScriptEngine::PublishTypeMetadata(TypeMetadata metadata) {
@@ -1500,20 +1777,27 @@ const GlobalMetadata* ScriptEngine::FindGlobalMetadata(GlobalId id) const {
 
 DataType ScriptEngine::ResolveRegisteredType(DataType type) const {
     if (type.kind != TypeKind::Object) return type;
+    const std::string requested = QualifyName(defaultNamespace_, type.objectName);
     for (const auto& alias : hostTypedefs_) {
-        if (alias.name != type.objectName) continue;
+        const auto control = typeControls_.find(alias.id.value);
+        if (alias.name != requested || control == typeControls_.end() || !control->second.active) continue;
         if (type.isHandle) return DataType::Invalid();
         return alias.underlyingType;
     }
     for (const auto& typeInfo : hostEnums_) {
-        if (typeInfo.name != type.objectName) continue;
+        const auto control = typeControls_.find(typeInfo.id.value);
+        if (typeInfo.name != requested || control == typeControls_.end() || !control->second.active) continue;
         if (type.isHandle) return DataType::Invalid();
         return DataType::Enum(typeInfo.name);
     }
     for (const auto& typeInfo : hostFuncdefs_) {
-        if (typeInfo.name == type.objectName)
+        const auto control = typeControls_.find(typeInfo.id.value);
+        if (typeInfo.name == requested && control != typeControls_.end() && control->second.active)
             return DataType::Function(typeInfo.name, type.isHandle);
     }
+    const auto object = objectTypes_.find(requested);
+    if (object != objectTypes_.end() && object->second->active)
+        return DataType::Object(requested, type.isHandle);
     return type;
 }
 
@@ -1524,10 +1808,15 @@ void ScriptEngine::ResolveRegisteredTypes(FunctionSignature& signature) const {
 }
 
 bool ScriptEngine::HasRegisteredType(std::string_view name) const {
-    if (objectTypes_.find(std::string(name)) != objectTypes_.end()) return true;
-    for (const auto& type : hostEnums_) if (type.name == name) return true;
-    for (const auto& type : hostTypedefs_) if (type.name == name) return true;
-    for (const auto& type : hostFuncdefs_) if (type.name == name) return true;
+    const auto object = objectTypes_.find(std::string(name));
+    if (object != objectTypes_.end() && object->second->active) return true;
+    const auto active = [&](TypeId id) {
+        const auto control = typeControls_.find(id.value);
+        return control != typeControls_.end() && control->second.active;
+    };
+    for (const auto& type : hostEnums_) if (type.name == name && active(type.id)) return true;
+    for (const auto& type : hostTypedefs_) if (type.name == name && active(type.id)) return true;
+    for (const auto& type : hostFuncdefs_) if (type.name == name && active(type.id)) return true;
     return false;
 }
 

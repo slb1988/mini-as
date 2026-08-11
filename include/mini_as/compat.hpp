@@ -73,6 +73,10 @@ public:
     int RemoveFunction(const BytecodeFunction* function);
     int SaveByteCode(std::ostream& output) const;
     int LoadByteCode(std::istream& input);
+    std::uint32_t SetAccessMask(std::uint32_t accessMask);
+    std::uint32_t GetAccessMask() const;
+    int SetDefaultNamespace(const char* nameSpace);
+    const char* GetDefaultNamespace() const;
     mini_as::ScriptModule& Native();
     const mini_as::ScriptModule& Native() const;
 
@@ -130,6 +134,12 @@ public:
     using MessageCallback = mini_as::ScriptEngine::MessageCallback;
 
     int SetMessageCallback(MessageCallback callback);
+    std::uint32_t SetDefaultAccessMask(std::uint32_t accessMask);
+    int SetDefaultNamespace(const char* nameSpace);
+    const char* GetDefaultNamespace() const;
+    int BeginConfigGroup(const char* name);
+    int EndConfigGroup();
+    int RemoveConfigGroup(const char* name);
     int RegisterGlobalFunction(const char* declaration, GenericFunction callback);
     int RegisterGlobalProperty(const char* declaration, Value* storage);
     int RegisterEnum(const char* name);

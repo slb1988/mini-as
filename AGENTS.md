@@ -149,11 +149,11 @@ Do not stage generated build directories or unrelated user changes. Inspect
 
 The completed stage notes are authoritative. The latest alignment stage is:
 
-- Stage 72 `mini_as::compat` engine/module/context facade with AngelScript 2.38.0
-  integer results, module/compile flags, execution states, and RAII ownership.
+- Stage 73 host default/module namespaces, registration access masks, and
+  pointer-stable removable configuration groups.
 
-The next planned feature is host namespaces, access masks, and configuration
-groups.
+The next planned item is the v0.5 embedding compatibility matrix, followed by
+v0.6 registered template types.
 Confirm the latest
 git history and `docs/stages/` before choosing the next stage number.
 
@@ -223,6 +223,12 @@ git history and `docs/stages/` before choosing the next stage number.
   retaining `unique_ptr` ownership. It is not an SDK header/ABI shim: keep
   native calling conventions and `AddRef`/`Release` out, map new operations to
   existing mini APIs, and leave a `Native()` escape hatch for partial coverage.
+- Host registrations capture the current default namespace, access mask, and
+  configuration group. Filter every registration category before parser/type
+  injection; an access check after bytecode emission is too late. Group removal
+  marks stable deque entries inactive so unrelated live bytecode pointers do
+  not dangle, and must refuse removal while a live module environment depends
+  on the group.
 - Preserve the last successful module image on parser, type-check, bytecode, or
   global-initializer failure.
 - Do not edit compatibility expectations merely to make mini and official

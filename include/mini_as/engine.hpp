@@ -35,6 +35,12 @@ struct TypeMetadata {
     FunctionSignature funcdef;
 };
 
+struct FunctionMetadata {
+    FunctionId id;
+    std::string moduleName;
+    FunctionSignature signature;
+};
+
 class ScriptEngine;
 
 struct ModuleImage {
@@ -51,6 +57,7 @@ public:
     bool Build();
     const BytecodeFunction* GetFunctionByDecl(std::string_view declaration) const;
     const BytecodeFunction* GetFunctionByName(std::string_view name) const;
+    const FunctionMetadata* GetFunctionMetadataByDecl(std::string_view declaration) const;
     const BytecodeModule& Bytecode() const;
 
 private:
@@ -125,6 +132,9 @@ public:
     const TypeMetadata* GetTypeMetadataByIndex(std::size_t index) const;
     const TypeMetadata* GetTypeMetadataById(TypeId id) const;
     const TypeMetadata* GetTypeMetadataByName(std::string_view name) const;
+    std::size_t GetFunctionMetadataCount() const;
+    const FunctionMetadata* GetFunctionMetadataByIndex(std::size_t index) const;
+    const FunctionMetadata* GetFunctionMetadataById(FunctionId id) const;
     std::size_t CollectGarbage();
     std::size_t GetTrackedObjectCount() const;
     ScriptModule* GetModule(std::string name = {},
@@ -146,6 +156,7 @@ private:
     void PublishEnumMetadata(const EnumSignature& signature, bool host);
     void PublishTypedefMetadata(const TypedefSignature& signature, bool host);
     void PublishFuncdefMetadata(const FuncdefSignature& signature, bool host);
+    void PublishFunctionMetadata(FunctionSignature signature, std::string moduleName = {});
     const TypeInfo* RegisterScriptType(const ClassSignature& type);
     void LinkScriptType(const ClassSignature& type);
     FunctionId GetOrCreateFunctionId(std::string key);
@@ -166,6 +177,7 @@ private:
     std::vector<TypedefSignature> hostTypedefs_;
     std::vector<FuncdefSignature> hostFuncdefs_;
     std::deque<TypeMetadata> typeMetadata_;
+    std::deque<FunctionMetadata> functionMetadata_;
     GarbageCollector garbageCollector_;
     std::unordered_map<std::string, std::unique_ptr<TypeInfo>> objectTypes_;
     std::unordered_map<std::string, FunctionId> functionIds_;

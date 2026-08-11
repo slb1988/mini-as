@@ -147,13 +147,12 @@ Do not stage generated build directories or unrelated user changes. Inspect
 
 ## Current alignment position
 
-The completed stage notes are authoritative. At the time this guide was added,
-the latest language stage is:
+The completed stage notes are authoritative. The latest alignment stage is:
 
-- Stage 65 stable type reflection metadata for objects, enums, typedefs, and
-  funcdefs, published only after successful module builds.
+- Stage 66 stable function reflection metadata for host and script callables,
+  published only after successful module builds and refreshed in place by id.
 
-The next planned feature is stable function reflection metadata. Confirm the latest
+The next planned feature is module-global reflection metadata. Confirm the latest
 git history and `docs/stages/` before choosing the next stage number.
 
 ## Common pitfalls
@@ -187,6 +186,10 @@ git history and `docs/stages/` before choosing the next stage number.
 - `TypeMetadata` addresses are stable because the engine owns them in a deque.
   Refresh records in place, and publish script metadata only after the complete
   build including global initialization succeeds.
+- `FunctionMetadata` follows the same stable deque and atomic publication rule.
+  Host functions publish at registration; script globals and methods publish
+  only after the complete build succeeds. Keep removal semantics in the later
+  explicit function-removal stage.
 - Preserve the last successful module image on parser, type-check, bytecode, or
   global-initializer failure.
 - Do not edit compatibility expectations merely to make mini and official

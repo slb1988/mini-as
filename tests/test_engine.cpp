@@ -193,6 +193,77 @@ TEST_CASE(script_type_reflection_publishes_successful_rebuilds_atomically) {
     CHECK(box->fields[0].name == "value");
 }
 
+TEST_CASE(host_function_reflection_exposes_global_factory_and_method_metadata) {
+    auto engine = mini_as::CreateScriptEngine();
+    const auto* type = engine->RegisterObjectType("HostBox");
+    CHECK(type != nullptr);
+    CHECK(engine->RegisterGlobalFunction("int HostAnswer(int value)",
+        [](mini_as::GenericCall& call) { call.SetReturnInt(call.GetArgInt(0)); }));
+    CHECK(engine->RegisterObjectFactory("HostBox", "HostBox@ f()",
+        [](mini_as::GenericCall& call) { call.SetReturnObject({}); }));
+    CHECK(engine->RegisterObjectMethod("HostBox", "int read() const",
+        [](mini_as::GenericCall& call) { call.SetReturnInt(42); }));
+
+    CHECK(engine->GetFunctionMetadataCount() == 3);
+    bool global = false, factory = false, method = false;
+    for (std::size_t index = 0; index < engine->GetFunctionMetadataCount(); ++index) {
+        const auto* metadata = engine->GetFunctionMetadataByIndex(index);
+        CHECK(metadata != nullptr);
+        CHECK(metadata->signature.host);
+        CHECK(metadata->moduleName.empty());
+        CHECK(engine->GetFunctionMetadataById(metadata->id) == metadata);
+        global = global || metadata->signature.name == "HostAnswer";
+        factory = factory || metadata->signature.factory;
+        method = method || (metadata->signature.method &&
+                            metadata->signature.objectType == "HostBox");
+    }
+    CHECK(global);
+    CHECK(factory);
+    CHECK(method);
+    CHECK(engine->GetFunctionMetadataByIndex(3) == nullptr);
+    CHECK(engine->GetFunctionMetadataById(mini_as::FunctionId{}) == nullptr);
+}
+
+TEST_CASE(script_function_reflection_is_stable_and_failed_rebuilds_do_not_publish) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("function-reflection");
+    module->AddScriptSection("v1",
+        "class Box { Box() {} int read() const { return 1; } } "
+        "int answer(int first) { return first; }");
+    CHECK(module->Build());
+    const auto* answer = module->GetFunctionMetadataByDecl("int answer(int)");
+    CHECK(answer != nullptr);
+    CHECK(answer->moduleName == "function-reflection");
+    CHECK(!answer->signature.host);
+    CHECK(answer->signature.parameterNames == std::vector<std::string>{"first"});
+    const auto answerId = answer->id;
+    const mini_as::FunctionMetadata* read = nullptr;
+    for (std::size_t index = 0; index < engine->GetFunctionMetadataCount(); ++index) {
+        const auto* candidate = engine->GetFunctionMetadataByIndex(index);
+        if (candidate && candidate->signature.objectType == "Box" &&
+            candidate->signature.name == "read") read = candidate;
+    }
+    CHECK(read != nullptr);
+    CHECK(read->signature.method);
+
+    module->AddScriptSection("v2",
+        "class Box { Box() {} int read() const { return 2; } } "
+        "int answer(int value) { return value + 1; }");
+    CHECK(module->Build());
+    CHECK(module->GetFunctionMetadataByDecl("int answer(int)") == answer);
+    CHECK(engine->GetFunctionMetadataById(answerId) == answer);
+    CHECK(answer->signature.parameterNames == std::vector<std::string>{"value"});
+    CHECK(engine->GetFunctionMetadataById(read->id) == read);
+
+    module->AddScriptSection("failed",
+        "class Box { int read() const { return 3; } } int zero = 0; int bad = 1 / zero; "
+        "int answer(int rejected) { return rejected; }");
+    CHECK(!module->Build());
+    CHECK(module->GetFunctionMetadataByDecl("int answer(int)") == answer);
+    CHECK(answer->signature.parameterNames == std::vector<std::string>{"value"});
+    CHECK(module->GetFunctionMetadataByDecl("int missing()") == nullptr);
+}
+
 TEST_CASE(multiple_declarations_execute_in_source_order) {
     auto engine = mini_as::CreateScriptEngine();
     auto* module = engine->GetModule("multiple-declarations");

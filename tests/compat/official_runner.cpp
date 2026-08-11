@@ -103,9 +103,11 @@ int main(int argc, char** argv) {
     asITypeInfo* reflectedAlias = engine->GetTypeInfoByName("HostScore");
     asITypeInfo* reflectedFuncdef = engine->GetFuncdefCount() == 1
         ? engine->GetFuncdefByIndex(0) : nullptr;
+    asIScriptFunction* reflectedLift =
+        engine->GetGlobalFunctionByDecl("HostScore Lift(HostScore)");
     if (!reflectedEnum || reflectedEnum->GetEnumValueCount() != 2 ||
         !reflectedAlias || reflectedAlias->GetTypedefTypeId() < 0 ||
-        !reflectedFuncdef || !reflectedFuncdef->GetFuncdefSignature()) {
+        !reflectedFuncdef || !reflectedFuncdef->GetFuncdefSignature() || !reflectedLift) {
         engine->ShutDownAndRelease();
         return 5;
     }

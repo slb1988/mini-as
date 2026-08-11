@@ -52,9 +52,16 @@ int main(int argc, char** argv) {
     const auto* reflectedEnum = engine->GetTypeMetadataByName("HostColor");
     const auto* reflectedAlias = engine->GetTypeMetadataByName("HostScore");
     const auto* reflectedFuncdef = engine->GetTypeMetadataByName("HostTransform");
+    const mini_as::FunctionMetadata* reflectedLift = nullptr;
+    for (std::size_t index = 0; index < engine->GetFunctionMetadataCount(); ++index) {
+        const auto* function = engine->GetFunctionMetadataByIndex(index);
+        if (function && function->signature.name == "Lift") reflectedLift = function;
+    }
     if (!reflectedEnum || reflectedEnum->enumValues.size() != 2 ||
         !reflectedAlias || reflectedAlias->underlyingType != mini_as::DataType::Int() ||
-        !reflectedFuncdef || reflectedFuncdef->funcdef.parameters.size() != 1) return 5;
+        !reflectedFuncdef || reflectedFuncdef->funcdef.parameters.size() != 1 ||
+        !reflectedLift || !reflectedLift->signature.host ||
+        reflectedLift->signature.parameters.size() != 1) return 5;
     if (!engine->RegisterValueType("HostValue",
         mini_as::Value::HostValue("HostValue", CompatValue{}))) return 6;
     if (!engine->RegisterGlobalFunction("int ReadHostValue(HostValue value)",

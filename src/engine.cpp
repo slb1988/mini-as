@@ -163,6 +163,12 @@ bool ScriptModule::Build() {
             host = host || registered.name == type.name;
         if (!host) engine_.PublishFuncdefMetadata(type, false);
     }
+    for (const auto& function : functions)
+        if (!function.host) engine_.PublishFunctionMetadata(function, name_);
+    for (const auto& type : classes)
+        if (!type.host)
+            for (const auto& method : type.methods)
+                engine_.PublishFunctionMetadata(method, name_);
     auto nextImage = std::make_shared<ModuleImage>();
     nextImage->bytecode = std::move(candidate);
     nextImage->finalizerBytecode = std::move(finalizerModule);
@@ -183,6 +189,12 @@ const BytecodeFunction* ScriptModule::GetFunctionByDecl(std::string_view declara
 const BytecodeFunction* ScriptModule::GetFunctionByName(std::string_view name) const {
     for (const auto& function : image_->bytecode.functions) if (function.signature.name == name) return &function;
     return nullptr;
+}
+
+const FunctionMetadata* ScriptModule::GetFunctionMetadataByDecl(
+    std::string_view declaration) const {
+    const BytecodeFunction* function = GetFunctionByDecl(declaration);
+    return function ? engine_.GetFunctionMetadataById(function->signature.id) : nullptr;
 }
 
 const BytecodeModule& ScriptModule::Bytecode() const { return image_->bytecode; }
@@ -334,6 +346,7 @@ bool ScriptEngine::RegisterGlobalFunction(std::string declaration, GenericFuncti
     }
     signature->id = GetOrCreateFunctionId("$host\n" + signature->Declaration());
     hostFunctions_.push_back({std::move(*signature), std::move(callback)});
+    PublishFunctionMetadata(hostFunctions_.back().signature);
     return true;
 }
 
@@ -488,6 +501,7 @@ bool ScriptEngine::RegisterObjectFactory(std::string typeName, std::string decla
     signature->id = GetOrCreateFunctionId("$factory\n" + typeName + "\n" +
                                           signature->Declaration());
     hostFunctions_.push_back({std::move(*signature), std::move(callback)});
+    PublishFunctionMetadata(hostFunctions_.back().signature);
     for (const auto& registered : HostTypeSignatures())
         if (registered.name == typeName) PublishObjectMetadata(registered);
     return true;
@@ -533,6 +547,7 @@ bool ScriptEngine::RegisterObjectMethod(std::string typeName, std::string declar
     signature->id = GetOrCreateFunctionId("$host-method\n" + typeName + "\n" +
                                           signature->Declaration());
     hostFunctions_.push_back({std::move(*signature), std::move(callback)});
+    PublishFunctionMetadata(hostFunctions_.back().signature);
     for (const auto& registered : HostTypeSignatures())
         if (registered.name == typeName) PublishObjectMetadata(registered);
     return true;
@@ -619,6 +634,20 @@ const TypeMetadata* ScriptEngine::GetTypeMetadataById(TypeId id) const {
 const TypeMetadata* ScriptEngine::GetTypeMetadataByName(std::string_view name) const {
     for (const auto& metadata : typeMetadata_)
         if (metadata.name == name) return &metadata;
+    return nullptr;
+}
+
+std::size_t ScriptEngine::GetFunctionMetadataCount() const {
+    return functionMetadata_.size();
+}
+
+const FunctionMetadata* ScriptEngine::GetFunctionMetadataByIndex(std::size_t index) const {
+    return index < functionMetadata_.size() ? &functionMetadata_[index] : nullptr;
+}
+
+const FunctionMetadata* ScriptEngine::GetFunctionMetadataById(FunctionId id) const {
+    for (const auto& metadata : functionMetadata_)
+        if (metadata.id == id) return &metadata;
     return nullptr;
 }
 
@@ -818,6 +847,17 @@ void ScriptEngine::PublishFuncdefMetadata(const FuncdefSignature& signature, boo
     metadata.host = host;
     metadata.funcdef = signature.signature;
     PublishTypeMetadata(std::move(metadata));
+}
+
+void ScriptEngine::PublishFunctionMetadata(FunctionSignature signature,
+                                           std::string moduleName) {
+    FunctionMetadata metadata{signature.id, std::move(moduleName), std::move(signature)};
+    for (auto& existing : functionMetadata_) {
+        if (existing.id != metadata.id) continue;
+        existing = std::move(metadata);
+        return;
+    }
+    functionMetadata_.push_back(std::move(metadata));
 }
 
 DataType ScriptEngine::ResolveRegisteredType(DataType type) const {

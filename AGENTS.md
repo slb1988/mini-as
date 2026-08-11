@@ -153,7 +153,7 @@ The completed stage notes are authoritative. The latest alignment stage is:
   pointer-stable removable configuration groups.
 
 The next planned item is the v0.5 embedding compatibility matrix, followed by
-v0.6 initialization lists.
+v0.6 indexing expressions.
 Confirm the latest
 git history and `docs/stages/` before choosing the next stage number.
 
@@ -238,6 +238,9 @@ git history and `docs/stages/` before choosing the next stage number.
   definition's host controls, and must also be recreated before bytecode host
   symbol remapping. Keep initialization lists and index syntax in their own
   language stages.
+- Initialization lists are contextual expressions lowered through a zero-arg
+  host factory plus `insertLast(T)`. Preserve this registered-type protocol and
+  ordinary `CallHost` lowering; do not add array-specific VM instructions.
 - Preserve the last successful module image on parser, type-check, bytecode, or
   global-initializer failure.
 - Do not edit compatibility expectations merely to make mini and official

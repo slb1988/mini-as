@@ -636,7 +636,7 @@ bool ReadNode(Reader& reader, AstArena& arena, AstNode*& result,
     if (depth > 1024 || ++nodes > kMaxItems) return false;
     NodeKind kind{};
     Token token;
-    if (!reader.Scalar(kind) || kind > NodeKind::Identifier ||
+    if (!reader.Scalar(kind) || kind > NodeKind::InitList ||
         !reader.Scalar(token.kind) || token.kind > TokenKind::OrOr ||
         !reader.String(token.lexeme) || !ReadLocation(reader, token.location)) return false;
     AstNode* node = arena.Make(kind, token);

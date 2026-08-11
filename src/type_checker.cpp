@@ -1064,6 +1064,37 @@ DataType TypeChecker::CheckExpression(AstNode* node, std::optional<DataType> exp
     }
     case NodeKind::Call: result = CheckCall(node); break;
     case NodeKind::AnonymousFunction: result = CheckAnonymousFunction(node, expected); break;
+    case NodeKind::InitList: {
+        if (!expected || expected->kind != TypeKind::Object) {
+            Error(node, "initialization list requires a target object type");
+            break;
+        }
+        const ClassSignature* type = FindClass(expected->objectName);
+        const FunctionSignature* factory = nullptr;
+        const FunctionSignature* inserter = nullptr;
+        for (const auto& function : functions_) {
+            if (function.factory && function.objectType == expected->objectName &&
+                function.parameters.empty()) factory = &function;
+        }
+        if (type)
+            for (const auto& method : type->methods)
+                if (method.name == "insertLast" && method.parameters.size() == 1)
+                    inserter = &method;
+        if (!type || !type->host || !factory || !inserter) {
+            Error(node, "type '" + expected->Name() +
+                        "' does not support initialization lists");
+            break;
+        }
+        for (AstNode* element = node->firstChild; element; element = element->nextSibling) {
+            const DataType elementType = CheckExpression(element, inserter->parameters[0]);
+            if (!CanConvert(elementType, inserter->parameters[0]))
+                Error(element, "cannot initialize " + inserter->parameters[0].Name() +
+                               " element from " + elementType.Name());
+        }
+        node->operatorMethod = inserter->Declaration();
+        result = *expected;
+        break;
+    }
     case NodeKind::Assign: {
         const auto children = node->Children();
         DataType target;

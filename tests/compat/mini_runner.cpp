@@ -54,7 +54,8 @@ int main(int argc, char** argv) {
     const bool registeredTemplates =
         std::string(argv[1]).find("registered_template_types") != std::string::npos;
     const bool arrayTemplate =
-        std::string(argv[1]).find("array_template_object") != std::string::npos;
+        std::string(argv[1]).find("array_template_object") != std::string::npos ||
+        std::string(argv[1]).find("initialization_lists") != std::string::npos;
     if (arrayTemplate && !mini_as::addons::RegisterScriptArray(*engine)) return 3;
     if (registeredTemplates &&
         !engine->RegisterObjectType("HostBox<class T>")) return 3;

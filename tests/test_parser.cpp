@@ -502,3 +502,17 @@ TEST_CASE(parser_rejects_registered_template_arity_mismatches) {
     CHECK(arity);
 }
 
+TEST_CASE(parser_builds_initialization_list_expressions) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("init-list",
+        "int run() { array<int>@ values = {20, 21, 1,}; return 0; }", diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    parser.RegisterTemplateType("array", 1);
+    auto tree = parser.Parse();
+    CHECK(!diagnostics.HasErrors());
+    auto* variable = tree.root->firstChild->firstChild->firstChild;
+    CHECK(variable->firstChild != nullptr);
+    CHECK(variable->firstChild->kind == mini_as::NodeKind::InitList);
+    CHECK(variable->firstChild->Children().size() == 3);
+}
+

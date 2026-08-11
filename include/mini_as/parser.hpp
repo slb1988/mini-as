@@ -19,7 +19,7 @@ enum class NodeKind {
     SwitchStmt, CaseClause, DefaultClause, ReturnStmt, BreakStmt, ContinueStmt, TryStmt,
     ExprStmt, EmptyStmt,
     Assign, Conditional, Binary, Unary, Increment, Cast, ValueCast, Call, NamedArgument,
-    AnonymousFunction, Member, Literal, Identifier
+    AnonymousFunction, Member, Literal, Identifier, InitList
 };
 
 struct AstNode {

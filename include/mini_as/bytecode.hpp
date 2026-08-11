@@ -167,6 +167,7 @@ private:
     void CompileBinary(AstNode* node);
     void CompileLogical(AstNode* node);
     void CompileCall(AstNode* node, bool dereferenceResult = true);
+    void CompileInitializationList(AstNode* node);
     void CompileReferenceTarget(AstNode* expression, const AstNode* source);
     void CompileCallArgument(const FunctionSignature& signature, std::size_t index,
                              AstNode* expression, ReferenceReceiverMap& receivers);

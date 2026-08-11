@@ -729,6 +729,15 @@ AstNode* Parser::ParseCall() {
 }
 
 AstNode* Parser::ParsePrimary() {
+    if (Match(TokenKind::LeftBrace)) {
+        AstNode* list = arena_->Make(NodeKind::InitList, Previous());
+        if (!Check(TokenKind::RightBrace)) {
+            do { list->AppendChild(ParseAssignment()); }
+            while (Match(TokenKind::Comma) && !Check(TokenKind::RightBrace));
+        }
+        Consume(TokenKind::RightBrace, "expected '}' after initialization list");
+        return list;
+    }
     if (Match(TokenKind::KwFunction)) return ParseAnonymousFunction();
     if (IsTypeStart(false) && !Check(TokenKind::Identifier)) {
         const Token castToken = Current();

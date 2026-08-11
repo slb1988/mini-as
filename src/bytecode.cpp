@@ -848,6 +848,7 @@ void BytecodeCompiler::CompileExpression(AstNode* node) {
         }
         break;
     case NodeKind::Call: CompileCall(node); break;
+    case NodeKind::InitList: CompileInitializationList(node); break;
     case NodeKind::AnonymousFunction: {
         const FuncdefSignature* funcdef = nullptr;
         for (const auto& candidate : module_.funcdefs)
@@ -880,6 +881,40 @@ void BytecodeCompiler::CompileExpression(AstNode* node) {
         break;
     }
     default: Error(node, "expression cannot be compiled"); break;
+    }
+}
+
+void BytecodeCompiler::CompileInitializationList(AstNode* node) {
+    const std::string& typeName = node->inferredType.objectName;
+    const ClassSignature* type = FindClass(typeName);
+    const FunctionSignature* factory = nullptr;
+    const FunctionSignature* inserter = nullptr;
+    for (const auto& signature : signatures_) {
+        if (signature.factory && signature.objectType == typeName &&
+            signature.parameters.empty()) factory = &signature;
+        if (signature.method && signature.objectType == typeName &&
+            signature.name == "insertLast" && signature.parameters.size() == 1)
+            inserter = &signature;
+    }
+    if (!type || !factory || !inserter) {
+        Error(node, "initialization-list target is unavailable");
+        return;
+    }
+    const auto factoryId = hostIds_.find(FunctionKey(*factory));
+    const auto methodId = hostIds_.find(FunctionKey(*inserter));
+    if (factoryId == hostIds_.end() || methodId == hostIds_.end()) {
+        Error(node, "initialization-list host callbacks are not linked");
+        return;
+    }
+    Emit(OpCode::CallHost,
+         AddCallable({CallableKind::HostFunction, factoryId->second, type->id, 0, 0}), node);
+    for (AstNode* element = node->firstChild; element; element = element->nextSibling) {
+        Emit(OpCode::Dup, 0, element);
+        CompileExpression(element);
+        EmitConversion(element->inferredType, inserter->parameters[0], element);
+        Emit(OpCode::CallHost,
+             AddCallable({CallableKind::HostMethod, methodId->second, type->id, 0, 1}), element);
+        Emit(OpCode::Pop, 0, element);
     }
 }
 

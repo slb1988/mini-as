@@ -11,6 +11,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_library(mini_angelscript
   src/bytecode.cpp
   src/bytecode_io.cpp
+  src/compat.cpp
   src/constant_evaluator.cpp
   src/core.cpp
   src/engine.cpp
@@ -40,6 +41,7 @@ add_executable(mini_as_tests
   tests/test_types.cpp
   tests/test_bytecode.cpp
   tests/test_constant_evaluator.cpp
+  tests/test_compat.cpp
   tests/test_vm.cpp
   tests/test_engine.cpp
   tests/test_generic.cpp
@@ -440,5 +442,12 @@ if(MINI_AS_BUILD_COMPAT_TESTS)
       -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
       -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
       -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/debug_introspection.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_official_style_facade
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/compat_facade.as
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
 endif()

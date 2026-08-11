@@ -1,4 +1,5 @@
 #include "mini_as/engine.hpp"
+#include "mini_as/compat.hpp"
 
 #include <cstdint>
 #include <fstream>
@@ -33,6 +34,20 @@ std::string ReadFile(const char* path) {
 
 int main(int argc, char** argv) {
     if (argc != 2) return 2;
+    if (std::string(argv[1]).find("compat_facade") != std::string::npos) {
+        auto facade = mini_as::compat::CreateScriptEngine();
+        auto* facadeModule = facade->GetModule("compat", mini_as::compat::asGM_ALWAYS_CREATE);
+        const std::string source = ReadFile(argv[1]);
+        if (!facadeModule || facadeModule->AddScriptSection(
+                "compat.as", source.c_str(), source.size()) != mini_as::compat::asSUCCESS ||
+            facadeModule->Build() != mini_as::compat::asSUCCESS) return 3;
+        auto facadeContext = facade->CreateContext();
+        if (facadeContext->Prepare(facadeModule->GetFunctionByDecl("int main()")) !=
+                mini_as::compat::asSUCCESS ||
+            facadeContext->Execute() != mini_as::compat::asEXECUTION_FINISHED) return 4;
+        std::cout << "state=finished\nreturn=int:" << facadeContext->GetReturnDWord() << '\n';
+        return 0;
+    }
     auto engine = mini_as::CreateScriptEngine();
     mini_as::Value hostCounter(std::int32_t{40});
     engine->SetMessageCallback([](const mini_as::Diagnostic& diagnostic) {

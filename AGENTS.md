@@ -149,11 +149,11 @@ Do not stage generated build directories or unrelated user changes. Inspect
 
 The completed stage notes are authoritative. The latest alignment stage is:
 
-- Stage 71 stack-local and instruction-location exposure for active, suspended,
-  and exceptional contexts, with bytecode-persisted lexical debug metadata.
+- Stage 72 `mini_as::compat` engine/module/context facade with AngelScript 2.38.0
+  integer results, module/compile flags, execution states, and RAII ownership.
 
-The next planned feature is the official-style engine, module, and context
-compatibility facade in `include/mini_as/compat.hpp`.
+The next planned feature is host namespaces, access masks, and configuration
+groups.
 Confirm the latest
 git history and `docs/stages/` before choosing the next stage number.
 
@@ -219,6 +219,10 @@ git history and `docs/stages/` before choosing the next stage number.
   all frames before exception cleanup. Debug values are copies, not VM addresses.
 - Any serialized `BytecodeFunction` metadata change requires a bytecode format
   version bump plus load-time bounds validation. Stage 71 uses format version 2.
+- `mini_as::compat` mirrors official integer constants and call flow while
+  retaining `unique_ptr` ownership. It is not an SDK header/ABI shim: keep
+  native calling conventions and `AddRef`/`Release` out, map new operations to
+  existing mini APIs, and leave a `Native()` escape hatch for partial coverage.
 - Preserve the last successful module image on parser, type-check, bytecode, or
   global-initializer failure.
 - Do not edit compatibility expectations merely to make mini and official

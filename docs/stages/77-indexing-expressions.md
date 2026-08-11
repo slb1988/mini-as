@@ -47,7 +47,8 @@ future registered types that implement the same protocol.
 Tests cover tokenization, chained-index AST shape, read/write expressions,
 assignment results, compound updates, prefix/postfix increments, single
 evaluation of side-effecting indices, invalid receiver diagnostics, emitted
-host calls, and located bounds exceptions.
+host calls, located bounds exceptions, and bytecode round trips whose retained
+syntax trees contain bracket tokens.
 
 The differential case runs the same initialized array script through this
 protocol and the official AngelScript 2.38.0 array `opIndex` implementation.

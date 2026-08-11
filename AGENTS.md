@@ -158,7 +158,8 @@ git history and `docs/stages/` before choosing the next stage number.
 ## Common pitfalls
 
 - Adding a token requires updating both the keyword/operator scanner and
-  `TokenName` in matching enum order.
+  `TokenName` in matching enum order, plus the serialized AST token bounds in
+  `bytecode_io.cpp`.
 - Adding `FunctionSignature` fields requires updating script functions, class
   methods, interfaces, constructors, host declarations, temporary AST keys,
   overload checks, virtual slot matching, and aggregate initializers.

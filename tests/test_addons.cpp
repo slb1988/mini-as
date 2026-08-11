@@ -206,6 +206,18 @@ TEST_CASE(indexing_expressions_read_write_compound_and_increment_array_elements)
     CHECK(context->Prepare(function));
     CHECK(context->Execute() == mini_as::ExecutionState::Finished);
     CHECK(context->GetReturnInt() == 42);
+
+    std::stringstream archive(std::ios::in | std::ios::out | std::ios::binary);
+    CHECK(module->SaveBytecode(archive));
+    auto loadedEngine = mini_as::CreateScriptEngine();
+    CHECK(mini_as::addons::RegisterScriptArray(*loadedEngine));
+    auto* loaded = loadedEngine->GetModule("array-indexing-loaded");
+    archive.seekg(0);
+    CHECK(loaded->LoadBytecode(archive));
+    auto loadedContext = loadedEngine->CreateContext();
+    CHECK(loadedContext->Prepare(loaded->GetFunctionByDecl("int run()")));
+    CHECK(loadedContext->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(loadedContext->GetReturnInt() == 42);
 }
 
 TEST_CASE(indexing_expressions_report_invalid_targets_and_bounds_locations) {

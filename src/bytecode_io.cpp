@@ -637,7 +637,7 @@ bool ReadNode(Reader& reader, AstArena& arena, AstNode*& result,
     NodeKind kind{};
     Token token;
     if (!reader.Scalar(kind) || kind > NodeKind::Index ||
-        !reader.Scalar(token.kind) || token.kind > TokenKind::OrOr ||
+        !reader.Scalar(token.kind) || token.kind > TokenKind::RightBracket ||
         !reader.String(token.lexeme) || !ReadLocation(reader, token.location)) return false;
     AstNode* node = arena.Make(kind, token);
     if (!ReadType(reader, node->declaredType) || !ReadType(reader, node->inferredType) ||

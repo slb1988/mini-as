@@ -304,3 +304,282 @@ TEST_CASE(compat_facade_saves_and_loads_live_module_state) {
     CHECK(context->Execute() == asEXECUTION_FINISHED);
     CHECK(context->GetReturnDWord() == 41);
 }
+
+TEST_CASE(suspended_context_round_trips_nested_frames_and_global_object_aliases) {
+    const std::string source =
+        "class Box { int value; }\n"
+        "Box@ sharedBox;\n"
+        "int inner(Box@ box) {\n"
+        "  int local = box.value + 1;\n"
+        "  box.value = local;\n"
+        "  return box.value;\n"
+        "}\n"
+        "int run() {\n"
+        "  @sharedBox = Box(); sharedBox.value = 40;\n"
+        "  return inner(sharedBox) + 1;\n"
+        "}\n"
+        "int inspect() { return sharedBox.value; }\n";
+    std::stringstream bytecode(std::ios::in | std::ios::out | std::ios::binary);
+    std::stringstream suspended(std::ios::in | std::ios::out | std::ios::binary);
+    {
+        auto engine = mini_as::CreateScriptEngine();
+        auto* module = engine->GetModule("suspended-object");
+        module->AddScriptSection("suspended-object.as", source);
+        CHECK(module->Build());
+        CHECK(module->SaveBytecode(bytecode));
+        auto context = engine->CreateContext();
+        CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+        context->SetLineCallback([](mini_as::ScriptContext& current,
+                                    const mini_as::SourceLocation& location) {
+            if (location.row == 5) current.Suspend();
+        });
+        CHECK(context->Execute() == mini_as::ExecutionState::Suspended);
+        CHECK(context->GetCallStackSize() == 2);
+        CHECK(context->GetFunction(0)->signature.name == "inner");
+        CHECK(context->GetFunction(1)->signature.name == "run");
+        CHECK(context->SaveState(suspended));
+    }
+
+    bytecode.seekg(0);
+    suspended.seekg(0);
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("suspended-object");
+    CHECK(module->LoadBytecode(bytecode));
+    auto context = engine->CreateContext();
+    CHECK(context->LoadState(suspended));
+    CHECK(context->GetState() == mini_as::ExecutionState::Suspended);
+    CHECK(context->GetCallStackSize() == 2);
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+    mini_as::Value inspected;
+    CHECK(Run(*engine, *module, "int inspect()", &inspected) ==
+          mini_as::ExecutionState::Finished);
+    CHECK(inspected.As<std::int32_t>() == 41);
+}
+
+TEST_CASE(suspended_context_round_trips_closure_captures_and_locals) {
+    const std::string source =
+        "funcdef int Step(int);\n"
+        "int increment = 1;\n"
+        "int run() {\n"
+        "  int total = 40;\n"
+        "  Step@ step = function(value) { total += value; return total; };\n"
+        "  int amount = increment;\n"
+        "  return step(amount) + 1;\n"
+        "}\n";
+    std::stringstream bytecode(std::ios::in | std::ios::out | std::ios::binary);
+    std::stringstream suspended(std::ios::in | std::ios::out | std::ios::binary);
+    {
+        auto engine = mini_as::CreateScriptEngine();
+        auto* module = engine->GetModule("suspended-closure");
+        module->AddScriptSection("suspended-closure.as", source);
+        CHECK(module->Build());
+        CHECK(module->SaveBytecode(bytecode));
+        auto context = engine->CreateContext();
+        CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+        context->SetLineCallback([](mini_as::ScriptContext& current,
+                                    const mini_as::SourceLocation& location) {
+            if (location.row == 7) current.Suspend();
+        });
+        CHECK(context->Execute() == mini_as::ExecutionState::Suspended);
+        CHECK(context->GetLocals().size() == 3);
+        CHECK(context->SaveState(suspended));
+    }
+    bytecode.seekg(0);
+    suspended.seekg(0);
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("suspended-closure");
+    CHECK(module->LoadBytecode(bytecode));
+    auto context = engine->CreateContext();
+    CHECK(context->LoadState(suspended));
+    CHECK(context->GetLocals().size() == 3);
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+}
+
+TEST_CASE(suspended_context_round_trips_an_imported_function_frame) {
+    std::stringstream providerBytecode(std::ios::in | std::ios::out | std::ios::binary);
+    std::stringstream consumerBytecode(std::ios::in | std::ios::out | std::ios::binary);
+    std::stringstream suspended(std::ios::in | std::ios::out | std::ios::binary);
+    {
+        auto engine = mini_as::CreateScriptEngine();
+        auto* provider = engine->GetModule("context-provider");
+        provider->AddScriptSection("provider.as",
+            "int calculate(int value) {\n"
+            "  int adjusted = value + 1;\n"
+            "  return adjusted * 2;\n"
+            "}\n");
+        CHECK(provider->Build());
+        auto* consumer = engine->GetModule("context-consumer");
+        consumer->AddScriptSection("consumer.as",
+            "import int calculate(int value) from \"context-provider\";\n"
+            "int run() { return calculate(20); }\n");
+        CHECK(consumer->Build());
+        CHECK(consumer->BindAllImportedFunctions());
+        CHECK(provider->SaveBytecode(providerBytecode));
+        CHECK(consumer->SaveBytecode(consumerBytecode));
+        auto context = engine->CreateContext();
+        CHECK(context->Prepare(consumer->GetFunctionByDecl("int run()")));
+        context->SetLineCallback([](mini_as::ScriptContext& current,
+                                    const mini_as::SourceLocation& location) {
+            if (location.section == "provider.as" && location.row == 3)
+                current.Suspend();
+        });
+        CHECK(context->Execute() == mini_as::ExecutionState::Suspended);
+        CHECK(context->GetCallStackSize() == 2);
+        CHECK(context->SaveState(suspended));
+    }
+
+    providerBytecode.seekg(0);
+    consumerBytecode.seekg(0);
+    suspended.seekg(0);
+    auto engine = mini_as::CreateScriptEngine();
+    auto* provider = engine->GetModule("context-provider");
+    auto* consumer = engine->GetModule("context-consumer");
+    CHECK(provider->LoadBytecode(providerBytecode));
+    CHECK(consumer->LoadBytecode(consumerBytecode));
+    CHECK(consumer->BindAllImportedFunctions());
+    auto context = engine->CreateContext();
+    CHECK(context->LoadState(suspended));
+    CHECK(context->GetFunction(0)->signature.name == "calculate");
+    CHECK(context->GetFunction(1)->signature.name == "run");
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+}
+
+TEST_CASE(context_state_requires_suspension_and_an_uninitialized_target) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    auto* module = engine->GetModule("context-state-contract");
+    module->AddScriptSection("contract.as",
+        "int run() {\n"
+        "  int value = 40;\n"
+        "  return value + 2;\n"
+        "}\n");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    std::stringstream rejected(std::ios::in | std::ios::out | std::ios::binary);
+    CHECK(!context->SaveState(rejected));
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(!context->SaveState(rejected));
+    context->SetLineCallback([](mini_as::ScriptContext& current,
+                                const mini_as::SourceLocation& location) {
+        if (location.row == 3) current.Suspend();
+    });
+    CHECK(context->Execute() == mini_as::ExecutionState::Suspended);
+    std::stringstream saved(std::ios::in | std::ios::out | std::ios::binary);
+    CHECK(context->SaveState(saved));
+    auto prepared = engine->CreateContext();
+    CHECK(prepared->Prepare(module->GetFunctionByDecl("int run()")));
+    saved.seekg(0);
+    CHECK(!prepared->LoadState(saved));
+    CHECK(prepared->GetState() == mini_as::ExecutionState::Prepared);
+    bool suspendedDiagnostic = false, targetDiagnostic = false;
+    for (const auto& diagnostic : diagnostics) {
+        suspendedDiagnostic = suspendedDiagnostic ||
+            diagnostic.message.find("context is not suspended") != std::string::npos;
+        targetDiagnostic = targetDiagnostic ||
+            diagnostic.message.find("target context is not uninitialized") != std::string::npos;
+    }
+    CHECK(suspendedDiagnostic);
+    CHECK(targetDiagnostic);
+}
+
+TEST_CASE(context_state_rejects_incompatible_bytecode_without_mutating_globals) {
+    std::stringstream suspended(std::ios::in | std::ios::out | std::ios::binary);
+    {
+        auto sourceEngine = mini_as::CreateScriptEngine();
+        auto* source = sourceEngine->GetModule("context-version");
+        source->AddScriptSection("version.as",
+            "int marker = 40; int run() {\n"
+            "  int value = marker;\n"
+            "  return value + 2;\n"
+            "}\n");
+        CHECK(source->Build());
+        auto context = sourceEngine->CreateContext();
+        CHECK(context->Prepare(source->GetFunctionByDecl("int run()")));
+        context->SetLineCallback([](mini_as::ScriptContext& current,
+                                    const mini_as::SourceLocation& location) {
+            if (location.row == 3) current.Suspend();
+        });
+        CHECK(context->Execute() == mini_as::ExecutionState::Suspended);
+        CHECK(context->SaveState(suspended));
+    }
+    suspended.seekg(0);
+    auto targetEngine = mini_as::CreateScriptEngine();
+    auto* target = targetEngine->GetModule("context-version");
+    target->AddScriptSection("version.as",
+        "int marker = 99; int run() { int extra = 1; return marker + extra; } "
+        "int inspect() { return marker; }");
+    CHECK(target->Build());
+    auto context = targetEngine->CreateContext();
+    CHECK(!context->LoadState(suspended));
+    CHECK(context->GetState() == mini_as::ExecutionState::Uninitialized);
+    mini_as::Value marker;
+    CHECK(Run(*targetEngine, *target, "int inspect()", &marker) ==
+          mini_as::ExecutionState::Finished);
+    CHECK(marker.As<std::int32_t>() == 99);
+}
+
+TEST_CASE(restored_context_reports_runtime_exception_at_original_location) {
+    const std::string source =
+        "int fail() {\n"
+        "  int zero = 0;\n"
+        "  return 1 / zero;\n"
+        "}\n";
+    std::stringstream bytecode(std::ios::in | std::ios::out | std::ios::binary);
+    std::stringstream suspended(std::ios::in | std::ios::out | std::ios::binary);
+    {
+        auto engine = mini_as::CreateScriptEngine();
+        auto* module = engine->GetModule("restored-exception");
+        module->AddScriptSection("restored-exception.as", source);
+        CHECK(module->Build());
+        CHECK(module->SaveBytecode(bytecode));
+        auto context = engine->CreateContext();
+        CHECK(context->Prepare(module->GetFunctionByDecl("int fail()")));
+        context->SetLineCallback([](mini_as::ScriptContext& current,
+                                    const mini_as::SourceLocation& location) {
+            if (location.row == 3) current.Suspend();
+        });
+        CHECK(context->Execute() == mini_as::ExecutionState::Suspended);
+        CHECK(context->SaveState(suspended));
+    }
+    bytecode.seekg(0);
+    suspended.seekg(0);
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("restored-exception");
+    CHECK(module->LoadBytecode(bytecode));
+    auto context = engine->CreateContext();
+    CHECK(context->LoadState(suspended));
+    CHECK(context->Execute() == mini_as::ExecutionState::Exception);
+    CHECK(context->GetExceptionString() == "division by zero");
+    CHECK(context->GetExceptionLocation().section == "restored-exception.as");
+    CHECK(context->GetExceptionLocation().row == 3);
+}
+
+TEST_CASE(compat_facade_restores_a_suspended_context) {
+    using namespace mini_as::compat;
+    auto engine = CreateScriptEngine();
+    auto* module = engine->GetModule("compat-context-state", asGM_ALWAYS_CREATE);
+    CHECK(module->AddScriptSection("compat-context.as",
+        "int run() {\n  int value = 40;\n  return value + 2;\n}\n") == asSUCCESS);
+    CHECK(module->Build() == asSUCCESS);
+    auto source = engine->CreateContext();
+    CHECK(source->Prepare(module->GetFunctionByDecl("int run()")) == asSUCCESS);
+    source->SetLineCallback([](ScriptContext& current,
+                               const mini_as::SourceLocation& location) {
+        if (location.row == 3) current.Suspend();
+    });
+    CHECK(source->Execute() == asEXECUTION_SUSPENDED);
+    std::stringstream state(std::ios::in | std::ios::out | std::ios::binary);
+    CHECK(source->SaveState(state) == asSUCCESS);
+    state.seekg(0);
+    auto restored = engine->CreateContext();
+    CHECK(restored->LoadState(state) == asSUCCESS);
+    CHECK(restored->GetState() == asEXECUTION_SUSPENDED);
+    CHECK(restored->Execute() == asEXECUTION_FINISHED);
+    CHECK(restored->GetReturnDWord() == 42);
+}

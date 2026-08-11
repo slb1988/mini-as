@@ -2515,6 +2515,22 @@ std::shared_ptr<const ModuleImage> ScriptEngine::FindModuleImage(const BytecodeF
     return image;
 }
 
+std::shared_ptr<const ModuleImage> ScriptEngine::FindCurrentModuleImage(
+    std::string_view moduleName) {
+    const auto found = modules_.find(std::string(moduleName));
+    return found == modules_.end() ? nullptr : found->second->image_;
+}
+
+std::string ScriptEngine::FindModuleName(const ModuleImage* image) const {
+    if (!image) return {};
+    for (const auto& entry : modules_) {
+        if (entry.second->image_.get() == image) return entry.first;
+        for (const auto& dynamic : entry.second->dynamicImages_)
+            if (dynamic.get() == image) return entry.first;
+    }
+    return {};
+}
+
 std::optional<ResolvedScriptFunction> ScriptEngine::ResolveScriptFunction(FunctionId function) {
     if (!function.IsValid()) return std::nullopt;
     const auto resolve = [function](const std::shared_ptr<const ModuleImage>& image)

@@ -19,6 +19,8 @@ namespace {
 
 constexpr char kStateMagic[] = {'M', 'A', 'S', 'S'};
 constexpr std::uint32_t kStateVersion = 1;
+constexpr char kContextMagic[] = {'M', 'A', 'S', 'C'};
+constexpr std::uint32_t kContextVersion = 1;
 constexpr std::uint64_t kMaxItems = 1'000'000;
 constexpr std::uint64_t kMaxString = 16 * 1024 * 1024;
 constexpr std::uint64_t kMaxPayload = 256 * 1024 * 1024;
@@ -184,8 +186,7 @@ enum class ObjectKind : std::uint8_t { Script, Array, Dictionary, Any };
 
 class SaveGraph {
 public:
-    SaveGraph(const ScriptModule& module, const ScriptEngine& engine)
-        : module_(module), engine_(engine) {}
+    explicit SaveGraph(const ScriptEngine& engine) : engine_(engine) {}
 
     bool Discover(const Value& value) {
         try { return DiscoverValue(value); }
@@ -210,7 +211,6 @@ public:
     const std::vector<const RefObject*>& Objects() const { return objects_; }
     const std::vector<CapturedCellHandle>& Cells() const { return cells_; }
     const std::string& Error() const { return error_; }
-    const ScriptModule& Module() const { return module_; }
     const ScriptEngine& Engine() const { return engine_; }
 
 private:
@@ -294,7 +294,6 @@ private:
         return false;
     }
 
-    const ScriptModule& module_;
     const ScriptEngine& engine_;
     std::unordered_map<const RefObject*, std::uint32_t> objectIds_;
     std::vector<const RefObject*> objects_;
@@ -315,12 +314,7 @@ bool ResolveFunctionDescriptor(const SaveGraph& graph, const FunctionHandle& han
         objectType = metadata->signature.objectType;
         return true;
     }
-    const BytecodeFunction* function = graph.Module().Bytecode().FindFunction(handle.function);
-    if (!function) return false;
-    moduleName = graph.Module().GetName();
-    declaration = function->signature.Declaration();
-    objectType = function->signature.objectType;
-    return true;
+    return false;
 }
 
 bool WriteValue(Writer& writer, const SaveGraph& graph, const Value& value,
@@ -532,7 +526,7 @@ const FunctionMetadata* FindFunctionMetadata(const ScriptEngine& engine,
     return nullptr;
 }
 
-bool ReadValue(Reader& reader, ScriptEngine& engine, const ScriptModule& module,
+bool ReadValue(Reader& reader, ScriptEngine& engine,
                const std::vector<ObjectHandle>& objects,
                const std::vector<CapturedCellHandle>& cells, Value& value) {
     ValueTag tag = ValueTag::Void;
@@ -599,7 +593,7 @@ bool ReadValue(Reader& reader, ScriptEngine& engine, const ScriptModule& module,
     }
     case ValueTag::DictionaryValue: {
         Value stored;
-        if (!ReadValue(reader, engine, module, objects, cells, stored)) return false;
+        if (!ReadValue(reader, engine, objects, cells, stored)) return false;
         value = Value::HostValue("dictionaryValue",
                                  addons::DictionaryValue{std::move(stored)});
         return true;
@@ -630,8 +624,9 @@ bool ReadValue(Reader& reader, ScriptEngine& engine, const ScriptModule& module,
             function = metadata->id;
         }
         TypeId signature;
-        for (const auto& funcdef : module.Bytecode().funcdefs)
-            if (funcdef.name == typeName) signature = funcdef.id;
+        const TypeMetadata* funcdef = engine.GetTypeMetadataByName(typeName);
+        if (funcdef && funcdef->kind == TypeMetadataKind::Funcdef)
+            signature = funcdef->id;
         if (!signature.IsValid())
             return reader.Fail("function handle type does not match module");
         TypeId dispatch;
@@ -706,7 +701,7 @@ bool ScriptModule::SaveState(std::ostream& output) const {
                                    "state save failed: module is not built"});
         return false;
     }
-    SaveGraph graph(*this, engine_);
+    SaveGraph graph(engine_);
     std::vector<std::size_t> globalIndices;
     for (std::size_t index = 0; index < image_->bytecode.globals.size(); ++index) {
         if (image_->bytecode.globals[index].host) continue;
@@ -916,7 +911,7 @@ bool ScriptModule::LoadState(std::istream& input) {
     for (const std::size_t index : globalIndices) {
         Value value;
         const DataType& expected = image_->bytecode.globals[index].signature.type;
-        if (!ReadValue(reader, engine_, *this, objects, cells, value) ||
+        if (!ReadValue(reader, engine_, objects, cells, value) ||
             !ValueMatchesType(value, expected))
             return fail(reader.Error().empty()
                 ? "global value type does not match" : reader.Error());
@@ -932,7 +927,7 @@ bool ScriptModule::LoadState(std::istream& input) {
                 return fail("script object payload does not match schema");
             for (std::size_t field = 0; field < fieldCount; ++field) {
                 Value value;
-                if (!ReadValue(reader, engine_, *this, objects, cells, value) ||
+                if (!ReadValue(reader, engine_, objects, cells, value) ||
                     !ValueMatchesType(value, shell.fields[field].second))
                     return fail(reader.Error().empty()
                         ? "script field value type does not match" : reader.Error());
@@ -941,7 +936,7 @@ bool ScriptModule::LoadState(std::istream& input) {
         } else if (shell.kind == ObjectKind::Array) {
             auto* array = static_cast<addons::ScriptArray*>(object);
             Value defaultElement;
-            if (!ReadValue(reader, engine_, *this, objects, cells, defaultElement) ||
+            if (!ReadValue(reader, engine_, objects, cells, defaultElement) ||
                 !ValueMatchesType(defaultElement, shell.elementType))
                 return fail(reader.Error().empty()
                     ? "array default value type does not match" : reader.Error());
@@ -950,7 +945,7 @@ bool ScriptModule::LoadState(std::istream& input) {
             if (!reader.Count(size)) return fail(reader.Error());
             for (std::size_t index = 0; index < size; ++index) {
                 Value value;
-                if (!ReadValue(reader, engine_, *this, objects, cells, value) ||
+                if (!ReadValue(reader, engine_, objects, cells, value) ||
                     !ValueMatchesType(value, shell.elementType))
                     return fail(reader.Error().empty()
                         ? "array element type does not match" : reader.Error());
@@ -964,19 +959,19 @@ bool ScriptModule::LoadState(std::istream& input) {
                 std::string key;
                 Value value;
                 if (!reader.String(key) ||
-                    !ReadValue(reader, engine_, *this, objects, cells, value))
+                    !ReadValue(reader, engine_, objects, cells, value))
                     return fail(reader.Error());
                 dictionary->Set(std::move(key), std::move(value));
             }
         } else {
             Value value;
-            if (!ReadValue(reader, engine_, *this, objects, cells, value))
+            if (!ReadValue(reader, engine_, objects, cells, value))
                 return fail(reader.Error());
             static_cast<addons::ScriptAny*>(object)->Store(std::move(value));
         }
     }
     for (auto& cell : cells)
-        if (!ReadValue(reader, engine_, *this, objects, cells, cell->value))
+        if (!ReadValue(reader, engine_, objects, cells, cell->value))
             return fail(reader.Error());
     if (!reader.Done()) return fail("trailing data in state payload");
 
@@ -993,6 +988,659 @@ bool ScriptModule::LoadState(std::istream& input) {
 
     image_->state->globals.swap(candidate);
     candidate.clear();
+    cells.clear();
+    objects.clear();
+    engine_.DrainFinalizers();
+    return true;
+}
+
+namespace {
+
+struct ContextModuleRecord {
+    std::string name;
+    std::shared_ptr<const ModuleImage> image;
+    std::vector<std::size_t> globalIndices;
+    std::vector<Value> candidateGlobals;
+};
+
+struct ContextFrameRecord {
+    std::shared_ptr<const ModuleImage> image;
+    const BytecodeFunction* function = nullptr;
+    std::size_t pc = 0;
+    std::size_t stackBase = 0;
+    std::vector<Value> locals;
+    std::vector<CapturedCellHandle> captures;
+};
+
+bool ReadContextPayload(std::istream& input, std::vector<std::uint8_t>& payload,
+                        std::string& error) {
+    char magic[sizeof(kContextMagic)]{};
+    input.read(magic, sizeof(magic));
+    if (!input || std::memcmp(magic, kContextMagic, sizeof(magic)) != 0) {
+        error = "invalid context archive magic";
+        return false;
+    }
+    std::uint32_t version = 0;
+    std::uint64_t size = 0, expectedChecksum = 0;
+    if (!ReadStreamScalar(input, version) || !ReadStreamScalar(input, size) ||
+        !ReadStreamScalar(input, expectedChecksum)) {
+        error = "truncated context archive header";
+        return false;
+    }
+    if (version != kContextVersion) {
+        error = "unsupported context archive version";
+        return false;
+    }
+    if (size > kMaxPayload) {
+        error = "context archive payload is too large";
+        return false;
+    }
+    payload.resize(static_cast<std::size_t>(size));
+    input.read(reinterpret_cast<char*>(payload.data()),
+               static_cast<std::streamsize>(payload.size()));
+    if (!input) {
+        error = "truncated context archive payload";
+        return false;
+    }
+    if (input.peek() != std::char_traits<char>::eof()) {
+        error = "trailing data after context archive";
+        return false;
+    }
+    if (Checksum(payload.data(), payload.size()) != expectedChecksum) {
+        error = "context archive checksum mismatch";
+        return false;
+    }
+    return true;
+}
+
+bool WriteFunctionReference(Writer& writer, const BytecodeFunction* function,
+                            std::size_t moduleIndex, std::string& error) {
+    if (!function || moduleIndex > std::numeric_limits<std::uint32_t>::max()) {
+        error = "context function is unavailable";
+        return false;
+    }
+    writer.Scalar(static_cast<std::uint32_t>(moduleIndex));
+    writer.String(function->signature.Declaration());
+    writer.String(function->signature.objectType);
+    writer.Scalar<std::uint64_t>(function->code.size());
+    return true;
+}
+
+bool WriteResumePoint(Writer& writer, const BytecodeFunction& function,
+                      std::size_t pc, std::string& error) {
+    if (pc > function.code.size()) {
+        error = "context program counter is out of range";
+        return false;
+    }
+    writer.Scalar<std::uint64_t>(pc);
+    writer.Scalar<std::uint8_t>(pc < function.code.size() ? 1 : 0);
+    if (pc < function.code.size()) {
+        const auto& instruction = function.code[pc];
+        writer.Scalar(instruction.opcode);
+        writer.String(instruction.location.section);
+        writer.Scalar<std::uint64_t>(instruction.location.offset);
+        writer.Scalar<std::int32_t>(instruction.location.row);
+        writer.Scalar<std::int32_t>(instruction.location.column);
+    }
+    return true;
+}
+
+bool WriteValues(Writer& writer, const SaveGraph& graph,
+                 const std::vector<Value>& values, std::string& error) {
+    if (values.size() > kMaxItems) {
+        error = "context value collection is too large";
+        return false;
+    }
+    writer.Scalar<std::uint64_t>(values.size());
+    for (const auto& value : values)
+        if (!WriteValue(writer, graph, value, error)) return false;
+    return true;
+}
+
+bool WriteCaptures(Writer& writer, const SaveGraph& graph,
+                   const std::vector<CapturedCellHandle>& captures,
+                   std::string& error) {
+    if (captures.size() > kMaxItems) {
+        error = "context capture collection is too large";
+        return false;
+    }
+    writer.Scalar<std::uint64_t>(captures.size());
+    for (const auto& capture : captures) writer.Scalar(graph.CellId(capture));
+    return true;
+}
+
+const BytecodeFunction* ReadFunctionReference(
+    Reader& reader, const std::vector<ContextModuleRecord>& modules,
+    std::shared_ptr<const ModuleImage>& image) {
+    std::uint32_t moduleIndex = 0;
+    std::string declaration, objectType;
+    std::uint64_t codeSize = 0;
+    if (!reader.Scalar(moduleIndex) || moduleIndex >= modules.size() ||
+        !reader.String(declaration) || !reader.String(objectType) ||
+        !reader.Scalar(codeSize)) {
+        reader.Fail("invalid context function descriptor");
+        return nullptr;
+    }
+    image = modules[moduleIndex].image;
+    for (const auto& function : image->bytecode.functions) {
+        if (function.signature.Declaration() != declaration ||
+            function.signature.objectType != objectType) continue;
+        if (function.code.size() != codeSize) {
+            reader.Fail("context function bytecode does not match");
+            return nullptr;
+        }
+        return &function;
+    }
+    reader.Fail("context function does not exist in target module");
+    return nullptr;
+}
+
+bool ReadResumePoint(Reader& reader, const BytecodeFunction& function,
+                     std::size_t& pc) {
+    std::uint64_t archivedPc = 0;
+    std::uint8_t hasInstruction = 0;
+    if (!reader.Scalar(archivedPc) || archivedPc > function.code.size() ||
+        !reader.Scalar(hasInstruction) || hasInstruction > 1)
+        return reader.Fail("invalid context resume point");
+    pc = static_cast<std::size_t>(archivedPc);
+    if (!hasInstruction) {
+        if (pc != function.code.size())
+            return reader.Fail("context resume marker does not match bytecode");
+        return true;
+    }
+    OpCode opcode = OpCode::Nop;
+    SourceLocation location;
+    std::uint64_t offset = 0;
+    std::int32_t row = 0, column = 0;
+    if (pc >= function.code.size() || !reader.Scalar(opcode) ||
+        opcode > OpCode::Return || !reader.String(location.section) ||
+        !reader.Scalar(offset) || !reader.Scalar(row) || !reader.Scalar(column))
+        return reader.Fail("invalid context resume marker");
+    if (offset > std::numeric_limits<std::size_t>::max())
+        return reader.Fail("context source offset is out of range");
+    location.offset = static_cast<std::size_t>(offset);
+    location.row = row;
+    location.column = column;
+    const auto& current = function.code[pc];
+    if (current.opcode != opcode || current.location.section != location.section ||
+        current.location.offset != location.offset || current.location.row != location.row ||
+        current.location.column != location.column)
+        return reader.Fail("context resume point does not match bytecode");
+    return true;
+}
+
+bool ReadValues(Reader& reader, ScriptEngine& engine,
+                const std::vector<ObjectHandle>& objects,
+                const std::vector<CapturedCellHandle>& cells,
+                std::vector<Value>& values) {
+    std::size_t count = 0;
+    if (!reader.Count(count)) return false;
+    values.clear();
+    values.reserve(count);
+    for (std::size_t index = 0; index < count; ++index) {
+        Value value;
+        if (!ReadValue(reader, engine, objects, cells, value)) return false;
+        values.push_back(std::move(value));
+    }
+    return true;
+}
+
+bool ReadCaptures(Reader& reader,
+                  const std::vector<CapturedCellHandle>& cells,
+                  std::vector<CapturedCellHandle>& captures) {
+    std::size_t count = 0;
+    if (!reader.Count(count)) return false;
+    captures.clear();
+    captures.reserve(count);
+    for (std::size_t index = 0; index < count; ++index) {
+        std::uint32_t id = 0;
+        if (!reader.Scalar(id) || id > cells.size())
+            return reader.Fail("invalid context capture reference");
+        captures.push_back(id ? cells[id - 1] : CapturedCellHandle{});
+    }
+    return true;
+}
+
+bool ReadContextObjectTable(Reader& reader, ScriptEngine& engine,
+                            std::vector<ObjectShell>& shells,
+                            std::vector<ObjectHandle>& objects,
+                            std::string& error) {
+    std::size_t objectCount = 0;
+    if (!reader.Count(objectCount)) { error = reader.Error(); return false; }
+    shells.resize(objectCount);
+    for (auto& shell : shells) {
+        if (!reader.Scalar(shell.kind) || shell.kind > ObjectKind::Any ||
+            !reader.String(shell.typeName)) {
+            error = reader.Error().empty() ? "invalid object descriptor" : reader.Error();
+            return false;
+        }
+        if (shell.kind == ObjectKind::Script) {
+            std::size_t fieldCount = 0;
+            if (!reader.Count(fieldCount)) { error = reader.Error(); return false; }
+            shell.fields.resize(fieldCount);
+            for (auto& field : shell.fields)
+                if (!reader.String(field.first) || !ReadType(reader, field.second)) {
+                    error = reader.Error(); return false;
+                }
+        } else if (shell.kind == ObjectKind::Array &&
+                   !ReadType(reader, shell.elementType)) {
+            error = reader.Error(); return false;
+        }
+    }
+    objects.reserve(objectCount);
+    for (const auto& shell : shells) {
+        const TypeInfo* type = engine.GetTypeInfo(shell.typeName);
+        if (!type) { error = "object type '" + shell.typeName + "' is unavailable"; return false; }
+        if (shell.kind == ObjectKind::Script) {
+            if (!type->script || type->fields != shell.fields) {
+                error = "script object schema for '" + shell.typeName + "' does not match";
+                return false;
+            }
+            objects.emplace_back(new ScriptObject(type));
+        } else if (shell.kind == ObjectKind::Array) {
+            if (type->templateBase != "array" || type->templateSubTypes.size() != 1 ||
+                type->templateSubTypes[0] != shell.elementType) {
+                error = "array object schema for '" + shell.typeName + "' does not match";
+                return false;
+            }
+            objects.emplace_back(new addons::ScriptArray(
+                type, shell.elementType, Value{}, 0));
+        } else if (shell.kind == ObjectKind::Dictionary) {
+            if (shell.typeName != "dictionary") {
+                error = "dictionary object schema does not match";
+                return false;
+            }
+            objects.emplace_back(new addons::ScriptDictionary(type));
+        } else {
+            if (shell.typeName != "any") {
+                error = "any object schema does not match";
+                return false;
+            }
+            objects.emplace_back(new addons::ScriptAny(type));
+        }
+    }
+    return true;
+}
+
+bool ReadContextObjectPayloads(Reader& reader, ScriptEngine& engine,
+                               const std::vector<ObjectShell>& shells,
+                               const std::vector<ObjectHandle>& objects,
+                               const std::vector<CapturedCellHandle>& cells,
+                               std::string& error) {
+    for (std::size_t objectIndex = 0; objectIndex < objects.size(); ++objectIndex) {
+        RefObject* object = objects[objectIndex].Get();
+        const ObjectShell& shell = shells[objectIndex];
+        if (shell.kind == ObjectKind::Script) {
+            auto* script = static_cast<ScriptObject*>(object);
+            std::size_t fieldCount = 0;
+            if (!reader.Count(fieldCount) || fieldCount != shell.fields.size()) {
+                error = "script object payload does not match schema"; return false;
+            }
+            for (std::size_t field = 0; field < fieldCount; ++field) {
+                Value value;
+                if (!ReadValue(reader, engine, objects, cells, value) ||
+                    !ValueMatchesType(value, shell.fields[field].second)) {
+                    error = reader.Error().empty()
+                        ? "script field value type does not match" : reader.Error();
+                    return false;
+                }
+                script->SetField(field, std::move(value));
+            }
+        } else if (shell.kind == ObjectKind::Array) {
+            auto* array = static_cast<addons::ScriptArray*>(object);
+            Value defaultElement;
+            if (!ReadValue(reader, engine, objects, cells, defaultElement) ||
+                !ValueMatchesType(defaultElement, shell.elementType)) {
+                error = reader.Error().empty()
+                    ? "array default value type does not match" : reader.Error();
+                return false;
+            }
+            array->SetDefaultElement(std::move(defaultElement));
+            std::size_t size = 0;
+            if (!reader.Count(size)) { error = reader.Error(); return false; }
+            for (std::size_t index = 0; index < size; ++index) {
+                Value value;
+                if (!ReadValue(reader, engine, objects, cells, value) ||
+                    !ValueMatchesType(value, shell.elementType)) {
+                    error = reader.Error().empty()
+                        ? "array element type does not match" : reader.Error();
+                    return false;
+                }
+                array->InsertLast(std::move(value));
+            }
+        } else if (shell.kind == ObjectKind::Dictionary) {
+            auto* dictionary = static_cast<addons::ScriptDictionary*>(object);
+            std::size_t size = 0;
+            if (!reader.Count(size)) { error = reader.Error(); return false; }
+            for (std::size_t index = 0; index < size; ++index) {
+                std::string key;
+                Value value;
+                if (!reader.String(key) ||
+                    !ReadValue(reader, engine, objects, cells, value)) {
+                    error = reader.Error(); return false;
+                }
+                dictionary->Set(std::move(key), std::move(value));
+            }
+        } else {
+            Value value;
+            if (!ReadValue(reader, engine, objects, cells, value)) {
+                error = reader.Error(); return false;
+            }
+            static_cast<addons::ScriptAny*>(object)->Store(std::move(value));
+        }
+    }
+    return true;
+}
+
+} // namespace
+
+bool ScriptContext::SaveState(std::ostream& output) const {
+    const auto report = [&](std::string reason) {
+        engine_.ForwardDiagnostic({{"context-state"}, Severity::Error,
+                                   "context state save failed: " + std::move(reason)});
+        return false;
+    };
+    if (result_.state != ExecutionState::Suspended ||
+        vm_.result_.state != ExecutionState::Suspended || !image_ || !function_ ||
+        !vm_.function_) return report("context is not suspended");
+
+    std::vector<ContextModuleRecord> modules;
+    std::unordered_map<const ModuleImage*, std::size_t> moduleIndices;
+    const auto addImage = [&](const std::shared_ptr<const ModuleImage>& image,
+                              std::string& reason) -> std::optional<std::size_t> {
+        if (!image || !image->state) { reason = "context module image is unavailable"; return {}; }
+        const auto known = moduleIndices.find(image.get());
+        if (known != moduleIndices.end()) return known->second;
+        const std::string name = engine_.FindModuleName(image.get());
+        if (name.empty()) { reason = "context module has no stable name"; return {}; }
+        for (const auto& module : modules)
+            if (module.name == name && module.image.get() != image.get()) {
+                reason = "context spans multiple images of module '" + name + "'";
+                return {};
+            }
+        const std::size_t index = modules.size();
+        ContextModuleRecord record;
+        record.name = name;
+        record.image = image;
+        for (std::size_t global = 0; global < image->bytecode.globals.size(); ++global)
+            if (!image->bytecode.globals[global].host) record.globalIndices.push_back(global);
+        modules.push_back(std::move(record));
+        moduleIndices.emplace(image.get(), index);
+        return index;
+    };
+    std::string error;
+    const auto initialIndex = addImage(image_, error);
+    if (!initialIndex) return report(error);
+    const auto currentImage = engine_.FindModuleImage(vm_.function_);
+    const auto currentIndex = addImage(currentImage, error);
+    if (!currentIndex) return report(error);
+    if (vm_.module_ != &currentImage->bytecode ||
+        vm_.moduleState_ != currentImage->state.get())
+        return report("current VM module state does not match its image");
+    for (const auto& frame : vm_.callStack_) {
+        const auto frameImage = engine_.FindModuleImage(frame.function);
+        if (!addImage(frameImage, error)) return report(error);
+        if (!frameImage || frame.module != &frameImage->bytecode ||
+            frame.state != frameImage->state.get())
+            return report("saved call frame module state does not match its image");
+    }
+
+    SaveGraph graph(engine_);
+    for (const auto& module : modules)
+        for (const std::size_t global : module.globalIndices)
+            if (global >= module.image->state->globals.size() ||
+                !graph.Discover(module.image->state->globals[global]))
+                return report(graph.Error().empty()
+                    ? "module global slot is unavailable" : graph.Error());
+    const auto discoverValues = [&](const std::vector<Value>& values) {
+        for (const auto& value : values) if (!graph.Discover(value)) return false;
+        return true;
+    };
+    const auto discoverCaptures = [&](const std::vector<CapturedCellHandle>& captures) {
+        for (const auto& capture : captures)
+            if (!graph.Discover(Value(capture))) return false;
+        return true;
+    };
+    if (!discoverValues(vm_.stack_) || !discoverValues(vm_.locals_) ||
+        !discoverCaptures(vm_.captures_)) return report(graph.Error());
+    for (const auto& frame : vm_.callStack_)
+        if (!discoverValues(frame.locals) || !discoverCaptures(frame.captures))
+            return report(graph.Error());
+
+    Writer writer;
+    writer.Scalar<std::uint64_t>(modules.size());
+    for (const auto& module : modules) {
+        writer.String(module.name);
+        writer.Scalar<std::uint64_t>(module.globalIndices.size());
+        for (const std::size_t global : module.globalIndices) {
+            const auto& signature = module.image->bytecode.globals[global].signature;
+            writer.String(signature.name);
+            WriteType(writer, signature.type);
+        }
+    }
+    writer.Scalar<std::uint64_t>(graph.Objects().size());
+    for (const RefObject* object : graph.Objects())
+        if (!object || !WriteObjectShell(writer, *object))
+            return report("object type is unavailable");
+    writer.Scalar<std::uint64_t>(graph.Cells().size());
+    for (const auto& module : modules)
+        for (const std::size_t global : module.globalIndices)
+            if (!WriteValue(writer, graph, module.image->state->globals[global], error))
+                return report(error);
+    for (const RefObject* object : graph.Objects())
+        if (!WriteObjectPayload(writer, graph, *object, error)) return report(error);
+    for (const auto& cell : graph.Cells())
+        if (!WriteValue(writer, graph, cell->value, error)) return report(error);
+
+    writer.Scalar(static_cast<std::uint32_t>(*initialIndex));
+    if (!WriteFunctionReference(writer, function_, *initialIndex, error) ||
+        !WriteValues(writer, graph, vm_.stack_, error) ||
+        !WriteFunctionReference(writer, vm_.function_, *currentIndex, error) ||
+        !WriteResumePoint(writer, *vm_.function_, vm_.pc_, error)) return report(error);
+    writer.Scalar<std::uint64_t>(vm_.stackBase_);
+    if (!WriteValues(writer, graph, vm_.locals_, error) ||
+        !WriteCaptures(writer, graph, vm_.captures_, error)) return report(error);
+    writer.Scalar<std::uint64_t>(vm_.callStack_.size());
+    for (const auto& frame : vm_.callStack_) {
+        const auto frameImage = engine_.FindModuleImage(frame.function);
+        const auto moduleIndex = moduleIndices.find(frameImage.get());
+        if (moduleIndex == moduleIndices.end() ||
+            !WriteFunctionReference(writer, frame.function, moduleIndex->second, error) ||
+            !WriteResumePoint(writer, *frame.function, frame.pc, error)) return report(error);
+        writer.Scalar<std::uint64_t>(frame.stackBase);
+        if (!WriteValues(writer, graph, frame.locals, error) ||
+            !WriteCaptures(writer, graph, frame.captures, error)) return report(error);
+    }
+    if (writer.Data().size() > kMaxPayload)
+        return report("context archive payload is too large");
+    output.write(kContextMagic, sizeof(kContextMagic));
+    WriteStreamScalar(output, kContextVersion);
+    WriteStreamScalar<std::uint64_t>(output, writer.Data().size());
+    WriteStreamScalar(output, Checksum(writer.Data().data(), writer.Data().size()));
+    output.write(reinterpret_cast<const char*>(writer.Data().data()),
+                 static_cast<std::streamsize>(writer.Data().size()));
+    return output ? true : report("output stream rejected archive");
+}
+
+bool ScriptContext::LoadState(std::istream& input) {
+    const auto report = [&](std::string reason) {
+        engine_.ForwardDiagnostic({{"context-state"}, Severity::Error,
+                                   "context state load failed: " + std::move(reason)});
+        return false;
+    };
+    if (result_.state != ExecutionState::Uninitialized)
+        return report("target context is not uninitialized");
+    std::vector<std::uint8_t> payload;
+    std::string error;
+    if (!ReadContextPayload(input, payload, error)) return report(error);
+    Reader reader(payload);
+    std::size_t moduleCount = 0;
+    if (!reader.Count(moduleCount) || moduleCount == 0)
+        return report(reader.Error().empty() ? "context has no module" : reader.Error());
+    std::vector<ContextModuleRecord> modules(moduleCount);
+    std::unordered_map<std::string, bool> moduleNames;
+    for (auto& module : modules) {
+        if (!reader.String(module.name)) return report(reader.Error());
+        if (module.name.empty() || !moduleNames.emplace(module.name, true).second)
+            return report("context module names are invalid or duplicated");
+        module.image = engine_.FindCurrentModuleImage(module.name);
+        if (!module.image || !module.image->state)
+            return report("module '" + module.name + "' is not built");
+        std::size_t globalCount = 0;
+        if (!reader.Count(globalCount)) return report(reader.Error());
+        for (std::size_t global = 0;
+             global < module.image->bytecode.globals.size(); ++global)
+            if (!module.image->bytecode.globals[global].host)
+                module.globalIndices.push_back(global);
+        if (globalCount != module.globalIndices.size())
+            return report("module global schema does not match");
+        for (const std::size_t global : module.globalIndices) {
+            std::string name;
+            DataType type;
+            const auto& current = module.image->bytecode.globals[global].signature;
+            if (!reader.String(name) || !ReadType(reader, type) ||
+                name != current.name || type != current.type)
+                return report("module global schema does not match");
+        }
+        module.candidateGlobals = module.image->state->globals;
+    }
+
+    std::vector<ObjectShell> shells;
+    std::vector<ObjectHandle> objects;
+    if (!ReadContextObjectTable(reader, engine_, shells, objects, error)) {
+        for (auto& object : objects) if (object) object.Get()->ClearReferences();
+        objects.clear();
+        return report(error);
+    }
+    std::size_t cellCount = 0;
+    if (!reader.Count(cellCount)) {
+        for (auto& object : objects) if (object) object.Get()->ClearReferences();
+        objects.clear();
+        return report(reader.Error());
+    }
+    std::vector<CapturedCellHandle> cells(cellCount);
+    for (auto& cell : cells) cell = std::make_shared<CapturedCell>();
+    const auto cleanup = [&] {
+        for (auto& module : modules)
+            for (auto& value : module.candidateGlobals) value.ClearReferences();
+        for (auto& cell : cells) if (cell) cell->value.ClearReferences();
+        for (auto& object : objects) if (object) object.Get()->ClearReferences();
+        for (auto& module : modules) module.candidateGlobals.clear();
+        cells.clear();
+        objects.clear();
+    };
+    const auto fail = [&](std::string reason) { cleanup(); return report(std::move(reason)); };
+
+    for (auto& module : modules) {
+        for (const std::size_t global : module.globalIndices) {
+            Value value;
+            const DataType& expected = module.image->bytecode.globals[global].signature.type;
+            if (!ReadValue(reader, engine_, objects, cells, value) ||
+                !ValueMatchesType(value, expected))
+                return fail(reader.Error().empty()
+                    ? "module global value type does not match" : reader.Error());
+            module.candidateGlobals[global] = std::move(value);
+        }
+    }
+    if (!ReadContextObjectPayloads(
+            reader, engine_, shells, objects, cells, error)) return fail(error);
+    for (auto& cell : cells)
+        if (!ReadValue(reader, engine_, objects, cells, cell->value))
+            return fail(reader.Error());
+
+    std::uint32_t initialModuleIndex = 0;
+    if (!reader.Scalar(initialModuleIndex) || initialModuleIndex >= modules.size())
+        return fail("invalid initial context module");
+    std::shared_ptr<const ModuleImage> initialImage;
+    const BytecodeFunction* initialFunction =
+        ReadFunctionReference(reader, modules, initialImage);
+    if (!initialFunction || initialImage.get() != modules[initialModuleIndex].image.get())
+        return fail(reader.Error().empty()
+            ? "initial context function does not match module" : reader.Error());
+    std::vector<Value> stack;
+    if (!ReadValues(reader, engine_, objects, cells, stack)) return fail(reader.Error());
+    ContextFrameRecord current;
+    current.function = ReadFunctionReference(reader, modules, current.image);
+    if (!current.function || !ReadResumePoint(reader, *current.function, current.pc))
+        return fail(reader.Error());
+    std::uint64_t stackBase = 0;
+    if (!reader.Scalar(stackBase) || stackBase > stack.size())
+        return fail("invalid current stack base");
+    current.stackBase = static_cast<std::size_t>(stackBase);
+    if (!ReadValues(reader, engine_, objects, cells, current.locals) ||
+        !ReadCaptures(reader, cells, current.captures)) return fail(reader.Error());
+    if (current.locals.size() != current.function->localCount)
+        return fail("current local layout does not match bytecode");
+
+    std::size_t frameCount = 0;
+    if (!reader.Count(frameCount)) return fail(reader.Error());
+    std::vector<ContextFrameRecord> frames(frameCount);
+    for (auto& frame : frames) {
+        frame.function = ReadFunctionReference(reader, modules, frame.image);
+        if (!frame.function || !ReadResumePoint(reader, *frame.function, frame.pc))
+            return fail(reader.Error());
+        if (!reader.Scalar(stackBase) || stackBase > stack.size())
+            return fail("invalid saved frame stack base");
+        frame.stackBase = static_cast<std::size_t>(stackBase);
+        if (!ReadValues(reader, engine_, objects, cells, frame.locals) ||
+            !ReadCaptures(reader, cells, frame.captures)) return fail(reader.Error());
+        if (frame.locals.size() != frame.function->localCount)
+            return fail("saved frame local layout does not match bytecode");
+    }
+    if (!reader.Done()) return fail("trailing data in context payload");
+
+    for (const auto& object : objects) {
+        auto* script = dynamic_cast<ScriptObject*>(object.Get());
+        if (!script) continue;
+        const ContextModuleRecord* owner = nullptr;
+        for (const auto& module : modules) {
+            if (!module.image->bytecode.FindType(script->GetTypeInfo()->id)) continue;
+            if (!owner) owner = &module;
+            if (!module.image->bytecode.FindDestructors(
+                    script->GetTypeInfo()->id).empty()) { owner = &module; break; }
+        }
+        if (!owner) return fail("script object type is not linked by context modules");
+        ScriptFinalizerBinding finalizer;
+        finalizer.functions = owner->image->bytecode.FindDestructors(
+            script->GetTypeInfo()->id);
+        finalizer.module = owner->image->finalizerBytecode;
+        finalizer.state = owner->image->state;
+        if (!script->BindFinalizer(&engine_, std::move(finalizer)))
+            return fail("script object finalizer could not be restored");
+    }
+
+    for (auto& module : modules)
+        module.image->state->globals.swap(module.candidateGlobals);
+    image_ = std::move(initialImage);
+    function_ = initialFunction;
+    arguments_.clear();
+    result_ = {};
+    result_.state = ExecutionState::Suspended;
+    vm_.stack_ = std::move(stack);
+    vm_.locals_ = std::move(current.locals);
+    vm_.captures_ = std::move(current.captures);
+    vm_.callStack_.clear();
+    vm_.callStack_.reserve(frames.size());
+    for (auto& frame : frames) {
+        vm_.callStack_.emplace_back(
+            frame.function, frame.pc, std::move(frame.locals), frame.stackBase,
+            std::move(frame.captures), &frame.image->bytecode, frame.image->state.get(),
+            frame.image, frame.image->finalizerBytecode, frame.image->state);
+    }
+    vm_.function_ = current.function;
+    vm_.module_ = &current.image->bytecode;
+    vm_.moduleState_ = current.image->state.get();
+    vm_.pc_ = current.pc;
+    vm_.stackBase_ = current.stackBase;
+    vm_.suspendRequested_ = false;
+    vm_.result_ = {};
+    vm_.result_.state = ExecutionState::Suspended;
+    vm_.finalizerQueue_ = &engine_;
+    vm_.finalizerModule_ = current.image->finalizerBytecode;
+    vm_.finalizerState_ = current.image->state;
+    vm_.safePoint_ = [this] { engine_.DrainFinalizers(); };
+    vm_.moduleOwner_ = current.image;
+    for (auto& module : modules) module.candidateGlobals.clear();
     cells.clear();
     objects.clear();
     engine_.DrainFinalizers();

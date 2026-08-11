@@ -153,9 +153,9 @@ Do not stage generated build directories or unrelated user changes. Inspect
 
 The completed stage notes are authoritative. The latest alignment stage is:
 
-- Stage 89 module-global and object-graph serialization.
+- Stage 90 suspended-context serialization.
 
-The next planned item is Stage 90, suspended-context serialization.
+The next planned item is Stage 91, variadic arguments.
 Confirm the latest
 git history and `docs/stages/` before choosing the next stage number.
 
@@ -319,6 +319,12 @@ git history and `docs/stages/` before choosing the next stage number.
   then receive the current module image/state binding immediately before commit.
   Registered host reference/value types require an explicit codec; never persist
   raw pointers or opaque `std::any` payload bytes.
+- Suspended-context archives share one object/captured-cell graph across all
+  involved module globals, VM stack values, current locals, and caller frames.
+  Resolve functions by module/declaration/object type and validate code length
+  plus the next opcode/source cue before installing a saved PC. Rebuild module
+  owners, finalizer state, and safe-point callbacks from target images; callbacks
+  and pool ownership are host configuration and are never archived.
 - Preserve the last successful module image on parser, type-check, bytecode, or
   global-initializer failure.
 - Do not edit compatibility expectations merely to make mini and official

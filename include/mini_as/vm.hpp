@@ -69,6 +69,7 @@ public:
                             const BytecodeModule* module = nullptr, ModuleState* state = nullptr);
 
 private:
+    friend class ScriptContext;
     struct CallFrame {
         CallFrame(const BytecodeFunction* function = nullptr, std::size_t pc = 0,
                   std::vector<Value> locals = {}, std::size_t stackBase = 0,

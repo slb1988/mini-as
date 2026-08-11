@@ -138,6 +138,12 @@ int ScriptContext::SetArgObject(std::size_t index, ObjectHandle value) {
 int ScriptContext::SetArgValue(std::size_t index, Value value) {
     return context_->SetArgValue(index, std::move(value)) ? asSUCCESS : asINVALID_ARG;
 }
+int ScriptContext::SaveState(std::ostream& output) const {
+    return context_->SaveState(output) ? asSUCCESS : asERROR;
+}
+int ScriptContext::LoadState(std::istream& input) {
+    return context_->LoadState(input) ? asSUCCESS : asERROR;
+}
 int ScriptContext::Execute() {
     const auto state = context_->GetState();
     if (state != ExecutionState::Prepared && state != ExecutionState::Suspended)

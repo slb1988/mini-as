@@ -114,6 +114,8 @@ public:
     int SetArgString(std::size_t index, std::string value);
     int SetArgObject(std::size_t index, ObjectHandle value);
     int SetArgValue(std::size_t index, Value value);
+    int SaveState(std::ostream& output) const;
+    int LoadState(std::istream& input);
     int Execute();
     int Suspend();
     int Abort();

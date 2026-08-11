@@ -136,6 +136,8 @@ public:
     bool SetArgString(std::size_t index, std::string value);
     bool SetArgObject(std::size_t index, ObjectHandle value);
     bool SetArgValue(std::size_t index, Value value);
+    bool SaveState(std::ostream& output) const;
+    bool LoadState(std::istream& input);
     ExecutionState Execute();
     void Suspend();
     void Abort();
@@ -261,6 +263,8 @@ private:
     GlobalId GetOrCreateGlobalId(std::string key);
     void RegisterModuleImage(const std::shared_ptr<const ModuleImage>& image);
     std::shared_ptr<const ModuleImage> FindModuleImage(const BytecodeFunction* function);
+    std::shared_ptr<const ModuleImage> FindCurrentModuleImage(std::string_view moduleName);
+    std::string FindModuleName(const ModuleImage* image) const;
     std::optional<ResolvedScriptFunction> ResolveScriptFunction(FunctionId function);
     void EnqueueFinalizer(ScriptObject* object) override;
     void DrainFinalizers();

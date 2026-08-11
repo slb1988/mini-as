@@ -28,7 +28,8 @@ enum class TokenKind {
     Bang, BangEqual, Equal, EqualEqual,
     Less, LessEqual, Greater, GreaterEqual,
     AndAnd, OrOr,
-    LeftBracket, RightBracket
+    LeftBracket, RightBracket,
+    KwForeach
 };
 
 struct Token {

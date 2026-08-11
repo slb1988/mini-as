@@ -616,6 +616,148 @@ void BytecodeCompiler::CompileStatement(AstNode* node) {
         scopes_.pop_back();
         break;
     }
+    case NodeKind::ForeachStmt: {
+        const auto children = node->Children();
+        if (children.size() < 3) { Error(node, "foreach statement is incomplete"); break; }
+        const std::size_t itemCount = children.size() - 2;
+        AstNode* range = children[itemCount];
+        AstNode* body = children[itemCount + 1];
+        const DataType rangeType = range->inferredType;
+
+        const auto findMethod = [this, &rangeType](
+            std::string_view name, const std::vector<DataType>& parameters,
+            std::optional<DataType> requiredReturn = std::nullopt) {
+            const FunctionSignature* best = nullptr;
+            int bestDistance = 1000000;
+            for (const auto& signature : signatures_) {
+                if (!signature.method || signature.constructor || signature.destructor ||
+                    signature.name != name || signature.parameters != parameters ||
+                    (requiredReturn && signature.returnType != *requiredReturn) ||
+                    !IsBaseOf(signature.objectType, rangeType.objectName)) continue;
+                int distance = 0;
+                const ClassSignature* owner = FindClass(rangeType.objectName);
+                while (owner && owner->name != signature.objectType) {
+                    ++distance;
+                    owner = owner->baseClass.empty() ? nullptr : FindClass(owner->baseClass);
+                }
+                if (distance < bestDistance) { best = &signature; bestDistance = distance; }
+            }
+            return best;
+        };
+
+        scopes_.emplace_back();
+        debugScopes_.emplace_back();
+        Token rangeToken{TokenKind::Identifier,
+                         "$foreach_range_" + std::to_string(nextLocal_), node->token.location};
+        const VariableId rangeSlot = DeclareLocal(rangeToken, rangeType, true, false, false);
+        CompileExpression(range);
+        Emit(OpCode::StoreLocal, static_cast<std::int32_t>(rangeSlot.value), range);
+
+        const FunctionSignature* begin = findMethod("opForBegin", {});
+        if (!begin) {
+            Error(node, "foreach begin method is unavailable");
+            CloseDebugScope();
+            scopes_.pop_back();
+            break;
+        }
+        const DataType iteratorType = begin->returnType;
+        const std::vector<DataType> iteratorArgument{iteratorType};
+        const FunctionSignature* end = findMethod("opForEnd", iteratorArgument, DataType::Bool());
+        const FunctionSignature* next = findMethod("opForNext", iteratorArgument, iteratorType);
+        if (!end || !next) {
+            Error(node, "foreach iterator methods are unavailable");
+            CloseDebugScope();
+            scopes_.pop_back();
+            break;
+        }
+
+        Token iteratorToken{TokenKind::Identifier,
+                            "$foreach_iterator_" + std::to_string(nextLocal_), node->token.location};
+        const VariableId iteratorSlot = DeclareLocal(
+            iteratorToken, iteratorType, false, false, false);
+        const auto compileMethodCall = [this, &rangeToken, &rangeType,
+                                        &iteratorToken, &iteratorType](
+            const FunctionSignature& method, bool withIterator, const AstNode* source) {
+            AstNode receiver;
+            receiver.kind = NodeKind::Identifier;
+            receiver.token = rangeToken;
+            receiver.declaredType = rangeType;
+            receiver.inferredType = rangeType;
+
+            AstNode member;
+            member.kind = NodeKind::Member;
+            member.token = {TokenKind::Identifier, method.name, source->token.location};
+            member.firstChild = &receiver;
+
+            AstNode argument;
+            if (withIterator) {
+                argument.kind = NodeKind::Identifier;
+                argument.token = iteratorToken;
+                argument.declaredType = iteratorType;
+                argument.inferredType = iteratorType;
+                member.nextSibling = &argument;
+            }
+
+            AstNode call;
+            call.kind = NodeKind::Call;
+            call.token = member.token;
+            call.declaredType = method.returnType;
+            call.inferredType = method.returnType;
+            call.firstChild = &member;
+            CompileCall(&call);
+        };
+
+        compileMethodCall(*begin, false, node);
+        Emit(OpCode::StoreLocal, static_cast<std::int32_t>(iteratorSlot.value), node);
+        std::vector<VariableId> itemSlots;
+        std::vector<const FunctionSignature*> valueMethods;
+        itemSlots.reserve(itemCount);
+        valueMethods.reserve(itemCount);
+        for (std::size_t index = 0; index < itemCount; ++index) {
+            AstNode* item = children[index];
+            itemSlots.push_back(DeclareLocal(item->token, item->declaredType, item->isConst));
+            const FunctionSignature* value = nullptr;
+            if (itemCount == 1) value = findMethod("opForValue", iteratorArgument);
+            if (!value)
+                value = findMethod("opForValue" + std::to_string(index), iteratorArgument);
+            if (!value) {
+                Error(item, "foreach value method is unavailable");
+                CloseDebugScope();
+                scopes_.pop_back();
+                break;
+            }
+            valueMethods.push_back(value);
+        }
+        if (valueMethods.size() != itemCount) break;
+
+        const std::size_t condition = function_->code.size();
+        compileMethodCall(*end, true, node);
+        const std::size_t enterJump = Emit(OpCode::JumpIfFalse, -1, node);
+        const std::size_t exitJump = Emit(OpCode::Jump, -1, node);
+        PatchJump(enterJump, function_->code.size());
+        for (std::size_t index = 0; index < itemCount; ++index) {
+            compileMethodCall(*valueMethods[index], true, children[index]);
+            EmitConversion(valueMethods[index]->returnType,
+                           children[index]->declaredType, children[index]);
+            Emit(OpCode::StoreLocal, static_cast<std::int32_t>(itemSlots[index].value),
+                 children[index]);
+        }
+        controlFlow_.push_back({{}, {}, true, condition});
+        CompileStatement(body);
+        controlFlow_.back().continueTarget = function_->code.size();
+        compileMethodCall(*next, true, node);
+        Emit(OpCode::StoreLocal, static_cast<std::int32_t>(iteratorSlot.value), node);
+        Emit(OpCode::Jump, static_cast<std::int32_t>(condition), node);
+        PatchJump(exitJump, function_->code.size());
+        for (const auto jump : controlFlow_.back().breakJumps)
+            PatchJump(jump, function_->code.size());
+        for (const auto jump : controlFlow_.back().continueJumps)
+            PatchJump(jump, controlFlow_.back().continueTarget);
+        controlFlow_.pop_back();
+        CloseDebugScope();
+        scopes_.pop_back();
+        break;
+    }
     case NodeKind::DoWhileStmt: {
         const auto children = node->Children();
         const auto body = function_->code.size();

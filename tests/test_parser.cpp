@@ -469,6 +469,26 @@ TEST_CASE(parser_marks_deleted_default_operations_and_const_reference_parameters
     CHECK(members[2]->isDeleted);
 }
 
+TEST_CASE(parser_builds_foreach_items_range_and_body) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer lexer("parse",
+        "class Range {} int f() { Range@ values = Range(); "
+        "foreach (const auto value, uint index : values) {} return 0; }", diagnostics);
+    mini_as::Parser parser(lexer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    CHECK(!diagnostics.HasErrors());
+    auto* loop = tree.root->Children()[1]->Children().back()->firstChild->nextSibling;
+    CHECK(loop->kind == mini_as::NodeKind::ForeachStmt);
+    const auto children = loop->Children();
+    CHECK(children.size() == 4);
+    CHECK(children[0]->kind == mini_as::NodeKind::VarDecl);
+    CHECK(children[0]->isAuto);
+    CHECK(children[0]->isConst);
+    CHECK(children[1]->declaredType == mini_as::DataType::UInt());
+    CHECK(children[2]->kind == mini_as::NodeKind::Identifier);
+    CHECK(children[3]->kind == mini_as::NodeKind::Block);
+}
+
 TEST_CASE(parser_builds_registered_template_instances_and_splits_nested_closers) {
     mini_as::DiagnosticSink diagnostics;
     mini_as::Tokenizer tokenizer("templates",

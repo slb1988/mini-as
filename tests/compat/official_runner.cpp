@@ -159,7 +159,8 @@ int main(int argc, char** argv) {
     const bool arrayTemplate =
         std::string(argv[1]).find("array_template_object") != std::string::npos ||
         std::string(argv[1]).find("initialization_lists") != std::string::npos ||
-        std::string(argv[1]).find("indexing_expressions") != std::string::npos;
+        std::string(argv[1]).find("indexing_expressions") != std::string::npos ||
+        std::string(argv[1]).find("foreach_operator_protocol") != std::string::npos;
     if (arrayTemplate) RegisterScriptArray(engine, false);
     if (registeredTemplates && engine->RegisterObjectType(
             "HostBox<class T>", 0,

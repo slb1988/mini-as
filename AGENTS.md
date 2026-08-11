@@ -149,9 +149,9 @@ Do not stage generated build directories or unrelated user changes. Inspect
 
 The completed stage notes are authoritative. The latest alignment stage is:
 
-- Stage 77 protocol-based indexing expressions and lvalue lowering.
+- Stage 78 protocol-based foreach loops for registered and script ranges.
 
-The next planned item is Stage 78, the v0.6 foreach operator protocol.
+The next planned item is Stage 79, the v0.6 dictionary add-on.
 Confirm the latest
 git history and `docs/stages/` before choosing the next stage number.
 
@@ -243,6 +243,9 @@ git history and `docs/stages/` before choosing the next stage number.
 - Indexing uses registered `get(uint)` / value-returning `set(uint,T)` methods.
   `LValueRef::Index` caches receiver and index for compound/increment lowering
   so side effects run once; preserve ordinary assignment and postfix results.
+- Foreach resolves exact `opForBegin`, `opForEnd`, `opForNext`, and
+  `opForValue`/numbered value signatures. The range and iterator live in hidden
+  locals; keep `continue` targeting next rather than the end condition.
 - Preserve the last successful module image on parser, type-check, bytecode, or
   global-initializer failure.
 - Do not edit compatibility expectations merely to make mini and official

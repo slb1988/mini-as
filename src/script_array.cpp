@@ -133,6 +133,29 @@ bool RegisterScriptArray(ScriptEngine& engine, std::string name) {
                 });
             ok = ok && target.RegisterObjectMethod(typeName, "bool isEmpty() const",
                 [](GenericCall& call) { call.SetReturnBool(RequireArray(call)->Empty()); });
+            ok = ok && target.RegisterObjectMethod(typeName, "uint opForBegin() const",
+                [](GenericCall& call) {
+                    call.SetReturn(Value::Integer(DataType::UInt(), 0));
+                });
+            ok = ok && target.RegisterObjectMethod(typeName,
+                "bool opForEnd(uint iterator) const",
+                [](GenericCall& call) {
+                    call.SetReturnBool(ArrayIndex(call, 0) >= RequireArray(call)->Size());
+                });
+            ok = ok && target.RegisterObjectMethod(typeName,
+                "uint opForNext(uint iterator) const",
+                [](GenericCall& call) {
+                    const std::uint64_t iterator = call.GetArg(0).UnsignedInteger();
+                    call.SetReturn(Value::Integer(DataType::UInt(), iterator + 1));
+                });
+            ok = ok && target.RegisterObjectMethod(typeName,
+                elementType.Name() + " opForValue0(uint iterator) const",
+                [](GenericCall& call) {
+                    call.SetReturn(RequireArray(call)->Get(ArrayIndex(call, 0)));
+                });
+            ok = ok && target.RegisterObjectMethod(typeName,
+                "uint opForValue1(uint iterator) const",
+                [](GenericCall& call) { call.SetReturn(call.GetArg(0)); });
             ok = ok && target.RegisterObjectMethod(typeName, "void resize(uint length)",
                 [](GenericCall& call) { RequireArray(call)->Resize(ArrayIndex(call, 0)); });
             ok = ok && target.RegisterObjectMethod(typeName,

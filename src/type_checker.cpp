@@ -731,6 +731,94 @@ void TypeChecker::CheckNode(AstNode* node) {
         scopes_.pop_back();
         break;
     }
+    case NodeKind::ForeachStmt: {
+        const auto children = node->Children();
+        if (children.size() < 3) {
+            Error(node, "foreach statement is incomplete");
+            break;
+        }
+        const std::size_t itemCount = children.size() - 2;
+        AstNode* range = children[itemCount];
+        AstNode* body = children[itemCount + 1];
+        const DataType rangeType = CheckExpression(range);
+        const auto findProtocolMethod = [this, &rangeType](
+            std::string_view name, const std::vector<DataType>& parameters,
+            std::optional<DataType> requiredReturn = std::nullopt) {
+            const ClassSignature* type = rangeType.kind == TypeKind::Object
+                ? FindClass(rangeType.objectName) : nullptr;
+            while (type) {
+                for (const auto& method : type->methods) {
+                    if (!method.constructor && !method.destructor && method.name == name &&
+                        method.parameters == parameters &&
+                        (!requiredReturn || method.returnType == *requiredReturn)) return &method;
+                }
+                type = type->baseClass.empty() ? nullptr : FindClass(type->baseClass);
+            }
+            return static_cast<const FunctionSignature*>(nullptr);
+        };
+        const FunctionSignature* begin = findProtocolMethod("opForBegin", {});
+        DataType iteratorType = begin ? begin->returnType : DataType::Invalid();
+        if (!begin || iteratorType == DataType::Void() || !iteratorType.IsValid()) {
+            Error(range, "type '" + rangeType.Name() +
+                "' is not a foreach range: missing or invalid opForBegin");
+            begin = nullptr;
+        } else {
+            CheckAccess(range, begin->access, begin->objectType, "method", begin->name);
+        }
+        const std::vector<DataType> iteratorArgument = begin
+            ? std::vector<DataType>{iteratorType} : std::vector<DataType>{};
+        const FunctionSignature* end = begin
+            ? findProtocolMethod("opForEnd", iteratorArgument, DataType::Bool()) : nullptr;
+        if (begin && !end) {
+            Error(range, "type '" + rangeType.Name() +
+                "' is not a foreach range: missing or invalid opForEnd");
+            end = nullptr;
+        } else if (end) {
+            CheckAccess(range, end->access, end->objectType, "method", end->name);
+        }
+        const FunctionSignature* next = begin
+            ? findProtocolMethod("opForNext", iteratorArgument, iteratorType) : nullptr;
+        if (begin && !next) {
+            Error(range, "type '" + rangeType.Name() +
+                "' is not a foreach range: missing or invalid opForNext");
+            next = nullptr;
+        } else if (next) {
+            CheckAccess(range, next->access, next->objectType, "method", next->name);
+        }
+
+        scopes_.emplace_back();
+        for (std::size_t index = 0; index < itemCount; ++index) {
+            AstNode* item = children[index];
+            const std::string numbered = "opForValue" + std::to_string(index);
+            const FunctionSignature* value = nullptr;
+            if (begin && itemCount == 1)
+                value = findProtocolMethod("opForValue", iteratorArgument);
+            if (begin && !value)
+                value = findProtocolMethod(numbered, iteratorArgument);
+            if (!value || value->returnType == DataType::Void() || !value->returnType.IsValid()) {
+                Error(range, "type '" + rangeType.Name() +
+                    "' is not a foreach range: missing or invalid " +
+                    (itemCount == 1 ? std::string("opForValue/opForValue0") : numbered));
+            } else {
+                CheckAccess(range, value->access, value->objectType, "method", value->name);
+                if (item->isAuto) item->declaredType = value->returnType;
+                else if (!CanConvert(value->returnType, item->declaredType))
+                    Error(item, "cannot initialize foreach variable '" + item->token.lexeme +
+                        "' of type " + item->declaredType.Name() + " from " +
+                        value->returnType.Name());
+            }
+            if (item->isAuto && !item->declaredType.IsValid())
+                Error(item, "cannot infer foreach variable type");
+            Declare(item->token, item->declaredType, item->isConst);
+        }
+        ++breakableDepth_;
+        ++loopDepth_;
+        CheckNode(body);
+        --loopDepth_;
+        --breakableDepth_;
+        scopes_.pop_back();
+        break;
+    }
     case NodeKind::DoWhileStmt: {
         const auto children = node->Children();
         ++breakableDepth_;

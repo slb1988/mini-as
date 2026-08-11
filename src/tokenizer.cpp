@@ -19,7 +19,8 @@ const std::unordered_map<std::string, TokenKind> kKeywords = {
     {"false", TokenKind::KwFalse}, {"const", TokenKind::KwConst}, {"auto", TokenKind::KwAuto},
     {"if", TokenKind::KwIf},
     {"else", TokenKind::KwElse}, {"while", TokenKind::KwWhile}, {"do", TokenKind::KwDo},
-    {"for", TokenKind::KwFor}, {"switch", TokenKind::KwSwitch}, {"case", TokenKind::KwCase},
+    {"for", TokenKind::KwFor}, {"foreach", TokenKind::KwForeach},
+    {"switch", TokenKind::KwSwitch}, {"case", TokenKind::KwCase},
     {"default", TokenKind::KwDefault}, {"break", TokenKind::KwBreak},
     {"continue", TokenKind::KwContinue}, {"try", TokenKind::KwTry},
     {"catch", TokenKind::KwCatch},
@@ -60,10 +61,10 @@ std::string_view TokenName(TokenKind kind) {
         "+=", "-=", "*=", "**=", "/=", "%=",
         "&", "|", "^", "~", "<<", ">>", ">>>",
         "&=", "|=", "^=", "<<=", ">>=", ">>>=",
-        "!", "!=", "=", "==", "<", "<=", ">", ">=", "&&", "||", "[", "]"
+        "!", "!=", "=", "==", "<", "<=", ">", ">=", "&&", "||", "[", "]", "foreach"
     };
     static_assert(sizeof(names) / sizeof(names[0]) ==
-                      static_cast<std::size_t>(TokenKind::RightBracket) + 1,
+                      static_cast<std::size_t>(TokenKind::KwForeach) + 1,
                   "token name table must match TokenKind");
     return names[static_cast<std::size_t>(kind)];
 }

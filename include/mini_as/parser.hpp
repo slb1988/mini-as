@@ -19,7 +19,7 @@ enum class NodeKind {
     SwitchStmt, CaseClause, DefaultClause, ReturnStmt, BreakStmt, ContinueStmt, TryStmt,
     ExprStmt, EmptyStmt,
     Assign, Conditional, Binary, Unary, Increment, Cast, ValueCast, Call, NamedArgument,
-    AnonymousFunction, Member, Literal, Identifier, InitList, Index
+    AnonymousFunction, Member, Literal, Identifier, InitList, Index, ForeachStmt
 };
 
 struct AstNode {
@@ -101,6 +101,7 @@ private:
     AstNode* ParseWhile();
     AstNode* ParseDoWhile();
     AstNode* ParseFor();
+    AstNode* ParseForeach();
     AstNode* ParseSwitch();
     AstNode* ParseReturn();
     AstNode* ParseExpression();

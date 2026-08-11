@@ -478,6 +478,7 @@ AstNode* Parser::ParseStatement() {
     if (Match(TokenKind::KwWhile)) return ParseWhile();
     if (Match(TokenKind::KwDo)) return ParseDoWhile();
     if (Match(TokenKind::KwFor)) return ParseFor();
+    if (Match(TokenKind::KwForeach)) return ParseForeach();
     if (Match(TokenKind::KwSwitch)) return ParseSwitch();
     if (Match(TokenKind::KwReturn)) return ParseReturn();
     if (Match(TokenKind::KwBreak)) {
@@ -876,6 +877,28 @@ DataType Parser::ParseType(bool allowVoid) {
     return type;
 }
 
+AstNode* Parser::ParseForeach() {
+    AstNode* node = arena_->Make(NodeKind::ForeachStmt, Previous());
+    Consume(TokenKind::LeftParen, "expected '(' after foreach");
+    do {
+        const bool isConst = Match(TokenKind::KwConst);
+        const bool isAuto = Match(TokenKind::KwAuto);
+        DataType type = isAuto ? DataType::Invalid() : ParseType(false);
+        if (isAuto) Match(TokenKind::At);
+        Token name = Consume(TokenKind::Identifier, "expected foreach variable name");
+        AstNode* variable = arena_->Make(NodeKind::VarDecl, name);
+        variable->declaredType = type;
+        variable->isConst = isConst;
+        variable->isAuto = isAuto;
+        node->AppendChild(variable);
+    } while (Match(TokenKind::Comma));
+    Consume(TokenKind::Colon, "expected ':' before foreach range");
+    node->AppendChild(ParseExpression());
+    Consume(TokenKind::RightParen, "expected ')' after foreach range");
+    node->AppendChild(ParseStatement());
+    return node;
+}
+
 bool Parser::ConsumeTemplateClose() {
     if (Match(TokenKind::Greater)) return true;
     std::size_t remaining = 0;
@@ -1075,7 +1098,8 @@ void Parser::Synchronize() {
         if (current_ && Previous().kind == TokenKind::Semicolon) return;
         switch (Current().kind) {
         case TokenKind::KwIf: case TokenKind::KwWhile: case TokenKind::KwDo:
-        case TokenKind::KwFor: case TokenKind::KwSwitch: case TokenKind::KwCase:
+        case TokenKind::KwFor: case TokenKind::KwForeach:
+        case TokenKind::KwSwitch: case TokenKind::KwCase:
         case TokenKind::KwDefault: case TokenKind::KwReturn: case TokenKind::KwBreak:
         case TokenKind::KwContinue:
         case TokenKind::KwClass: case TokenKind::KwInterface: case TokenKind::KwEnum:

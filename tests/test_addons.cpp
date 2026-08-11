@@ -246,3 +246,105 @@ TEST_CASE(indexing_expressions_report_invalid_targets_and_bounds_locations) {
           std::string::npos);
     CHECK(context->GetExceptionLocation().row == 3);
 }
+
+TEST_CASE(foreach_uses_array_value_and_index_operator_protocol) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    CHECK(mini_as::addons::RegisterScriptArray(*engine));
+    auto* module = engine->GetModule("array-foreach");
+    module->AddScriptSection("array-foreach",
+        "int run() { array<int>@ values = {19, 99, 21}; int total = 0; "
+        "foreach (auto value, auto index : values) { "
+        "if (index == 1) continue; total += value + int(index); } "
+        "int seen = 0; foreach (auto value : values) { seen++; if (seen == 2) break; } "
+        "return total + seen - 2; }");
+    if (!module->Build()) {
+        std::string message;
+        for (const auto& diagnostic : diagnostics)
+            message += (message.empty() ? std::string{} : " | ") + diagnostic.message;
+        throw std::runtime_error(message);
+    }
+    const auto* function = module->GetFunctionByDecl("int run()");
+    CHECK(function != nullptr);
+    std::size_t hostCalls = 0;
+    for (const auto& instruction : function->code)
+        if (instruction.opcode == mini_as::OpCode::CallHost) ++hostCalls;
+    CHECK(hostCalls >= 8);
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(function));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+
+    std::stringstream archive(std::ios::in | std::ios::out | std::ios::binary);
+    CHECK(module->SaveBytecode(archive));
+    auto loadedEngine = mini_as::CreateScriptEngine();
+    CHECK(mini_as::addons::RegisterScriptArray(*loadedEngine));
+    auto* loaded = loadedEngine->GetModule("array-foreach-loaded");
+    archive.seekg(0);
+    CHECK(loaded->LoadBytecode(archive));
+    auto loadedContext = loadedEngine->CreateContext();
+    CHECK(loadedContext->Prepare(loaded->GetFunctionByDecl("int run()")));
+    CHECK(loadedContext->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(loadedContext->GetReturnInt() == 42);
+}
+
+TEST_CASE(foreach_supports_script_operator_protocol_and_single_value_name) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("script-foreach");
+    module->AddScriptSection("script-foreach",
+        "class Range { uint opForBegin() { return 0; } "
+        "bool opForEnd(uint it) { return it == 3; } "
+        "uint opForNext(uint it) { return it + 1; } "
+        "int opForValue(uint it) { return int(it) + 13; } } "
+        "int run() { Range@ range = Range(); int total = 0; "
+        "foreach (int value : range) total += value; return total; }");
+    CHECK(module->Build());
+    const auto* function = module->GetFunctionByDecl("int run()");
+    CHECK(function != nullptr);
+    std::size_t scriptCalls = 0;
+    for (const auto& instruction : function->code)
+        if (instruction.opcode == mini_as::OpCode::Call ||
+            instruction.opcode == mini_as::OpCode::CallVirtual) ++scriptCalls;
+    CHECK(scriptCalls >= 4);
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(function));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+}
+
+TEST_CASE(foreach_reports_invalid_protocol_and_runtime_locations) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    auto* invalid = engine->GetModule("invalid-foreach");
+    invalid->AddScriptSection("invalid-foreach",
+        "class Incomplete { uint opForBegin() { return 0; } } "
+        "int run() { Incomplete@ value = Incomplete(); "
+        "foreach (auto item : value) {} return 0; }");
+    CHECK(!invalid->Build());
+    bool missingEnd = false;
+    for (const auto& diagnostic : diagnostics)
+        missingEnd = missingEnd || diagnostic.message.find("opForEnd") != std::string::npos;
+    CHECK(missingEnd);
+
+    auto* failing = engine->GetModule("failing-foreach");
+    failing->AddScriptSection("failing-foreach",
+        "class Broken {\n"
+        "  uint opForBegin() { return 0; }\n"
+        "  bool opForEnd(uint it) { return it == 1; }\n"
+        "  uint opForNext(uint it) { return it + 1; }\n"
+        "  int opForValue(uint it) { return 1 / int(it); }\n"
+        "}\n"
+        "int run() { Broken@ range = Broken(); foreach (auto value : range) {} return 0; }\n");
+    CHECK(failing->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(failing->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Exception);
+    CHECK(context->GetExceptionString().find("division by zero") != std::string::npos);
+    CHECK(context->GetExceptionLocation().row == 5);
+}

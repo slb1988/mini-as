@@ -66,6 +66,8 @@ struct GlobalSignature {
     bool isConst = false;
     GlobalId id;
     bool host = false;
+
+    std::string Declaration() const;
 };
 
 struct EnumValueSignature {

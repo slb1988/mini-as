@@ -169,6 +169,8 @@ bool ScriptModule::Build() {
         if (!type.host)
             for (const auto& method : type.methods)
                 engine_.PublishFunctionMetadata(method, name_);
+    for (const auto& global : globals)
+        if (!global.host) engine_.PublishGlobalMetadata(global, name_);
     auto nextImage = std::make_shared<ModuleImage>();
     nextImage->bytecode = std::move(candidate);
     nextImage->finalizerBytecode = std::move(finalizerModule);
@@ -195,6 +197,42 @@ const FunctionMetadata* ScriptModule::GetFunctionMetadataByDecl(
     std::string_view declaration) const {
     const BytecodeFunction* function = GetFunctionByDecl(declaration);
     return function ? engine_.GetFunctionMetadataById(function->signature.id) : nullptr;
+}
+
+std::size_t ScriptModule::GetGlobalMetadataCount() const {
+    return static_cast<std::size_t>(std::count_if(
+        image_->bytecode.globals.begin(), image_->bytecode.globals.end(),
+        [](const GlobalBinding& binding) { return !binding.signature.host; }));
+}
+
+const GlobalMetadata* ScriptModule::GetGlobalMetadataByIndex(std::size_t index) const {
+    for (const auto& binding : image_->bytecode.globals) {
+        if (binding.signature.host) continue;
+        if (index-- == 0) return engine_.FindGlobalMetadata(binding.signature.id);
+    }
+    return nullptr;
+}
+
+const GlobalMetadata* ScriptModule::GetGlobalMetadataById(GlobalId id) const {
+    for (const auto& binding : image_->bytecode.globals)
+        if (!binding.signature.host && binding.signature.id == id)
+            return engine_.FindGlobalMetadata(id);
+    return nullptr;
+}
+
+const GlobalMetadata* ScriptModule::GetGlobalMetadataByName(std::string_view name) const {
+    for (const auto& binding : image_->bytecode.globals)
+        if (!binding.signature.host && binding.signature.name == name)
+            return engine_.FindGlobalMetadata(binding.signature.id);
+    return nullptr;
+}
+
+const GlobalMetadata* ScriptModule::GetGlobalMetadataByDecl(
+    std::string_view declaration) const {
+    for (const auto& binding : image_->bytecode.globals)
+        if (!binding.signature.host && binding.signature.Declaration() == declaration)
+            return engine_.FindGlobalMetadata(binding.signature.id);
+    return nullptr;
 }
 
 const BytecodeModule& ScriptModule::Bytecode() const { return image_->bytecode; }
@@ -858,6 +896,23 @@ void ScriptEngine::PublishFunctionMetadata(FunctionSignature signature,
         return;
     }
     functionMetadata_.push_back(std::move(metadata));
+}
+
+void ScriptEngine::PublishGlobalMetadata(GlobalSignature signature,
+                                         std::string moduleName) {
+    GlobalMetadata metadata{signature.id, std::move(moduleName), std::move(signature)};
+    for (auto& existing : globalMetadata_) {
+        if (existing.id != metadata.id) continue;
+        existing = std::move(metadata);
+        return;
+    }
+    globalMetadata_.push_back(std::move(metadata));
+}
+
+const GlobalMetadata* ScriptEngine::FindGlobalMetadata(GlobalId id) const {
+    for (const auto& metadata : globalMetadata_)
+        if (metadata.id == id) return &metadata;
+    return nullptr;
 }
 
 DataType ScriptEngine::ResolveRegisteredType(DataType type) const {

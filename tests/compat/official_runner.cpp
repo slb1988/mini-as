@@ -148,6 +148,13 @@ int main(int argc, char** argv) {
     const std::string source = ReadFile(argv[1]);
     module->AddScriptSection("compat.as", source.c_str(), source.size());
     if (module->Build() < 0) { engine->ShutDownAndRelease(); return 8; }
+    if (std::string(argv[1]).find("registered_named_types") != std::string::npos &&
+        (module->GetGlobalVarCount() != 2 ||
+         module->GetGlobalVarIndexByDecl("HostColor selected") < 0 ||
+         module->GetGlobalVarIndexByDecl("HostTransform@ transform") < 0)) {
+        engine->ShutDownAndRelease();
+        return 8;
+    }
     asIScriptFunction* function = module->GetFunctionByDecl("int main()");
     if (!function) { engine->ShutDownAndRelease(); return 9; }
     asIScriptContext* context = engine->CreateContext();

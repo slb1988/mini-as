@@ -399,6 +399,57 @@ TEST_CASE(failed_global_initialization_preserves_previous_image_and_state) {
     CHECK(preserved->GetReturnInt() == 42);
 }
 
+TEST_CASE(module_global_reflection_is_stable_scoped_and_published_atomically) {
+    auto engine = mini_as::CreateScriptEngine();
+    mini_as::Value hostCounter(std::int32_t{9});
+    CHECK(engine->RegisterGlobalProperty("int hostCounter", &hostCounter));
+    auto* module = engine->GetModule("global-reflection");
+    module->AddScriptSection("v1",
+        "int counter = 40; const int answer = 42; "
+        "namespace nested { int value = 7; } int main() { return counter; }");
+    CHECK(module->Build());
+
+    CHECK(module->GetGlobalMetadataCount() == 3);
+    const auto* counter = module->GetGlobalMetadataByIndex(0);
+    const auto* answer = module->GetGlobalMetadataByDecl("const int answer");
+    const auto* nested = module->GetGlobalMetadataByName("nested::value");
+    CHECK(counter != nullptr);
+    CHECK(counter->signature.name == "counter");
+    CHECK(counter->signature.Declaration() == "int counter");
+    CHECK(counter->moduleName == "global-reflection");
+    CHECK(module->GetGlobalMetadataById(counter->id) == counter);
+    CHECK(answer != nullptr);
+    CHECK(answer->signature.isConst);
+    CHECK(nested != nullptr);
+    CHECK(nested->signature.type == mini_as::DataType::Int());
+    CHECK(module->GetGlobalMetadataByName("hostCounter") == nullptr);
+    CHECK(module->GetGlobalMetadataByIndex(3) == nullptr);
+    CHECK(module->GetGlobalMetadataById(mini_as::GlobalId{}) == nullptr);
+    CHECK(module->GetGlobalMetadataByDecl("int missing") == nullptr);
+
+    const auto counterId = counter->id;
+    module->AddScriptSection("v2",
+        "const int counter = 41; int answer = 43; "
+        "namespace nested { int value = 8; } int extra = 9; "
+        "int main() { return counter; }");
+    CHECK(module->Build());
+    CHECK(module->GetGlobalMetadataCount() == 4);
+    CHECK(module->GetGlobalMetadataById(counterId) == counter);
+    CHECK(counter->signature.isConst);
+    CHECK(counter->signature.Declaration() == "const int counter");
+    CHECK(module->GetGlobalMetadataByDecl("int counter") == nullptr);
+    CHECK(module->GetGlobalMetadataByDecl("const int counter") == counter);
+
+    module->AddScriptSection("failed",
+        "double counter = 1.5; int zero = 0; int bad = 1 / zero; "
+        "int main() { return 0; }");
+    CHECK(!module->Build());
+    CHECK(module->GetGlobalMetadataById(counterId) == counter);
+    CHECK(counter->signature.type == mini_as::DataType::Int());
+    CHECK(counter->signature.isConst);
+    CHECK(module->GetGlobalMetadataByName("bad") == nullptr);
+}
+
 TEST_CASE(for_loops_execute_initializer_condition_and_increment) {
     auto engine = mini_as::CreateScriptEngine();
     auto* module = engine->GetModule("for-loop");

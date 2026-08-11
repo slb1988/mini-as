@@ -152,6 +152,10 @@ std::string FunctionSignature::Declaration() const {
     return out.str();
 }
 
+std::string GlobalSignature::Declaration() const {
+    return std::string(isConst ? "const " : "") + type.Name() + " " + name;
+}
+
 TypeChecker::TypeChecker(DiagnosticSink& diagnostics) : diagnostics_(diagnostics) {}
 
 void TypeChecker::RegisterFunction(FunctionSignature signature) {

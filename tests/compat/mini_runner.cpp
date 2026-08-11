@@ -98,6 +98,12 @@ int main(int argc, char** argv) {
     auto* module = engine->GetModule("compat", mini_as::ModulePolicy::AlwaysCreate);
     module->AddScriptSection("compat.as", ReadFile(argv[1]));
     if (!module->Build()) return 13;
+    if (std::string(argv[1]).find("registered_named_types") != std::string::npos) {
+        const auto* selected = module->GetGlobalMetadataByDecl("HostColor selected");
+        const auto* transform = module->GetGlobalMetadataByName("transform");
+        if (module->GetGlobalMetadataCount() != 2 || !selected || !transform ||
+            transform->signature.Declaration() != "HostTransform@ transform") return 13;
+    }
     auto context = engine->CreateContext();
     if (!context->Prepare(module->GetFunctionByDecl("int main()"))) return 14;
     if (context->Execute() != mini_as::ExecutionState::Finished) return 15;

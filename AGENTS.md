@@ -149,10 +149,10 @@ Do not stage generated build directories or unrelated user changes. Inspect
 
 The completed stage notes are authoritative. The latest alignment stage is:
 
-- Stage 66 stable function reflection metadata for host and script callables,
-  published only after successful module builds and refreshed in place by id.
+- Stage 67 stable module-global reflection metadata, scoped to script globals
+  in the current module image and published atomically after initialization.
 
-The next planned feature is module-global reflection metadata. Confirm the latest
+The next planned feature is dynamic function compilation. Confirm the latest
 git history and `docs/stages/` before choosing the next stage number.
 
 ## Common pitfalls
@@ -190,6 +190,9 @@ git history and `docs/stages/` before choosing the next stage number.
   Host functions publish at registration; script globals and methods publish
   only after the complete build succeeds. Keep removal semantics in the later
   explicit function-removal stage.
+- `GlobalMetadata` is also deque-backed, but public lookup is module-scoped and
+  must first confirm membership in the current `ModuleImage`. Do not include
+  registered host properties in module-global counts or index lookup.
 - Preserve the last successful module image on parser, type-check, bytecode, or
   global-initializer failure.
 - Do not edit compatibility expectations merely to make mini and official

@@ -41,6 +41,12 @@ struct FunctionMetadata {
     FunctionSignature signature;
 };
 
+struct GlobalMetadata {
+    GlobalId id;
+    std::string moduleName;
+    GlobalSignature signature;
+};
+
 class ScriptEngine;
 
 struct ModuleImage {
@@ -58,6 +64,11 @@ public:
     const BytecodeFunction* GetFunctionByDecl(std::string_view declaration) const;
     const BytecodeFunction* GetFunctionByName(std::string_view name) const;
     const FunctionMetadata* GetFunctionMetadataByDecl(std::string_view declaration) const;
+    std::size_t GetGlobalMetadataCount() const;
+    const GlobalMetadata* GetGlobalMetadataByIndex(std::size_t index) const;
+    const GlobalMetadata* GetGlobalMetadataById(GlobalId id) const;
+    const GlobalMetadata* GetGlobalMetadataByName(std::string_view name) const;
+    const GlobalMetadata* GetGlobalMetadataByDecl(std::string_view declaration) const;
     const BytecodeModule& Bytecode() const;
 
 private:
@@ -157,6 +168,8 @@ private:
     void PublishTypedefMetadata(const TypedefSignature& signature, bool host);
     void PublishFuncdefMetadata(const FuncdefSignature& signature, bool host);
     void PublishFunctionMetadata(FunctionSignature signature, std::string moduleName = {});
+    void PublishGlobalMetadata(GlobalSignature signature, std::string moduleName);
+    const GlobalMetadata* FindGlobalMetadata(GlobalId id) const;
     const TypeInfo* RegisterScriptType(const ClassSignature& type);
     void LinkScriptType(const ClassSignature& type);
     FunctionId GetOrCreateFunctionId(std::string key);
@@ -178,6 +191,7 @@ private:
     std::vector<FuncdefSignature> hostFuncdefs_;
     std::deque<TypeMetadata> typeMetadata_;
     std::deque<FunctionMetadata> functionMetadata_;
+    std::deque<GlobalMetadata> globalMetadata_;
     GarbageCollector garbageCollector_;
     std::unordered_map<std::string, std::unique_ptr<TypeInfo>> objectTypes_;
     std::unordered_map<std::string, FunctionId> functionIds_;

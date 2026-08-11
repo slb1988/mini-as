@@ -848,6 +848,7 @@ ExecutionState ScriptContext::Execute() {
             return result_.state;
         }
     }
+    result_.state = ExecutionState::Active;
     result_ = vm_.Continue();
     engine_.DrainFinalizers();
     return result_.state;
@@ -868,6 +869,32 @@ double ScriptContext::GetReturnDouble() const { return result_.returnValue.As<do
 const std::string& ScriptContext::GetExceptionString() const { return result_.exception; }
 const SourceLocation& ScriptContext::GetExceptionLocation() const { return result_.location; }
 const std::vector<StackFrameInfo>& ScriptContext::GetCallStack() const { return result_.callStack; }
+std::size_t ScriptContext::GetCallStackSize() const {
+    if (result_.state == ExecutionState::Exception) return result_.callStack.size();
+    return result_.state == ExecutionState::Active || result_.state == ExecutionState::Suspended
+        ? vm_.GetCallStackSize() : 0;
+}
+const BytecodeFunction* ScriptContext::GetFunction(std::size_t stackLevel) const {
+    if (result_.state == ExecutionState::Exception)
+        return stackLevel < result_.callStack.size()
+            ? result_.callStack[stackLevel].function : nullptr;
+    return result_.state == ExecutionState::Active || result_.state == ExecutionState::Suspended
+        ? vm_.GetFunction(stackLevel) : nullptr;
+}
+SourceLocation ScriptContext::GetInstructionLocation(std::size_t stackLevel) const {
+    if (result_.state == ExecutionState::Exception)
+        return stackLevel < result_.callStack.size()
+            ? result_.callStack[stackLevel].location : SourceLocation{};
+    return result_.state == ExecutionState::Active || result_.state == ExecutionState::Suspended
+        ? vm_.GetInstructionLocation(stackLevel) : SourceLocation{};
+}
+std::vector<LocalVariableInfo> ScriptContext::GetLocals(std::size_t stackLevel) const {
+    if (result_.state == ExecutionState::Exception)
+        return stackLevel < result_.callStack.size()
+            ? result_.callStack[stackLevel].locals : std::vector<LocalVariableInfo>{};
+    return result_.state == ExecutionState::Active || result_.state == ExecutionState::Suspended
+        ? vm_.GetLocals(stackLevel) : std::vector<LocalVariableInfo>{};
+}
 
 bool ScriptContext::SetArgument(std::size_t index, Value value) {
     if (!function_ || index >= arguments_.size() || result_.state != ExecutionState::Prepared) return false;

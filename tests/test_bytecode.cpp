@@ -82,6 +82,38 @@ TEST_CASE(bytecode_lvalues_cover_local_and_field_storage) {
     CHECK(loadedField);
 }
 
+TEST_CASE(bytecode_records_named_local_types_and_lexical_scopes) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("debug-locals",
+        "int inspect(const int input) { int outer = input; { string inner = \"ok\"; } return outer; }",
+        diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    mini_as::TypeChecker checker(diagnostics);
+    CHECK(checker.Check(tree.root));
+    mini_as::BytecodeCompiler compiler(diagnostics);
+    auto module = compiler.Compile(tree.root, checker.Functions(), checker.Classes(),
+                                   checker.Globals(), checker.Enums(), checker.Funcdefs());
+    CHECK(!diagnostics.HasErrors());
+    CHECK(module.functions.size() == 1);
+    const auto& function = module.functions.front();
+    CHECK(function.debugVariables.size() == 3);
+    CHECK(function.debugVariables[0].name == "input");
+    CHECK(function.debugVariables[0].type == mini_as::DataType::Int());
+    CHECK(function.debugVariables[0].isConst);
+    CHECK(function.debugVariables[0].parameter);
+    CHECK(function.debugVariables[1].name == "outer");
+    CHECK(!function.debugVariables[1].parameter);
+    CHECK(function.debugVariables[2].name == "inner");
+    CHECK(function.debugVariables[2].type == mini_as::DataType::String());
+    CHECK(function.debugVariables[2].scopeEnd < function.debugVariables[1].scopeEnd);
+    for (const auto& variable : function.debugVariables) {
+        CHECK(variable.slot.value < function.localCount);
+        CHECK(variable.scopeBegin <= variable.scopeEnd);
+        CHECK(variable.scopeEnd <= function.code.size());
+    }
+}
+
 TEST_CASE(bytecode_globals_use_stable_ids_for_load_and_store) {
     mini_as::DiagnosticSink diagnostics;
     mini_as::Tokenizer tokenizer("globals", "int counter = 1; int next() { counter = counter + 1; return counter; }", diagnostics);

@@ -100,6 +100,43 @@ void MessageCallback(const asSMessageInfo* message, void*) {
     std::cerr << message->row << ':' << message->col << ':' << message->message << '\n';
 }
 
+struct DebugProbe {
+    bool printed = false;
+};
+
+void DebugLineCallback(asIScriptContext* context, void* userData) {
+    auto* probe = static_cast<DebugProbe*>(userData);
+    const int line = context->GetLineNumber(0);
+    if (!probe || probe->printed || line != 3) return;
+    probe->printed = true;
+    const auto* function = context->GetFunction(0);
+    const auto* caller = context->GetFunction(1);
+    std::cout << "debug=" << (function ? function->GetName() : "<null>")
+              << ':' << line << ':' << context->GetCallstackSize() << '\n';
+    for (asUINT level = 0; level < 2; ++level) {
+        const int count = context->GetVarCount(level);
+        for (int index = 0; index < count; ++index) {
+            const char* name = nullptr;
+            int typeId = 0;
+            context->GetVar(static_cast<asUINT>(index), level, &name, &typeId);
+            if (!name || typeId != asTYPEID_INT32 ||
+                !context->IsVarInScope(static_cast<asUINT>(index), level)) continue;
+            const bool selected = level == 0
+                ? std::strcmp(name, "value") == 0 || std::strcmp(name, "doubled") == 0
+                : std::strcmp(name, "seed") == 0;
+            if (!selected) continue;
+            const auto* value = static_cast<const int*>(
+                context->GetAddressOfVar(static_cast<asUINT>(index), level));
+            if (!value) continue;
+            std::cout << (level == 0 ? "local=" : "caller-local=")
+                      << name << ':' << *value << '\n';
+        }
+        if (level == 0)
+            std::cout << "caller=" << (caller ? caller->GetName() : "<null>")
+                      << ':' << context->GetLineNumber(1) << '\n';
+    }
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -224,8 +261,18 @@ int main(int argc, char** argv) {
     if (!function) { engine->ShutDownAndRelease(); return 9; }
     asIScriptContext* context = engine->CreateContext();
     context->Prepare(function);
+    const bool debugIntrospection =
+        std::string(argv[1]).find("debug_introspection") != std::string::npos;
+    DebugProbe debugProbe;
+    if (debugIntrospection)
+        context->SetLineCallback(asFUNCTION(DebugLineCallback), &debugProbe, asCALL_CDECL);
     const int state = context->Execute();
     if (state != asEXECUTION_FINISHED) {
+        context->Release();
+        engine->ShutDownAndRelease();
+        return 9;
+    }
+    if (debugIntrospection && !debugProbe.printed) {
         context->Release();
         engine->ShutDownAndRelease();
         return 9;

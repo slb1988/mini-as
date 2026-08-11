@@ -41,11 +41,22 @@ struct ExceptionHandler {
     std::size_t catchTarget = 0;
 };
 
+struct LocalVariableDebugInfo {
+    std::string name;
+    DataType type = DataType::Invalid();
+    VariableId slot;
+    bool isConst = false;
+    bool parameter = false;
+    std::size_t scopeBegin = 0;
+    std::size_t scopeEnd = 0;
+};
+
 struct BytecodeFunction {
     FunctionSignature signature;
     std::vector<Instruction> code;
     std::vector<Value> constants;
     std::vector<ExceptionHandler> exceptionHandlers;
+    std::vector<LocalVariableDebugInfo> debugVariables;
     std::size_t localCount = 0;
 };
 
@@ -187,13 +198,18 @@ private:
     void PatchJump(std::size_t instruction, std::size_t target);
     std::int32_t AddConstant(Value value);
     std::optional<VariableId> LookupLocal(std::string_view name) const;
-    VariableId DeclareLocal(const Token& name);
+    VariableId DeclareLocal(const Token& name, DataType type = DataType::Invalid(),
+                            bool isConst = false, bool parameter = false,
+                            bool debugVisible = true);
+    void CloseDebugScope();
+    void CloseAllDebugScopes();
     void Error(const AstNode* node, std::string message);
 
     DiagnosticSink& diagnostics_;
     BytecodeModule module_;
     BytecodeFunction* function_ = nullptr;
     std::vector<std::unordered_map<std::string, VariableId>> scopes_;
+    std::vector<std::vector<std::size_t>> debugScopes_;
     std::uint32_t nextLocal_ = 0;
     std::vector<FunctionSignature> signatures_;
     std::unordered_map<std::string, std::size_t> functionIndices_;

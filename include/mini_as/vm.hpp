@@ -8,9 +8,22 @@ namespace mini_as {
 
 enum class ExecutionState { Uninitialized, Prepared, Active, Suspended, Finished, Aborted, Exception };
 
+struct LocalVariableInfo {
+    std::string name;
+    DataType type = DataType::Invalid();
+    VariableId slot;
+    Value value;
+    bool isConst = false;
+    bool parameter = false;
+    bool inScope = false;
+};
+
 struct StackFrameInfo {
     std::string functionDeclaration;
     SourceLocation location;
+    const BytecodeFunction* function = nullptr;
+    std::size_t instructionOffset = 0;
+    std::vector<LocalVariableInfo> locals;
 };
 
 struct ExecutionResult {
@@ -33,6 +46,10 @@ public:
                              std::shared_ptr<const BytecodeModule> module,
                              std::weak_ptr<ModuleState> state,
                              std::function<void()> safePoint);
+    std::size_t GetCallStackSize() const;
+    const BytecodeFunction* GetFunction(std::size_t stackLevel = 0) const;
+    SourceLocation GetInstructionLocation(std::size_t stackLevel = 0) const;
+    std::vector<LocalVariableInfo> GetLocals(std::size_t stackLevel = 0) const;
     ExecutionResult Execute(const BytecodeFunction& function,
                             const std::vector<Value>& arguments = {},
                             const BytecodeModule* module = nullptr, ModuleState* state = nullptr);
@@ -59,6 +76,8 @@ private:
     bool HandleException(const Instruction& instruction, std::string message);
     void BinaryArithmetic(const Instruction& instruction);
     void Compare(const Instruction& instruction);
+    StackFrameInfo MakeStackFrame(const BytecodeFunction* function, std::size_t pc,
+                                  const std::vector<Value>& locals) const;
 
     std::vector<Value> stack_;
     std::vector<Value> locals_;

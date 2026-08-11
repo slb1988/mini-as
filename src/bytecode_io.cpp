@@ -11,7 +11,7 @@ namespace mini_as::detail {
 namespace {
 
 constexpr char kMagic[] = {'M', 'A', 'S', 'B'};
-constexpr std::uint32_t kVersion = 1;
+constexpr std::uint32_t kVersion = 2;
 constexpr std::uint64_t kMaxItems = 1'000'000;
 constexpr std::uint64_t kMaxString = 16 * 1024 * 1024;
 
@@ -149,9 +149,11 @@ private:
 void WriteId(Writer& writer, FunctionId id) { writer.Scalar(id.value); }
 void WriteId(Writer& writer, TypeId id) { writer.Scalar(id.value); }
 void WriteId(Writer& writer, GlobalId id) { writer.Scalar(id.value); }
+void WriteId(Writer& writer, VariableId id) { writer.Scalar(id.value); }
 bool ReadId(Reader& reader, FunctionId& id) { return reader.Scalar(id.value); }
 bool ReadId(Reader& reader, TypeId& id) { return reader.Scalar(id.value); }
 bool ReadId(Reader& reader, GlobalId& id) { return reader.Scalar(id.value); }
+bool ReadId(Reader& reader, VariableId& id) { return reader.Scalar(id.value); }
 
 void WriteType(Writer& writer, const DataType& type) {
     writer.Scalar(type.kind);
@@ -451,6 +453,30 @@ bool ReadInstruction(Reader& reader, Instruction& instruction) {
         reader.Scalar(instruction.operand) && ReadLocation(reader, instruction.location);
 }
 
+void WriteDebugVariable(Writer& writer, const LocalVariableDebugInfo& variable) {
+    writer.String(variable.name); WriteType(writer, variable.type); WriteId(writer, variable.slot);
+    writer.Scalar<std::uint8_t>(variable.isConst ? 1 : 0);
+    writer.Scalar<std::uint8_t>(variable.parameter ? 1 : 0);
+    writer.Scalar<std::uint64_t>(variable.scopeBegin);
+    writer.Scalar<std::uint64_t>(variable.scopeEnd);
+}
+
+bool ReadDebugVariable(Reader& reader, LocalVariableDebugInfo& variable) {
+    std::uint64_t begin = 0, end = 0;
+    std::uint8_t isConst = 0, parameter = 0;
+    if (!reader.String(variable.name) || !ReadType(reader, variable.type) ||
+        !ReadId(reader, variable.slot) || !reader.Scalar(isConst) || isConst > 1 ||
+        !reader.Scalar(parameter) || parameter > 1 ||
+        !reader.Scalar(begin) || !reader.Scalar(end) ||
+        begin > std::numeric_limits<std::size_t>::max() ||
+        end > std::numeric_limits<std::size_t>::max()) return false;
+    variable.isConst = isConst != 0;
+    variable.parameter = parameter != 0;
+    variable.scopeBegin = static_cast<std::size_t>(begin);
+    variable.scopeEnd = static_cast<std::size_t>(end);
+    return true;
+}
+
 void WriteFunction(Writer& writer, const BytecodeFunction& function, bool& valid) {
     WriteFunctionSignature(writer, function.signature);
     writer.Vector(function.code, [](Writer& out, const Instruction& instruction) { WriteInstruction(out, instruction); });
@@ -459,6 +485,9 @@ void WriteFunction(Writer& writer, const BytecodeFunction& function, bool& valid
     writer.Vector(function.exceptionHandlers, [](Writer& out, const ExceptionHandler& handler) {
         out.Scalar<std::uint64_t>(handler.tryBegin); out.Scalar<std::uint64_t>(handler.tryEnd);
         out.Scalar<std::uint64_t>(handler.catchTarget);
+    });
+    writer.Vector(function.debugVariables, [](Writer& out, const LocalVariableDebugInfo& variable) {
+        WriteDebugVariable(out, variable);
     });
     writer.Scalar<std::uint64_t>(function.localCount);
 }
@@ -483,8 +512,16 @@ bool ReadFunction(Reader& reader, BytecodeFunction& function) {
             handler.tryEnd = static_cast<std::size_t>(end);
             handler.catchTarget = static_cast<std::size_t>(target);
             return true;
-        }) || !reader.Scalar(locals) || locals > std::numeric_limits<std::size_t>::max()) return false;
+        }) || !reader.Vector(function.debugVariables,
+            [](Reader& in, LocalVariableDebugInfo& variable) {
+                return ReadDebugVariable(in, variable);
+            }) || !reader.Scalar(locals) ||
+        locals > std::numeric_limits<std::size_t>::max()) return false;
     function.localCount = static_cast<std::size_t>(locals);
+    for (const auto& variable : function.debugVariables)
+        if (!variable.slot.IsValid() || variable.slot.value >= function.localCount ||
+            variable.scopeBegin > variable.scopeEnd ||
+            variable.scopeEnd > function.code.size()) return false;
     for (const auto& instruction : function.code) {
         if ((instruction.opcode == OpCode::PushConst &&
              (instruction.operand < 0 || static_cast<std::size_t>(instruction.operand) >= function.constants.size())) ||

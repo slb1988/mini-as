@@ -1,6 +1,7 @@
 #include "mini_as/vm.hpp"
 #include "mini_as/generic.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -277,6 +278,52 @@ void VirtualMachine::SetFinalizerContext(ObjectFinalizerQueue* queue,
     finalizerModule_ = std::move(module);
     finalizerState_ = std::move(state);
     safePoint_ = std::move(safePoint);
+}
+
+std::size_t VirtualMachine::GetCallStackSize() const {
+    if (result_.state == ExecutionState::Exception) return result_.callStack.size();
+    if (!function_ || (result_.state != ExecutionState::Prepared &&
+                       result_.state != ExecutionState::Active &&
+                       result_.state != ExecutionState::Suspended)) return 0;
+    return callStack_.size() + 1;
+}
+
+const BytecodeFunction* VirtualMachine::GetFunction(std::size_t stackLevel) const {
+    if (result_.state == ExecutionState::Exception)
+        return stackLevel < result_.callStack.size()
+            ? result_.callStack[stackLevel].function : nullptr;
+    if (!function_ || (result_.state != ExecutionState::Prepared &&
+                       result_.state != ExecutionState::Active &&
+                       result_.state != ExecutionState::Suspended) ||
+        stackLevel > callStack_.size()) return nullptr;
+    if (stackLevel == 0) return function_;
+    return callStack_[callStack_.size() - stackLevel].function;
+}
+
+SourceLocation VirtualMachine::GetInstructionLocation(std::size_t stackLevel) const {
+    if (result_.state == ExecutionState::Exception)
+        return stackLevel < result_.callStack.size()
+            ? result_.callStack[stackLevel].location : SourceLocation{};
+    if (!function_ || (result_.state != ExecutionState::Prepared &&
+                       result_.state != ExecutionState::Active &&
+                       result_.state != ExecutionState::Suspended) ||
+        stackLevel > callStack_.size()) return {};
+    if (stackLevel == 0) return MakeStackFrame(function_, pc_, locals_).location;
+    const auto& frame = callStack_[callStack_.size() - stackLevel];
+    return MakeStackFrame(frame.function, frame.pc, frame.locals).location;
+}
+
+std::vector<LocalVariableInfo> VirtualMachine::GetLocals(std::size_t stackLevel) const {
+    if (result_.state == ExecutionState::Exception)
+        return stackLevel < result_.callStack.size()
+            ? result_.callStack[stackLevel].locals : std::vector<LocalVariableInfo>{};
+    if (!function_ || (result_.state != ExecutionState::Prepared &&
+                       result_.state != ExecutionState::Active &&
+                       result_.state != ExecutionState::Suspended) ||
+        stackLevel > callStack_.size()) return {};
+    if (stackLevel == 0) return MakeStackFrame(function_, pc_, locals_).locals;
+    const auto& frame = callStack_[callStack_.size() - stackLevel];
+    return MakeStackFrame(frame.function, frame.pc, frame.locals).locals;
 }
 
 ExecutionResult VirtualMachine::Execute(const BytecodeFunction& function,
@@ -789,14 +836,38 @@ void VirtualMachine::Fail(const Instruction& instruction, std::string message) {
     result_.exception = std::move(message);
     result_.location = instruction.location;
     result_.callStack.clear();
-    if (function_) result_.callStack.push_back({function_->signature.Declaration(), instruction.location});
+    if (function_) result_.callStack.push_back(MakeStackFrame(function_, pc_, locals_));
     for (auto frame = callStack_.rbegin(); frame != callStack_.rend(); ++frame) {
-        SourceLocation location;
-        if (frame->function && frame->pc && frame->pc - 1 < frame->function->code.size())
-            location = frame->function->code[frame->pc - 1].location;
-        result_.callStack.push_back({frame->function ? frame->function->signature.Declaration() : "<unknown>",
-                                     std::move(location)});
+        result_.callStack.push_back(MakeStackFrame(frame->function, frame->pc, frame->locals));
     }
+}
+
+StackFrameInfo VirtualMachine::MakeStackFrame(const BytecodeFunction* function, std::size_t pc,
+                                              const std::vector<Value>& locals) const {
+    StackFrameInfo result;
+    result.function = function;
+    result.functionDeclaration = function ? function->signature.Declaration() : "<unknown>";
+    if (!function || function->code.empty()) return result;
+    result.instructionOffset = pc ? std::min(pc - 1, function->code.size() - 1) : 0;
+    result.location = function->code[result.instructionOffset].location;
+    result.locals.reserve(function->debugVariables.size());
+    for (const auto& variable : function->debugVariables) {
+        LocalVariableInfo local;
+        local.name = variable.name;
+        local.type = variable.type;
+        local.slot = variable.slot;
+        local.isConst = variable.isConst;
+        local.parameter = variable.parameter;
+        local.inScope = variable.scopeBegin <= result.instructionOffset &&
+                        result.instructionOffset < variable.scopeEnd;
+        if (variable.slot.value < locals.size()) {
+            local.value = locals[variable.slot.value];
+            if (const auto* cell = std::get_if<CapturedCellHandle>(&local.value.Raw()))
+                local.value = *cell ? (*cell)->value : Value{};
+        }
+        result.locals.push_back(std::move(local));
+    }
+    return result;
 }
 
 bool VirtualMachine::HandleException(const Instruction& instruction, std::string message) {

@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <utility>
 
@@ -414,8 +415,11 @@ void BytecodeCompiler::CompileGlobalInitializer(AstNode* root) {
     function_->signature.returnType = DataType::Void();
     function_->code.clear();
     function_->constants.clear();
+    function_->debugVariables.clear();
     scopes_.clear();
     scopes_.emplace_back();
+    debugScopes_.clear();
+    debugScopes_.emplace_back();
     controlFlow_.clear();
     nextLocal_ = 0;
     auto compileDeclaration = [&](AstNode* declaration) {
@@ -438,6 +442,7 @@ void BytecodeCompiler::CompileGlobalInitializer(AstNode* root) {
     }
     Emit(OpCode::PushVoid, 0, root);
     Emit(OpCode::Return, 0, root);
+    CloseAllDebugScopes();
     function_->localCount = static_cast<std::size_t>(nextLocal_);
     currentNamespace_.clear();
     function_ = nullptr;
@@ -448,8 +453,11 @@ void BytecodeCompiler::CompileFunction(AstNode* node, std::size_t functionIndex,
     function_ = &module_.functions.at(functionIndex);
     function_->code.clear();
     function_->constants.clear();
+    function_->debugVariables.clear();
     scopes_.clear();
     scopes_.emplace_back();
+    debugScopes_.clear();
+    debugScopes_.emplace_back();
     captureSlots_.clear();
     controlFlow_.clear();
     currentObjectType_ = std::move(objectType);
@@ -459,11 +467,12 @@ void BytecodeCompiler::CompileFunction(AstNode* node, std::size_t functionIndex,
     nextLocal_ = 0;
     if (!currentObjectType_.empty()) {
         Token thisToken{TokenKind::Identifier, "this", node->token.location};
-        DeclareLocal(thisToken);
+        DeclareLocal(thisToken, DataType::Object(currentObjectType_, true),
+                     function_->signature.readOnlyMethod, true);
     }
     AstNode* child = node->firstChild;
     while (child && child->kind == NodeKind::Parameter) {
-        DeclareLocal(child->token);
+        DeclareLocal(child->token, child->declaredType, child->isConst, true);
         child = child->nextSibling;
     }
     if (function_->signature.constructor && !node->hasExplicitSuper)
@@ -473,6 +482,7 @@ void BytecodeCompiler::CompileFunction(AstNode* node, std::size_t functionIndex,
         Emit(OpCode::PushVoid, 0, node);
         Emit(OpCode::Return, 0, node);
     }
+    CloseAllDebugScopes();
     function_->localCount = static_cast<std::size_t>(nextLocal_);
     currentObjectType_.clear();
     currentNamespace_.clear();
@@ -484,8 +494,11 @@ void BytecodeCompiler::CompileAnonymousFunction(AstNode* node, std::size_t funct
     function_->code.clear();
     function_->constants.clear();
     function_->exceptionHandlers.clear();
+    function_->debugVariables.clear();
     scopes_.clear();
     scopes_.emplace_back();
+    debugScopes_.clear();
+    debugScopes_.emplace_back();
     controlFlow_.clear();
     captureSlots_.clear();
     for (std::size_t index = 0; index < node->captureNames.size(); ++index)
@@ -495,7 +508,7 @@ void BytecodeCompiler::CompileAnonymousFunction(AstNode* node, std::size_t funct
     nextLocal_ = 0;
     AstNode* child = node->firstChild;
     while (child && child->kind == NodeKind::Parameter) {
-        DeclareLocal(child->token);
+        DeclareLocal(child->token, child->declaredType, child->isConst, true);
         child = child->nextSibling;
     }
     if (child && child->kind == NodeKind::Block) CompileBlock(child, false);
@@ -503,6 +516,7 @@ void BytecodeCompiler::CompileAnonymousFunction(AstNode* node, std::size_t funct
         Emit(OpCode::PushVoid, 0, node);
         Emit(OpCode::Return, 0, node);
     }
+    CloseAllDebugScopes();
     function_->localCount = static_cast<std::size_t>(nextLocal_);
     captureSlots_.clear();
     currentNamespace_.clear();
@@ -510,9 +524,15 @@ void BytecodeCompiler::CompileAnonymousFunction(AstNode* node, std::size_t funct
 }
 
 void BytecodeCompiler::CompileBlock(AstNode* node, bool createScope) {
-    if (createScope) scopes_.emplace_back();
+    if (createScope) {
+        scopes_.emplace_back();
+        debugScopes_.emplace_back();
+    }
     for (AstNode* child = node->firstChild; child; child = child->nextSibling) CompileStatement(child);
-    if (createScope) scopes_.pop_back();
+    if (createScope) {
+        CloseDebugScope();
+        scopes_.pop_back();
+    }
 }
 
 void BytecodeCompiler::CompileStatement(AstNode* node) {
@@ -524,7 +544,7 @@ void BytecodeCompiler::CompileStatement(AstNode* node) {
             CompileStatement(declaration);
         break;
     case NodeKind::VarDecl: {
-        const auto slot = DeclareLocal(node->token);
+        const auto slot = DeclareLocal(node->token, node->declaredType, node->isConst);
         if (node->firstChild) CompileExpression(node->firstChild);
         else EmitDefaultValue(node->declaredType, node);
         if (node->firstChild) EmitConversion(node->firstChild->inferredType, node->declaredType, node);
@@ -572,6 +592,7 @@ void BytecodeCompiler::CompileStatement(AstNode* node) {
     case NodeKind::ForStmt: {
         const auto children = node->Children();
         scopes_.emplace_back();
+        debugScopes_.emplace_back();
         if (children[0]->kind != NodeKind::EmptyStmt) CompileStatement(children[0]);
         const auto condition = function_->code.size();
         if (children[1]->kind == NodeKind::EmptyStmt)
@@ -591,6 +612,7 @@ void BytecodeCompiler::CompileStatement(AstNode* node) {
         for (const auto jump : controlFlow_.back().continueJumps)
             PatchJump(jump, controlFlow_.back().continueTarget);
         controlFlow_.pop_back();
+        CloseDebugScope();
         scopes_.pop_back();
         break;
     }
@@ -613,7 +635,9 @@ void BytecodeCompiler::CompileStatement(AstNode* node) {
     case NodeKind::SwitchStmt: {
         AstNode* selector = node->firstChild;
         scopes_.emplace_back();
-        const VariableId selectorSlot = DeclareLocal(node->token);
+        debugScopes_.emplace_back();
+        const VariableId selectorSlot = DeclareLocal(node->token, selector->inferredType,
+                                                     false, false, false);
         CompileExpression(selector);
         Emit(OpCode::StoreLocal, static_cast<std::int32_t>(selectorSlot.value), node);
         std::vector<std::pair<AstNode*, std::size_t>> caseJumps;
@@ -658,6 +682,7 @@ void BytecodeCompiler::CompileStatement(AstNode* node) {
         if (!defaultClause) PatchJump(defaultJump, function_->code.size());
         for (const auto jump : controlFlow_.back().breakJumps) PatchJump(jump, function_->code.size());
         controlFlow_.pop_back();
+        CloseDebugScope();
         scopes_.pop_back();
         break;
     }
@@ -2168,10 +2193,27 @@ std::optional<VariableId> BytecodeCompiler::LookupLocal(std::string_view name) c
     return std::nullopt;
 }
 
-VariableId BytecodeCompiler::DeclareLocal(const Token& name) {
+VariableId BytecodeCompiler::DeclareLocal(const Token& name, DataType type, bool isConst,
+                                          bool parameter, bool debugVisible) {
     const VariableId slot{nextLocal_++};
     scopes_.back()[name.lexeme] = slot;
+    if (debugVisible && !name.lexeme.empty() && name.lexeme.front() != '$') {
+        function_->debugVariables.push_back({name.lexeme, std::move(type), slot, isConst,
+            parameter, function_->code.size(), std::numeric_limits<std::size_t>::max()});
+        debugScopes_.back().push_back(function_->debugVariables.size() - 1);
+    }
     return slot;
+}
+
+void BytecodeCompiler::CloseDebugScope() {
+    if (debugScopes_.empty() || !function_) return;
+    for (const auto index : debugScopes_.back())
+        function_->debugVariables[index].scopeEnd = function_->code.size();
+    debugScopes_.pop_back();
+}
+
+void BytecodeCompiler::CloseAllDebugScopes() {
+    while (!debugScopes_.empty()) CloseDebugScope();
 }
 
 void BytecodeCompiler::Error(const AstNode* node, std::string message) {

@@ -786,6 +786,137 @@ TEST_CASE(bytecode_load_global_initializer_failure_preserves_previous_image) {
     CHECK(initializerFailure);
 }
 
+TEST_CASE(bytecode_round_trip_preserves_local_debug_metadata) {
+    auto sourceEngine = mini_as::CreateScriptEngine();
+    auto* source = sourceEngine->GetModule("debug-bytecode-source");
+    source->AddScriptSection("debug-bytecode.as",
+        "int inspect(int input) { int local = input + 1; return local; }");
+    CHECK(source->Build());
+    std::stringstream archive(std::ios::in | std::ios::out | std::ios::binary);
+    CHECK(source->SaveBytecode(archive));
+
+    auto targetEngine = mini_as::CreateScriptEngine();
+    auto* target = targetEngine->GetModule("debug-bytecode-target");
+    archive.seekg(0);
+    CHECK(target->LoadBytecode(archive));
+    const auto* function = target->GetFunctionByDecl("int inspect(int)");
+    CHECK(function != nullptr);
+    CHECK(function->debugVariables.size() == 2);
+    CHECK(function->debugVariables[0].name == "input");
+    CHECK(function->debugVariables[0].parameter);
+    CHECK(function->debugVariables[1].name == "local");
+    CHECK(function->debugVariables[1].type == mini_as::DataType::Int());
+}
+
+TEST_CASE(context_exposes_live_stack_locals_and_instruction_locations) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("live-debug-frames");
+    module->AddScriptSection("live-debug.as",
+        "int inner(int input) {\n"
+        "  int doubled = input * 2;\n"
+        "  int result = doubled + 1;\n"
+        "  return result;\n"
+        "}\n"
+        "int main() {\n"
+        "  int seed = 21;\n"
+        "  return inner(seed);\n"
+        "}\n");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int main()")));
+    CHECK(context->GetCallStackSize() == 0);
+
+    bool inspected = false;
+    context->SetLineCallback([&](mini_as::ScriptContext& current,
+                                 const mini_as::SourceLocation& location) {
+        if (inspected || location.row != 3) return;
+        inspected = true;
+        CHECK(current.GetState() == mini_as::ExecutionState::Active);
+        CHECK(current.GetCallStackSize() == 2);
+        CHECK(current.GetFunction(0) != nullptr);
+        CHECK(current.GetFunction(1) != nullptr);
+        CHECK(current.GetFunction(0)->signature.name == "inner");
+        CHECK(current.GetFunction(1)->signature.name == "main");
+        CHECK(current.GetInstructionLocation(0).row == 3);
+        CHECK(current.GetInstructionLocation(1).row == 8);
+
+        const auto locals = current.GetLocals(0);
+        const auto find = [&](std::string_view name) -> const mini_as::LocalVariableInfo* {
+            for (const auto& local : locals) if (local.name == name) return &local;
+            return nullptr;
+        };
+        const auto* input = find("input");
+        const auto* doubled = find("doubled");
+        const auto* result = find("result");
+        CHECK(input != nullptr);
+        CHECK(doubled != nullptr);
+        CHECK(result != nullptr);
+        CHECK(input->parameter);
+        CHECK(input->inScope);
+        CHECK(input->value.As<std::int32_t>() == 21);
+        CHECK(doubled->inScope);
+        CHECK(doubled->value.As<std::int32_t>() == 42);
+        CHECK(!result->inScope);
+
+        const auto callerLocals = current.GetLocals(1);
+        CHECK(callerLocals.size() == 1);
+        CHECK(callerLocals[0].name == "seed");
+        CHECK(callerLocals[0].inScope);
+        CHECK(callerLocals[0].value.As<std::int32_t>() == 21);
+        current.Suspend();
+    });
+
+    CHECK(context->Execute() == mini_as::ExecutionState::Suspended);
+    CHECK(inspected);
+    CHECK(context->GetCallStackSize() == 2);
+    CHECK(context->GetInstructionLocation(0).row == 3);
+    CHECK(context->GetFunction(99) == nullptr);
+    CHECK(context->GetInstructionLocation(99).section.empty());
+    CHECK(context->GetLocals(99).empty());
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 43);
+    CHECK(context->GetCallStackSize() == 0);
+    CHECK(context->GetFunction(0) == nullptr);
+    CHECK(context->GetLocals(0).empty());
+}
+
+TEST_CASE(context_preserves_exception_frame_locals_and_instruction_locations) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("exception-debug-frames");
+    module->AddScriptSection("exception-debug.as",
+        "int fail(int numerator) {\n"
+        "  int denominator = 0;\n"
+        "  return numerator / denominator;\n"
+        "}\n"
+        "int main() {\n"
+        "  int value = 10;\n"
+        "  return fail(value);\n"
+        "}\n");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int main()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Exception);
+    CHECK(context->GetCallStackSize() == 2);
+    CHECK(context->GetInstructionLocation(0).row == 3);
+    CHECK(context->GetInstructionLocation(1).row == 7);
+    const auto failedLocals = context->GetLocals(0);
+    CHECK(failedLocals.size() == 2);
+    CHECK(failedLocals[0].name == "numerator");
+    CHECK(failedLocals[0].value.As<std::int32_t>() == 10);
+    CHECK(failedLocals[1].name == "denominator");
+    CHECK(failedLocals[1].value.As<std::int32_t>() == 0);
+    const auto callerLocals = context->GetLocals(1);
+    CHECK(callerLocals.size() == 1);
+    CHECK(callerLocals[0].name == "value");
+    CHECK(callerLocals[0].value.As<std::int32_t>() == 10);
+    CHECK(context->GetCallStack().size() == 2);
+    CHECK(context->GetCallStack()[0].locals.size() == 2);
+    CHECK(!context->Prepare(nullptr));
+    CHECK(context->GetCallStackSize() == 0);
+    CHECK(context->GetFunction(0) == nullptr);
+    CHECK(context->GetLocals(0).empty());
+}
+
 TEST_CASE(for_loops_execute_initializer_condition_and_increment) {
     auto engine = mini_as::CreateScriptEngine();
     auto* module = engine->GetModule("for-loop");

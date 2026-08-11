@@ -124,6 +124,10 @@ public:
     const std::string& GetExceptionString() const;
     const SourceLocation& GetExceptionLocation() const;
     const std::vector<StackFrameInfo>& GetCallStack() const;
+    std::size_t GetCallStackSize() const;
+    const BytecodeFunction* GetFunction(std::size_t stackLevel = 0) const;
+    SourceLocation GetInstructionLocation(std::size_t stackLevel = 0) const;
+    std::vector<LocalVariableInfo> GetLocals(std::size_t stackLevel = 0) const;
 
 private:
     bool SetArgument(std::size_t index, Value value);

@@ -149,10 +149,11 @@ Do not stage generated build directories or unrelated user changes. Inspect
 
 The completed stage notes are authoritative. The latest alignment stage is:
 
-- Stage 70 transactional versioned bytecode save/load with checksum validation,
-  target-engine id remapping, host rebinding, and global reinitialization.
+- Stage 71 stack-local and instruction-location exposure for active, suspended,
+  and exceptional contexts, with bytecode-persisted lexical debug metadata.
 
-The next planned feature is debug stack-local and instruction-location exposure.
+The next planned feature is the official-style engine, module, and context
+compatibility facade in `include/mini_as/compat.hpp`.
 Confirm the latest
 git history and `docs/stages/` before choosing the next stage number.
 
@@ -212,6 +213,12 @@ git history and `docs/stages/` before choosing the next stage number.
 - Persist typed definition trees with bytecode so post-load incremental calls
   retain default-argument expressions. Live global/object state is deliberately
   outside bytecode and belongs to the later serialization stages.
+- Debug stack level zero is the current function and higher levels walk callers.
+  Keep named-variable metadata aligned with lexical compiler scopes, hide
+  compiler-generated slots, unwrap captured cells for inspection, and snapshot
+  all frames before exception cleanup. Debug values are copies, not VM addresses.
+- Any serialized `BytecodeFunction` metadata change requires a bytecode format
+  version bump plus load-time bounds validation. Stage 71 uses format version 2.
 - Preserve the last successful module image on parser, type-check, bytecode, or
   global-initializer failure.
 - Do not edit compatibility expectations merely to make mini and official

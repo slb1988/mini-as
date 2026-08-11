@@ -126,7 +126,33 @@ int main(int argc, char** argv) {
     }
     auto context = engine->CreateContext();
     if (!context->Prepare(module->GetFunctionByDecl("int main()"))) return 14;
+    const bool debugIntrospection =
+        std::string(argv[1]).find("debug_introspection") != std::string::npos;
+    bool debugPrinted = false;
+    if (debugIntrospection) {
+        context->SetLineCallback([&](mini_as::ScriptContext& current,
+                                     const mini_as::SourceLocation& location) {
+            if (debugPrinted || location.row != 3) return;
+            debugPrinted = true;
+            const auto* function = current.GetFunction(0);
+            const auto* caller = current.GetFunction(1);
+            std::cout << "debug=" << (function ? function->signature.name : "<null>")
+                      << ':' << current.GetInstructionLocation(0).row
+                      << ':' << current.GetCallStackSize() << '\n';
+            for (const auto& local : current.GetLocals(0))
+                if (local.inScope && (local.name == "value" || local.name == "doubled"))
+                    std::cout << "local=" << local.name << ':'
+                              << local.value.As<std::int32_t>() << '\n';
+            std::cout << "caller=" << (caller ? caller->signature.name : "<null>")
+                      << ':' << current.GetInstructionLocation(1).row << '\n';
+            for (const auto& local : current.GetLocals(1))
+                if (local.inScope && local.name == "seed")
+                    std::cout << "caller-local=" << local.name << ':'
+                              << local.value.As<std::int32_t>() << '\n';
+        });
+    }
     if (context->Execute() != mini_as::ExecutionState::Finished) return 15;
+    if (debugIntrospection && !debugPrinted) return 15;
     std::cout << "state=finished\nreturn=int:" << context->GetReturnInt() << '\n';
     return 0;
 }

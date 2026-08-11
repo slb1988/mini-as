@@ -459,6 +459,7 @@ TEST_CASE(dynamic_functions_compile_against_module_scope_and_preserve_snapshots)
         "class Box { int value; Box(int input) { value = input; } "
         "int read() { return value; } } int main() { return helper(0); }");
     CHECK(module->Build());
+    const auto initializerSize = module->Bytecode().globalInitializer.code.size();
 
     auto oldContext = engine->CreateContext();
     CHECK(oldContext->Prepare(module->GetFunctionByDecl("int main()")));
@@ -466,6 +467,7 @@ TEST_CASE(dynamic_functions_compile_against_module_scope_and_preserve_snapshots)
         "int dynamic(int input) { Box@ box = Box(input); "
         "return helper(box.read()); }");
     CHECK(dynamic != nullptr);
+    CHECK(module->Bytecode().globalInitializer.code.size() == initializerSize);
     CHECK(module->GetFunctionByDecl("int dynamic(int)") == dynamic);
     CHECK(module->GetFunctionMetadataByDecl("int dynamic(int)") != nullptr);
 
@@ -580,6 +582,10 @@ TEST_CASE(removed_functions_leave_scope_but_existing_references_keep_executing) 
     CHECK(callerContext->Prepare(module->GetFunctionByDecl("int caller()")));
     CHECK(callerContext->Execute() == mini_as::ExecutionState::Finished);
     CHECK(callerContext->GetReturnInt() == 42);
+
+    CHECK(module->CompileFunction(
+        "unrelated", "int unrelated() { return 1; }") != nullptr);
+    CHECK(module->GetFunctionByDecl("int target()") == nullptr);
 
     CHECK(module->CompileFunction(
         "hidden", "int cannot_see_removed() { return target(); }") == nullptr);

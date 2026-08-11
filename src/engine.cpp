@@ -337,6 +337,7 @@ const BytecodeFunction* ScriptModule::CompileFunction(std::string sectionName,
         definitionRoots.push_back(definitions->root);
     BytecodeModule candidate = compiler.Compile(
         tree.root, functions, classes, globals, enums, funcdefs, definitionRoots);
+    candidate.globalInitializer = image_->bytecode.globalInitializer;
     if (diagnostics.HasErrors()) return nullptr;
 
     const std::size_t callableOffset = image_->bytecode.callables.size();
@@ -398,6 +399,7 @@ const BytecodeFunction* ScriptModule::CompileFunction(std::string sectionName,
     nextImage->state = std::move(state);
     nextImage->environment = base;
     nextImage->definitionTrees = image_->definitionTrees;
+    nextImage->removedFunctions = image_->removedFunctions;
     if (addToModule) {
         nextImage->environment.functions = functions;
         nextImage->environment.classes = classes;

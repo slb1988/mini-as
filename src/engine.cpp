@@ -588,6 +588,26 @@ bool ScriptModule::LoadBytecode(std::istream& input) {
         return false;
     }
 
+    for (const auto& archivedType : archive.environment.classes) {
+        if (!archivedType.host || engine_.GetTypeInfo(archivedType.name)) continue;
+        DiagnosticSink diagnostics([this](const Diagnostic& diagnostic) {
+            engine_.ForwardDiagnostic(diagnostic);
+        });
+        const std::string templateProbe = archivedType.name + "@ __instance;";
+        Tokenizer tokenizer("bytecode-template", templateProbe, diagnostics);
+        Parser parser(tokenizer.ScanAll(), diagnostics);
+        for (const auto& registered : engine_.HostTemplateTypes(accessMask_))
+            parser.RegisterTemplateType(registered.first, registered.second);
+        parser.Parse();
+        if (diagnostics.HasErrors() ||
+            !engine_.InstantiateTemplateTypes(
+                parser.TemplateTypeUses(), accessMask_, diagnostics)) {
+            engine_.ForwardDiagnostic({{"bytecode"}, Severity::Error,
+                "bytecode load failed: template object types do not match"});
+            return false;
+        }
+    }
+
     std::unordered_map<std::uint32_t, FunctionId> functionIds;
     std::unordered_map<std::uint32_t, TypeId> typeIds;
     std::unordered_map<std::uint32_t, GlobalId> globalIds;
@@ -1225,7 +1245,9 @@ const TypeInfo* ScriptEngine::RegisterObjectType(std::string name) {
 }
 
 const TypeInfo* ScriptEngine::RegisterTemplateType(std::string declaration,
-                                                    TemplateValidator validator) {
+                                                    TemplateValidator validator,
+                                                    TemplateInstanceCallback instanceCallback,
+                                                    bool garbageCollected) {
     DiagnosticSink diagnostics([this](const Diagnostic& diagnostic) {
         ForwardDiagnostic(diagnostic);
     });
@@ -1264,7 +1286,8 @@ const TypeInfo* ScriptEngine::RegisterTemplateType(std::string declaration,
     TypeInfo* result = type.get();
     objectTypes_.insert_or_assign(patternName, std::move(type));
     templateTypes_.push_back(
-        {parsed->first, parsed->second, result, std::move(validator)});
+        {parsed->first, parsed->second, result, std::move(validator),
+         std::move(instanceCallback), garbageCollected});
     typeControls_[result->id.value] = {defaultAccessMask_, currentConfigGroup_, true};
     ClassSignature signature;
     signature.name = result->name;
@@ -1843,15 +1866,53 @@ bool ScriptEngine::InstantiateTemplateTypes(const std::vector<TemplateTypeUse>& 
         type->templateSubTypes = use.subTypes;
         type->accessMask = registration->definition->accessMask;
         type->configGroup = registration->definition->configGroup;
+        if (registration->garbageCollected) type->collector = &garbageCollector_;
         TypeInfo* result = type.get();
         objectTypes_.insert_or_assign(instanceName, std::move(type));
         typeControls_[result->id.value] = {
             result->accessMask, result->configGroup, true};
-        ClassSignature signature;
-        signature.name = result->name;
-        signature.id = result->id;
-        signature.host = true;
-        PublishObjectMetadata(signature);
+        const std::size_t functionBegin = hostFunctions_.size();
+        const std::size_t propertyBegin = hostObjectProperties_.size();
+        if (registration->instanceCallback) {
+            std::string reason;
+            if (!registration->instanceCallback(*this, *result, reason)) {
+                for (std::size_t index = functionBegin; index < hostFunctions_.size(); ++index)
+                    hostFunctions_[index].active = false;
+                for (std::size_t index = propertyBegin;
+                     index < hostObjectProperties_.size(); ++index)
+                    hostObjectProperties_[index].active = false;
+                result->active = false;
+                typeControls_[result->id.value].active = false;
+                diagnostics.Report(use.location, Severity::Error,
+                    "template instance '" + use.instanceType.objectName +
+                    "' could not be configured" +
+                    (reason.empty() ? std::string{} : ": " + reason));
+                continue;
+            }
+        }
+        for (std::size_t index = functionBegin; index < hostFunctions_.size(); ++index) {
+            hostFunctions_[index].accessMask = result->accessMask;
+            hostFunctions_[index].configGroup = result->configGroup;
+        }
+        for (std::size_t index = propertyBegin;
+             index < hostObjectProperties_.size(); ++index) {
+            hostObjectProperties_[index].accessMask = result->accessMask;
+            hostObjectProperties_[index].configGroup = result->configGroup;
+        }
+        bool published = false;
+        for (const auto& signature : HostTypeSignatures(~std::uint32_t{0})) {
+            if (signature.name != result->name) continue;
+            PublishObjectMetadata(signature);
+            published = true;
+            break;
+        }
+        if (!published) {
+            ClassSignature signature;
+            signature.name = result->name;
+            signature.id = result->id;
+            signature.host = true;
+            PublishObjectMetadata(signature);
+        }
     }
     return !diagnostics.HasErrors();
 }

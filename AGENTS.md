@@ -153,7 +153,7 @@ The completed stage notes are authoritative. The latest alignment stage is:
   pointer-stable removable configuration groups.
 
 The next planned item is the v0.5 embedding compatibility matrix, followed by
-v0.6 array template object.
+v0.6 initialization lists.
 Confirm the latest
 git history and `docs/stages/` before choosing the next stage number.
 
@@ -233,6 +233,11 @@ git history and `docs/stages/` before choosing the next stage number.
   materialized before type checking with their own stable `TypeId`. Keep nested
   `>>` splitting confined to type parsing, inherit host registration controls,
   and preserve canonical subtype spelling in reflection and host declarations.
+- The array add-on is a GC-tracked registered template, not a VM primitive.
+  Template instance callbacks register closed factories/methods, inherit the
+  definition's host controls, and must also be recreated before bytecode host
+  symbol remapping. Keep initialization lists and index syntax in their own
+  language stages.
 - Preserve the last successful module image on parser, type-check, bytecode, or
   global-initializer failure.
 - Do not edit compatibility expectations merely to make mini and official

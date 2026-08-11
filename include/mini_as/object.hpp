@@ -67,6 +67,7 @@ public:
     const TypeInfo* GetTypeInfo() const;
     std::shared_ptr<WeakRefState> GetWeakRefState() const;
     virtual void EnumerateReferences(const std::function<void(RefObject*)>& visitor) const;
+    virtual void ClearReferences();
 
 protected:
     virtual ~RefObject();
@@ -91,7 +92,7 @@ public:
     std::string ResolveInterfaceMethod(std::string_view interfaceName,
                                        std::string_view declaration) const;
     void EnumerateReferences(const std::function<void(RefObject*)>& visitor) const override;
-    void ClearReferences();
+    void ClearReferences() override;
     const ScriptFinalizerBinding& Finalizer() const;
 
 private:

@@ -157,6 +157,8 @@ public:
     using MessageCallback = std::function<void(const Diagnostic&)>;
     using TemplateValidator =
         std::function<bool(const std::vector<DataType>&, std::string&)>;
+    using TemplateInstanceCallback =
+        std::function<bool(ScriptEngine&, const TypeInfo&, std::string&)>;
 
     ~ScriptEngine() override;
 
@@ -172,7 +174,9 @@ public:
     bool RegisterGlobalProperty(std::string declaration, Value* storage);
     const TypeInfo* RegisterObjectType(std::string name);
     const TypeInfo* RegisterTemplateType(std::string declaration,
-                                         TemplateValidator validator = {});
+                                         TemplateValidator validator = {},
+                                         TemplateInstanceCallback instanceCallback = {},
+                                         bool garbageCollected = false);
     const TypeInfo* RegisterValueType(std::string name, Value defaultValue);
     bool RegisterEnum(std::string name);
     bool RegisterEnumValue(std::string enumName, std::string valueName, std::int32_t value);
@@ -254,6 +258,8 @@ private:
         std::vector<std::string> parameters;
         TypeInfo* definition = nullptr;
         TemplateValidator validator;
+        TemplateInstanceCallback instanceCallback;
+        bool garbageCollected = false;
     };
     std::vector<RegisteredTemplateType> templateTypes_;
     std::unordered_map<std::string, FunctionId> functionIds_;

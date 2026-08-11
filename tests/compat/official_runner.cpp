@@ -1,5 +1,6 @@
 #include <angelscript.h>
 #include <weakref.h>
+#include <scriptarray.h>
 
 #include <cstdint>
 #include <cstring>
@@ -155,6 +156,9 @@ int main(int argc, char** argv) {
     const bool hostControls = std::string(argv[1]).find("host_controls") != std::string::npos;
     const bool registeredTemplates =
         std::string(argv[1]).find("registered_template_types") != std::string::npos;
+    const bool arrayTemplate =
+        std::string(argv[1]).find("array_template_object") != std::string::npos;
+    if (arrayTemplate) RegisterScriptArray(engine, false);
     if (registeredTemplates && engine->RegisterObjectType(
             "HostBox<class T>", 0,
             asOBJ_REF | asOBJ_TEMPLATE | asOBJ_NOCOUNT) < 0) {
@@ -196,8 +200,14 @@ int main(int argc, char** argv) {
     }
     asITypeInfo* reflectedEnum = engine->GetTypeInfoByName("HostColor");
     asITypeInfo* reflectedAlias = engine->GetTypeInfoByName("HostScore");
-    asITypeInfo* reflectedFuncdef = engine->GetFuncdefCount() == 1
-        ? engine->GetFuncdefByIndex(0) : nullptr;
+    asITypeInfo* reflectedFuncdef = nullptr;
+    for (asUINT index = 0; index < engine->GetFuncdefCount(); ++index) {
+        asITypeInfo* candidate = engine->GetFuncdefByIndex(index);
+        if (candidate && std::strcmp(candidate->GetName(), "HostTransform") == 0) {
+            reflectedFuncdef = candidate;
+            break;
+        }
+    }
     asIScriptFunction* reflectedLift =
         engine->GetGlobalFunctionByDecl("HostScore Lift(HostScore)");
     if (!reflectedEnum || reflectedEnum->GetEnumValueCount() != 2 ||

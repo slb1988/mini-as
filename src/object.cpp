@@ -117,6 +117,7 @@ std::size_t RefObject::RefCount() const { return refCount_.load(std::memory_orde
 const TypeInfo* RefObject::GetTypeInfo() const { return type_; }
 std::shared_ptr<WeakRefState> RefObject::GetWeakRefState() const { return weakRefState_; }
 void RefObject::EnumerateReferences(const std::function<void(RefObject*)>&) const {}
+void RefObject::ClearReferences() {}
 void RefObject::OnZeroReferences() { delete this; }
 
 bool TypeInfo::IsA(std::string_view typeName) const {
@@ -248,9 +249,7 @@ std::size_t GarbageCollector::Collect() {
     std::vector<RefObject*> garbage;
     for (auto* object : candidates) if (reachable.find(object) == reachable.end()) garbage.push_back(object);
     for (auto* object : garbage) object->AddRef();
-    for (auto* object : garbage) {
-        if (auto* scriptObject = dynamic_cast<ScriptObject*>(object)) scriptObject->ClearReferences();
-    }
+    for (auto* object : garbage) object->ClearReferences();
     for (auto* object : garbage) object->Release();
     return garbage.size();
 }

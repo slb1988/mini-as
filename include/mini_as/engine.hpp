@@ -28,6 +28,11 @@ struct TypeMetadata {
     bool host = false;
     bool valueType = false;
     bool interfaceType = false;
+    bool templateType = false;
+    bool templateInstance = false;
+    std::string templateBase;
+    std::vector<std::string> templateParameters;
+    std::vector<DataType> templateSubTypes;
     std::string baseClass;
     std::vector<std::string> interfaces;
     std::vector<FieldSignature> fields;
@@ -150,6 +155,8 @@ private:
 class ScriptEngine : private ObjectFinalizerQueue {
 public:
     using MessageCallback = std::function<void(const Diagnostic&)>;
+    using TemplateValidator =
+        std::function<bool(const std::vector<DataType>&, std::string&)>;
 
     ~ScriptEngine() override;
 
@@ -164,6 +171,8 @@ public:
     bool RegisterGlobalFunction(std::string declaration, GenericFunction callback);
     bool RegisterGlobalProperty(std::string declaration, Value* storage);
     const TypeInfo* RegisterObjectType(std::string name);
+    const TypeInfo* RegisterTemplateType(std::string declaration,
+                                         TemplateValidator validator = {});
     const TypeInfo* RegisterValueType(std::string name, Value defaultValue);
     bool RegisterEnum(std::string name);
     bool RegisterEnumValue(std::string enumName, std::string valueName, std::int32_t value);
@@ -200,6 +209,11 @@ private:
     std::vector<EnumSignature> HostEnums(std::uint32_t accessMask) const;
     std::vector<TypedefSignature> HostTypedefs(std::uint32_t accessMask) const;
     std::vector<FuncdefSignature> HostFuncdefs(std::uint32_t accessMask) const;
+    std::vector<std::pair<std::string, std::size_t>> HostTemplateTypes(
+        std::uint32_t accessMask) const;
+    bool InstantiateTemplateTypes(const std::vector<TemplateTypeUse>& uses,
+                                  std::uint32_t accessMask,
+                                  DiagnosticSink& diagnostics);
     DataType ResolveRegisteredType(DataType type) const;
     void ResolveRegisteredTypes(FunctionSignature& signature) const;
     bool HasRegisteredType(std::string_view name) const;
@@ -235,6 +249,13 @@ private:
     std::deque<GlobalMetadata> globalMetadata_;
     GarbageCollector garbageCollector_;
     std::unordered_map<std::string, std::unique_ptr<TypeInfo>> objectTypes_;
+    struct RegisteredTemplateType {
+        std::string name;
+        std::vector<std::string> parameters;
+        TypeInfo* definition = nullptr;
+        TemplateValidator validator;
+    };
+    std::vector<RegisteredTemplateType> templateTypes_;
     std::unordered_map<std::string, FunctionId> functionIds_;
     std::unordered_map<std::string, TypeId> typeIds_;
     std::unordered_map<std::string, GlobalId> globalIds_;

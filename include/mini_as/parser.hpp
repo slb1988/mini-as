@@ -68,12 +68,21 @@ struct SyntaxTree {
     AstNode* root = nullptr;
 };
 
+struct TemplateTypeUse {
+    std::string templateName;
+    std::vector<DataType> subTypes;
+    DataType instanceType = DataType::Invalid();
+    SourceLocation location;
+};
+
 class Parser {
 public:
     Parser(std::vector<Token> tokens, DiagnosticSink& diagnostics);
     void RegisterEnumType(std::string name);
     void RegisterTypedefType(std::string name, DataType underlyingType);
     void RegisterFuncdefType(std::string name);
+    void RegisterTemplateType(std::string name, std::size_t subtypeCount);
+    const std::vector<TemplateTypeUse>& TemplateTypeUses() const;
     SyntaxTree Parse();
 
 private:
@@ -113,6 +122,7 @@ private:
     AstNode* ParsePrimary();
     AstNode* ParseAnonymousFunction();
     DataType ParseType(bool allowVoid = false);
+    bool ConsumeTemplateClose();
     Token ParseQualifiedIdentifier(const char* message);
     std::string QualifyDeclaration(std::string_view name) const;
     std::string ResolveTypeName(std::string_view name) const;
@@ -138,6 +148,8 @@ private:
     std::unordered_set<std::string> funcdefTypes_;
     std::unordered_map<std::string, std::vector<std::string>> objectBases_;
     std::unordered_map<std::string, DataType> typedefTypes_;
+    std::unordered_map<std::string, std::size_t> templateTypes_;
+    std::vector<TemplateTypeUse> templateTypeUses_;
     std::string currentNamespace_;
     std::string currentTypeName_;
 };

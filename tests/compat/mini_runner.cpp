@@ -50,6 +50,10 @@ int main(int argc, char** argv) {
     }
     auto engine = mini_as::CreateScriptEngine();
     const bool hostControls = std::string(argv[1]).find("host_controls") != std::string::npos;
+    const bool registeredTemplates =
+        std::string(argv[1]).find("registered_template_types") != std::string::npos;
+    if (registeredTemplates &&
+        !engine->RegisterObjectType("HostBox<class T>")) return 3;
     if (hostControls) {
         if (!engine->SetDefaultNamespace("HostTools") ||
             engine->SetDefaultAccessMask(0x1u) != ~std::uint32_t{0} ||

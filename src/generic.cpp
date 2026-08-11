@@ -8,7 +8,32 @@
 namespace mini_as {
 namespace {
 
-DataType ReadType(const std::vector<Token>& tokens, std::size_t& index) {
+bool ConsumeTypeClose(const std::vector<Token>& tokens, std::size_t& index,
+                      std::size_t& pendingClosers) {
+    if (pendingClosers) {
+        --pendingClosers;
+        return true;
+    }
+    if (index >= tokens.size()) return false;
+    if (tokens[index].kind == TokenKind::Greater) {
+        ++index;
+        return true;
+    }
+    if (tokens[index].kind == TokenKind::ShiftRight) {
+        ++index;
+        pendingClosers = 1;
+        return true;
+    }
+    if (tokens[index].kind == TokenKind::ShiftRightArithmetic) {
+        ++index;
+        pendingClosers = 2;
+        return true;
+    }
+    return false;
+}
+
+DataType ReadType(const std::vector<Token>& tokens, std::size_t& index,
+                  std::size_t& pendingClosers) {
     if (index >= tokens.size()) return DataType::Invalid();
     DataType type;
     switch (tokens[index].kind) {
@@ -25,7 +50,41 @@ DataType ReadType(const std::vector<Token>& tokens, std::size_t& index) {
     case TokenKind::KwFloat: type = DataType::Float(); break;
     case TokenKind::KwDouble: type = DataType::Double(); break;
     case TokenKind::KwString: type = DataType::String(); break;
-    case TokenKind::Identifier: type = DataType::Object(tokens[index].lexeme); break;
+    case TokenKind::Identifier: {
+        std::string name = tokens[index++].lexeme;
+        while (index + 1 < tokens.size() && tokens[index].kind == TokenKind::Scope &&
+               tokens[index + 1].kind == TokenKind::Identifier) {
+            name += "::" + tokens[index + 1].lexeme;
+            index += 2;
+        }
+        if (index < tokens.size() && tokens[index].kind == TokenKind::Less) {
+            ++index;
+            name += "<";
+            bool first = true;
+            while (index < tokens.size() && tokens[index].kind != TokenKind::Greater &&
+                   tokens[index].kind != TokenKind::ShiftRight &&
+                   tokens[index].kind != TokenKind::ShiftRightArithmetic) {
+                DataType subtype = ReadType(tokens, index, pendingClosers);
+                if (!subtype.IsValid() || subtype == DataType::Void())
+                    return DataType::Invalid();
+                if (!first) name += ",";
+                name += subtype.Name();
+                first = false;
+                if (index < tokens.size() && tokens[index].kind == TokenKind::Comma) ++index;
+                else break;
+            }
+            if (first || !ConsumeTypeClose(tokens, index, pendingClosers))
+                return DataType::Invalid();
+            name += ">";
+        }
+        type = DataType::Object(std::move(name));
+        if (pendingClosers == 0 && index < tokens.size() &&
+            tokens[index].kind == TokenKind::At) {
+            type.isHandle = true;
+            ++index;
+        }
+        return type;
+    }
     default: return DataType::Invalid();
     }
     ++index;
@@ -75,12 +134,13 @@ std::optional<FunctionSignature> ParseFunctionDeclaration(
     const auto tokens = tokenizer.ScanAll();
     if (diagnostics.HasErrors()) return std::nullopt;
     std::size_t index = 0;
+    std::size_t pendingClosers = 0;
     FunctionSignature signature;
     if (index < tokens.size() && tokens[index].kind == TokenKind::KwConst) {
         signature.returnReferenceConst = true;
         ++index;
     }
-    signature.returnType = ReadType(tokens, index);
+    signature.returnType = ReadType(tokens, index, pendingClosers);
     if (index < tokens.size() && tokens[index].kind == TokenKind::Amp) {
         signature.returnsReference = true;
         ++index;
@@ -97,7 +157,7 @@ std::optional<FunctionSignature> ParseFunctionDeclaration(
         return std::nullopt;
     }
     while (index < tokens.size() && tokens[index].kind != TokenKind::RightParen) {
-        DataType parameter = ReadType(tokens, index);
+        DataType parameter = ReadType(tokens, index, pendingClosers);
         if (!parameter.IsValid() || parameter == DataType::Void()) {
             diagnostics.Report(tokens[std::min(index, tokens.size() - 1)].location, Severity::Error,
                                "invalid parameter type");
@@ -148,13 +208,14 @@ std::optional<GlobalSignature> ParseGlobalPropertyDeclaration(
     const auto tokens = tokenizer.ScanAll();
     if (diagnostics.HasErrors()) return std::nullopt;
     std::size_t index = 0;
+    std::size_t pendingClosers = 0;
     GlobalSignature signature;
     signature.host = true;
     if (index < tokens.size() && tokens[index].kind == TokenKind::KwConst) {
         signature.isConst = true;
         ++index;
     }
-    signature.type = ReadType(tokens, index);
+    signature.type = ReadType(tokens, index, pendingClosers);
     if (!signature.type.IsValid() || signature.type == DataType::Void() ||
         index >= tokens.size() || tokens[index].kind != TokenKind::Identifier) {
         diagnostics.Report(tokens[std::min(index, tokens.size() - 1)].location, Severity::Error,

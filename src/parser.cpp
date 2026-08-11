@@ -161,6 +161,14 @@ void Parser::RegisterFuncdefType(std::string name) {
     funcdefTypes_.insert(std::move(name));
 }
 
+void Parser::RegisterTemplateType(std::string name, std::size_t subtypeCount) {
+    templateTypes_[std::move(name)] = subtypeCount;
+}
+
+const std::vector<TemplateTypeUse>& Parser::TemplateTypeUses() const {
+    return templateTypeUses_;
+}
+
 SyntaxTree Parser::Parse() {
     SyntaxTree tree;
     arena_ = &tree.arena;
@@ -748,9 +756,10 @@ AstNode* Parser::ParsePrimary() {
         Consume(TokenKind::RightParen, "expected ')' after cast expression");
         return cast;
     }
-    if (Check(TokenKind::Identifier) &&
-        (Current().lexeme == "weakref" || Current().lexeme == "const_weakref") &&
-        current_ + 1 < tokens_.size() && tokens_[current_ + 1].kind == TokenKind::Less) {
+    if (Check(TokenKind::Identifier) && current_ + 1 < tokens_.size() &&
+        tokens_[current_ + 1].kind == TokenKind::Less &&
+        ((Current().lexeme == "weakref" || Current().lexeme == "const_weakref") ||
+         templateTypes_.find(ResolveTypeName(Current().lexeme)) != templateTypes_.end())) {
         Token typeToken = Current();
         const DataType type = ParseType(false);
         typeToken.lexeme = type.Name();
@@ -800,12 +809,47 @@ DataType Parser::ParseType(bool allowVoid) {
             }
         } else {
             const std::string name = ResolveTypeName(identifier.lexeme);
-            const auto alias = typedefTypes_.find(name);
-            if (alias != typedefTypes_.end()) type = alias->second;
-            else if (enumTypes_.find(name) != enumTypes_.end()) type = DataType::Enum(name);
-            else if (funcdefTypes_.find(name) != funcdefTypes_.end())
-                type = DataType::Function(name, false);
-            else type = DataType::Object(name);
+            if (Match(TokenKind::Less)) {
+                std::vector<DataType> subTypes;
+                if (!Check(TokenKind::Greater) && !Check(TokenKind::ShiftRight) &&
+                    !Check(TokenKind::ShiftRightArithmetic)) {
+                    do {
+                        DataType subtype = ParseType(false);
+                        if (subtype == DataType::Void() || !subtype.IsValid())
+                            Error(identifier, "template subtype must be a valid non-void type");
+                        subTypes.push_back(std::move(subtype));
+                    } while (Match(TokenKind::Comma));
+                }
+                ConsumeTemplateClose();
+                const auto registered = templateTypes_.find(name);
+                if (registered == templateTypes_.end()) {
+                    Error(identifier, "type '" + name + "' is not a registered template");
+                    type = DataType::Invalid();
+                } else if (registered->second != subTypes.size()) {
+                    Error(identifier, "template type '" + name + "' expects " +
+                                      std::to_string(registered->second) + " subtype(s), got " +
+                                      std::to_string(subTypes.size()));
+                    type = DataType::Invalid();
+                } else {
+                    std::string instanceName = name + "<";
+                    for (std::size_t index = 0; index < subTypes.size(); ++index) {
+                        if (index) instanceName += ",";
+                        instanceName += subTypes[index].Name();
+                    }
+                    instanceName += ">";
+                    type = DataType::Object(instanceName);
+                    objectTypes_.insert(instanceName);
+                    templateTypeUses_.push_back(
+                        {name, std::move(subTypes), type, identifier.location});
+                }
+            } else {
+                const auto alias = typedefTypes_.find(name);
+                if (alias != typedefTypes_.end()) type = alias->second;
+                else if (enumTypes_.find(name) != enumTypes_.end()) type = DataType::Enum(name);
+                else if (funcdefTypes_.find(name) != funcdefTypes_.end())
+                    type = DataType::Function(name, false);
+                else type = DataType::Object(name);
+            }
         }
     }
     else { Error(Current(), "expected type"); return DataType::Invalid(); }
@@ -815,6 +859,24 @@ DataType Parser::ParseType(bool allowVoid) {
         else type.isHandle = true;
     }
     return type;
+}
+
+bool Parser::ConsumeTemplateClose() {
+    if (Match(TokenKind::Greater)) return true;
+    std::size_t remaining = 0;
+    if (Check(TokenKind::ShiftRight)) remaining = 1;
+    else if (Check(TokenKind::ShiftRightArithmetic)) remaining = 2;
+    else {
+        Error(Current(), "expected '>' after template subtypes");
+        return false;
+    }
+    Token close = Current();
+    close.kind = TokenKind::Greater;
+    close.lexeme = ">";
+    tokens_[current_] = close;
+    tokens_.insert(tokens_.begin() + static_cast<std::ptrdiff_t>(current_ + 1),
+                   remaining, close);
+    return Match(TokenKind::Greater);
 }
 
 bool Parser::IsTypeStart(bool allowIdentifier) const {
@@ -890,7 +952,8 @@ std::string Parser::ResolveTypeName(std::string_view name) const {
         return enumTypes_.find(candidate) != enumTypes_.end() ||
                objectTypes_.find(candidate) != objectTypes_.end() ||
                funcdefTypes_.find(candidate) != funcdefTypes_.end() ||
-               typedefTypes_.find(candidate) != typedefTypes_.end();
+               typedefTypes_.find(candidate) != typedefTypes_.end() ||
+               templateTypes_.find(candidate) != templateTypes_.end();
     };
     if (!currentTypeName_.empty()) {
         const std::string child = currentTypeName_ + "::" + std::string(name);
@@ -954,18 +1017,20 @@ bool Parser::IsVariableDeclarationStart() const {
     if (!IsTypeStart()) return false;
     if (Current().kind != TokenKind::Identifier) return true;
     std::size_t cursor = current_ + 1;
-    if ((Current().lexeme == "weakref" || Current().lexeme == "const_weakref") &&
-        cursor < tokens_.size() && tokens_[cursor].kind == TokenKind::Less) {
+    while (cursor + 1 < tokens_.size() && tokens_[cursor].kind == TokenKind::Scope &&
+           tokens_[cursor + 1].kind == TokenKind::Identifier) cursor += 2;
+    if (cursor < tokens_.size() && tokens_[cursor].kind == TokenKind::Less) {
         int depth = 0;
         do {
             if (tokens_[cursor].kind == TokenKind::Less) ++depth;
             else if (tokens_[cursor].kind == TokenKind::Greater) --depth;
+            else if (tokens_[cursor].kind == TokenKind::ShiftRight) depth -= 2;
+            else if (tokens_[cursor].kind == TokenKind::ShiftRightArithmetic) depth -= 3;
             ++cursor;
         } while (cursor < tokens_.size() && depth > 0);
+        if (cursor < tokens_.size() && tokens_[cursor].kind == TokenKind::At) ++cursor;
         return cursor < tokens_.size() && tokens_[cursor].kind == TokenKind::Identifier;
     }
-    while (cursor + 1 < tokens_.size() && tokens_[cursor].kind == TokenKind::Scope &&
-           tokens_[cursor + 1].kind == TokenKind::Identifier) cursor += 2;
     if (cursor < tokens_.size() && tokens_[cursor].kind == TokenKind::At) ++cursor;
     return cursor < tokens_.size() && tokens_[cursor].kind == TokenKind::Identifier;
 }

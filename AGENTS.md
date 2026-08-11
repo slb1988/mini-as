@@ -153,7 +153,7 @@ The completed stage notes are authoritative. The latest alignment stage is:
   pointer-stable removable configuration groups.
 
 The next planned item is the v0.5 embedding compatibility matrix, followed by
-v0.6 registered template types.
+v0.6 array template object.
 Confirm the latest
 git history and `docs/stages/` before choosing the next stage number.
 
@@ -229,6 +229,10 @@ git history and `docs/stages/` before choosing the next stage number.
   marks stable deque entries inactive so unrelated live bytecode pointers do
   not dangle, and must refuse removal while a live module environment depends
   on the group.
+- Registered template definitions are parser inputs, while closed instances are
+  materialized before type checking with their own stable `TypeId`. Keep nested
+  `>>` splitting confined to type parsing, inherit host registration controls,
+  and preserve canonical subtype spelling in reflection and host declarations.
 - Preserve the last successful module image on parser, type-check, bytecode, or
   global-initializer failure.
 - Do not edit compatibility expectations merely to make mini and official

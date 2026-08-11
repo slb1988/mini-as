@@ -153,6 +153,14 @@ int main(int argc, char** argv) {
     if (!engine) return 3;
     int hostCounter = 40;
     const bool hostControls = std::string(argv[1]).find("host_controls") != std::string::npos;
+    const bool registeredTemplates =
+        std::string(argv[1]).find("registered_template_types") != std::string::npos;
+    if (registeredTemplates && engine->RegisterObjectType(
+            "HostBox<class T>", 0,
+            asOBJ_REF | asOBJ_TEMPLATE | asOBJ_NOCOUNT) < 0) {
+        engine->ShutDownAndRelease();
+        return 3;
+    }
     if (hostControls) {
         if (engine->SetDefaultNamespace("HostTools") < 0 ||
             engine->SetDefaultAccessMask(0x1u) != ~asDWORD(0) ||

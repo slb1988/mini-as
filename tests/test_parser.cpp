@@ -469,3 +469,36 @@ TEST_CASE(parser_marks_deleted_default_operations_and_const_reference_parameters
     CHECK(members[2]->isDeleted);
 }
 
+TEST_CASE(parser_builds_registered_template_instances_and_splits_nested_closers) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("templates",
+        "int run() { Pair<Box<int>,float>@ nested; return nested is null ? 42 : 0; }",
+        diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    parser.RegisterTemplateType("Box", 1);
+    parser.RegisterTemplateType("Pair", 2);
+    auto tree = parser.Parse();
+    CHECK(!diagnostics.HasErrors());
+    auto* variable = tree.root->firstChild->firstChild->firstChild;
+    CHECK(variable->declaredType ==
+          mini_as::DataType::Object("Pair<Box<int>,float>", true));
+    CHECK(parser.TemplateTypeUses().size() == 2);
+    CHECK(parser.TemplateTypeUses()[0].instanceType ==
+          mini_as::DataType::Object("Box<int>"));
+    CHECK(parser.TemplateTypeUses()[1].subTypes.size() == 2);
+}
+
+TEST_CASE(parser_rejects_registered_template_arity_mismatches) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("template-arity", "Pair<int>@ invalid;", diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    parser.RegisterTemplateType("Pair", 2);
+    parser.Parse();
+    CHECK(diagnostics.HasErrors());
+    bool arity = false;
+    for (const auto& diagnostic : diagnostics.All())
+        arity = arity || diagnostic.message.find("expects 2 subtype(s), got 1") !=
+            std::string::npos;
+    CHECK(arity);
+}
+

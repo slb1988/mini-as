@@ -59,6 +59,61 @@ bool IsVisible(std::uint32_t registrationMask, std::uint32_t moduleMask) {
     return (registrationMask & moduleMask) != 0;
 }
 
+std::optional<std::pair<std::string, std::vector<std::string>>>
+ParseTemplateTypeDeclaration(std::string_view declaration, DiagnosticSink& diagnostics) {
+    Tokenizer tokenizer("registration", declaration, diagnostics);
+    const auto tokens = tokenizer.ScanAll();
+    std::size_t index = 0;
+    if (tokens.empty() || tokens[index].kind != TokenKind::Identifier) {
+        diagnostics.Report({"registration"}, Severity::Error,
+                           "template type declaration must start with a name");
+        return std::nullopt;
+    }
+    std::string name = tokens[index++].lexeme;
+    while (index + 1 < tokens.size() && tokens[index].kind == TokenKind::Scope &&
+           tokens[index + 1].kind == TokenKind::Identifier) {
+        name += "::" + tokens[index + 1].lexeme;
+        index += 2;
+    }
+    if (index >= tokens.size() || tokens[index++].kind != TokenKind::Less) {
+        diagnostics.Report(tokens[std::min(index, tokens.size() - 1)].location,
+                           Severity::Error,
+                           "template type declaration requires '<class T>'");
+        return std::nullopt;
+    }
+    std::vector<std::string> parameters;
+    while (index < tokens.size() && tokens[index].kind != TokenKind::Greater) {
+        if (tokens[index].kind != TokenKind::KwClass) {
+            diagnostics.Report(tokens[index].location, Severity::Error,
+                               "template subtype parameter requires the 'class' keyword");
+            return std::nullopt;
+        }
+        ++index;
+        if (index >= tokens.size() || tokens[index].kind != TokenKind::Identifier) {
+            diagnostics.Report(tokens[std::min(index, tokens.size() - 1)].location,
+                               Severity::Error, "expected template subtype parameter name");
+            return std::nullopt;
+        }
+        const std::string parameter = tokens[index++].lexeme;
+        if (std::find(parameters.begin(), parameters.end(), parameter) != parameters.end()) {
+            diagnostics.Report(tokens[index - 1].location, Severity::Error,
+                               "duplicate template subtype parameter '" + parameter + "'");
+            return std::nullopt;
+        }
+        parameters.push_back(parameter);
+        if (index < tokens.size() && tokens[index].kind == TokenKind::Comma) ++index;
+        else break;
+    }
+    if (parameters.empty() || index >= tokens.size() ||
+        tokens[index++].kind != TokenKind::Greater ||
+        index >= tokens.size() || tokens[index].kind != TokenKind::End) {
+        diagnostics.Report(tokens[std::min(index, tokens.size() - 1)].location,
+                           Severity::Error, "invalid template type declaration");
+        return std::nullopt;
+    }
+    return std::make_pair(std::move(name), std::move(parameters));
+}
+
 void CollectDynamicDeclarations(AstNode* node, std::vector<AstNode*>& declarations) {
     if (!node) return;
     if (node->kind == NodeKind::Program || node->kind == NodeKind::NamespaceDecl) {
@@ -119,11 +174,16 @@ bool ScriptModule::Build() {
     const auto hostEnums = engine_.HostEnums(accessMask_);
     const auto hostTypedefs = engine_.HostTypedefs(accessMask_);
     const auto hostFuncdefs = engine_.HostFuncdefs(accessMask_);
+    const auto hostTemplates = engine_.HostTemplateTypes(accessMask_);
     for (const auto& type : hostEnums) parser.RegisterEnumType(type.name);
     for (const auto& type : hostTypedefs)
         parser.RegisterTypedefType(type.name, type.underlyingType);
     for (const auto& type : hostFuncdefs) parser.RegisterFuncdefType(type.name);
+    for (const auto& type : hostTemplates) parser.RegisterTemplateType(type.first, type.second);
     auto tree = parser.Parse();
+    if (!diagnostics.HasErrors() &&
+        !engine_.InstantiateTemplateTypes(parser.TemplateTypeUses(), accessMask_, diagnostics))
+        return false;
     TypeChecker checker(diagnostics);
     for (const auto& signature : engine_.HostSignatures(accessMask_)) checker.RegisterFunction(signature);
     for (const auto& signature : engine_.HostPropertySignatures(accessMask_))
@@ -330,7 +390,17 @@ const BytecodeFunction* ScriptModule::CompileFunction(std::string sectionName,
     for (const auto& type : base.typedefs)
         parser.RegisterTypedefType(type.name, type.underlyingType);
     for (const auto& type : base.funcdefs) parser.RegisterFuncdefType(type.name);
+    for (const auto& type : engine_.HostTemplateTypes(accessMask_))
+        parser.RegisterTemplateType(type.first, type.second);
     auto tree = parser.Parse();
+    if (!diagnostics.HasErrors() &&
+        !engine_.InstantiateTemplateTypes(parser.TemplateTypeUses(), accessMask_, diagnostics))
+        return nullptr;
+    for (const auto& type : engine_.HostTypeSignatures(accessMask_)) {
+        const bool known = std::any_of(base.classes.begin(), base.classes.end(),
+            [&](const ClassSignature& existing) { return existing.name == type.name; });
+        if (!known) base.classes.push_back(type);
+    }
 
     std::vector<AstNode*> declarations;
     CollectDynamicDeclarations(tree.root, declarations);
@@ -1133,6 +1203,8 @@ bool ScriptEngine::RegisterGlobalFunction(std::string declaration, GenericFuncti
 }
 
 const TypeInfo* ScriptEngine::RegisterObjectType(std::string name) {
+    if (name.find('<') != std::string::npos)
+        return RegisterTemplateType(std::move(name));
     name = QualifyName(defaultNamespace_, std::move(name));
     if (name.empty() || HasRegisteredType(name)) return nullptr;
     auto type = std::make_unique<TypeInfo>();
@@ -1148,6 +1220,56 @@ const TypeInfo* ScriptEngine::RegisterObjectType(std::string name) {
     signature.id = result->id;
     signature.host = true;
     typeControls_[result->id.value] = {defaultAccessMask_, currentConfigGroup_, true};
+    PublishObjectMetadata(signature);
+    return result;
+}
+
+const TypeInfo* ScriptEngine::RegisterTemplateType(std::string declaration,
+                                                    TemplateValidator validator) {
+    DiagnosticSink diagnostics([this](const Diagnostic& diagnostic) {
+        ForwardDiagnostic(diagnostic);
+    });
+    auto parsed = ParseTemplateTypeDeclaration(declaration, diagnostics);
+    if (!parsed) return nullptr;
+    parsed->first = QualifyName(defaultNamespace_, std::move(parsed->first));
+    if (parsed->first.empty() || HasRegisteredType(parsed->first)) {
+        diagnostics.Report({"registration"}, Severity::Error,
+                           "duplicate or invalid registered template type '" +
+                               parsed->first + "'");
+        return nullptr;
+    }
+    for (const auto& registered : templateTypes_)
+        if (registered.name == parsed->first && registered.definition &&
+            registered.definition->active) {
+            diagnostics.Report({"registration"}, Severity::Error,
+                               "duplicate registered template type '" + parsed->first + "'");
+            return nullptr;
+        }
+
+    std::string patternName = parsed->first + "<";
+    for (std::size_t index = 0; index < parsed->second.size(); ++index) {
+        if (index) patternName += ",";
+        patternName += parsed->second[index];
+    }
+    patternName += ">";
+    auto type = std::make_unique<TypeInfo>();
+    type->name = patternName;
+    type->id = GetOrCreateTypeId(patternName);
+    type->host = true;
+    type->templateDefinition = true;
+    type->templateBase = parsed->first;
+    type->templateParameters = parsed->second;
+    type->accessMask = defaultAccessMask_;
+    type->configGroup = currentConfigGroup_;
+    TypeInfo* result = type.get();
+    objectTypes_.insert_or_assign(patternName, std::move(type));
+    templateTypes_.push_back(
+        {parsed->first, parsed->second, result, std::move(validator)});
+    typeControls_[result->id.value] = {defaultAccessMask_, currentConfigGroup_, true};
+    ClassSignature signature;
+    signature.name = result->name;
+    signature.id = result->id;
+    signature.host = true;
     PublishObjectMetadata(signature);
     return result;
 }
@@ -1439,6 +1561,12 @@ const TypeInfo* ScriptEngine::GetTypeInfo(std::string_view name) const {
     auto found = objectTypes_.find(std::string(name));
     if (found == objectTypes_.end() && name.find("::") == std::string_view::npos)
         found = objectTypes_.find(QualifyName(defaultNamespace_, std::string(name)));
+    if (found == objectTypes_.end()) {
+        const std::string requested = QualifyName(defaultNamespace_, std::string(name));
+        for (const auto& registered : templateTypes_)
+            if (registered.name == requested && registered.definition &&
+                registered.definition->active) return registered.definition;
+    }
     return found == objectTypes_.end() || !found->second->active ? nullptr : found->second.get();
 }
 
@@ -1646,6 +1774,7 @@ std::vector<ClassSignature> ScriptEngine::HostTypeSignatures(std::uint32_t acces
     std::vector<ClassSignature> signatures;
     for (const auto& entry : objectTypes_) {
         if (!entry.second->host || !entry.second->active ||
+            entry.second->templateDefinition ||
             !IsVisible(entry.second->accessMask, accessMask)) continue;
         ClassSignature signature;
         signature.name = entry.second->name;
@@ -1663,6 +1792,68 @@ std::vector<ClassSignature> ScriptEngine::HostTypeSignatures(std::uint32_t acces
         signatures.push_back(std::move(signature));
     }
     return signatures;
+}
+
+std::vector<std::pair<std::string, std::size_t>> ScriptEngine::HostTemplateTypes(
+    std::uint32_t accessMask) const {
+    std::vector<std::pair<std::string, std::size_t>> result;
+    for (const auto& registered : templateTypes_) {
+        if (!registered.definition || !registered.definition->active ||
+            !IsVisible(registered.definition->accessMask, accessMask)) continue;
+        result.emplace_back(registered.name, registered.parameters.size());
+    }
+    return result;
+}
+
+bool ScriptEngine::InstantiateTemplateTypes(const std::vector<TemplateTypeUse>& uses,
+                                            std::uint32_t accessMask,
+                                            DiagnosticSink& diagnostics) {
+    for (const auto& use : uses) {
+        const RegisteredTemplateType* registration = nullptr;
+        for (const auto& candidate : templateTypes_) {
+            if (candidate.name == use.templateName && candidate.definition &&
+                candidate.definition->active &&
+                IsVisible(candidate.definition->accessMask, accessMask)) {
+                registration = &candidate;
+                break;
+            }
+        }
+        if (!registration) {
+            diagnostics.Report(use.location, Severity::Error,
+                               "template type '" + use.templateName + "' is unavailable");
+            continue;
+        }
+        const auto existing = objectTypes_.find(use.instanceType.objectName);
+        if (existing != objectTypes_.end() && existing->second->active) continue;
+        if (registration->validator) {
+            std::string reason;
+            if (!registration->validator(use.subTypes, reason)) {
+                diagnostics.Report(use.location, Severity::Error,
+                    "template instance '" + use.instanceType.objectName +
+                    "' is not supported" + (reason.empty() ? std::string{} : ": " + reason));
+                continue;
+            }
+        }
+        const std::string instanceName = use.instanceType.objectName;
+        auto type = std::make_unique<TypeInfo>();
+        type->name = instanceName;
+        type->id = GetOrCreateTypeId(type->name);
+        type->host = true;
+        type->templateBase = registration->name;
+        type->templateSubTypes = use.subTypes;
+        type->accessMask = registration->definition->accessMask;
+        type->configGroup = registration->definition->configGroup;
+        TypeInfo* result = type.get();
+        objectTypes_.insert_or_assign(instanceName, std::move(type));
+        typeControls_[result->id.value] = {
+            result->accessMask, result->configGroup, true};
+        ClassSignature signature;
+        signature.name = result->name;
+        signature.id = result->id;
+        signature.host = true;
+        PublishObjectMetadata(signature);
+    }
+    return !diagnostics.HasErrors();
 }
 
 std::vector<EnumSignature> ScriptEngine::HostEnums(std::uint32_t accessMask) const {
@@ -1710,6 +1901,15 @@ void ScriptEngine::PublishObjectMetadata(const ClassSignature& signature) {
     metadata.host = signature.host;
     metadata.valueType = signature.valueType;
     metadata.interfaceType = signature.interfaceType;
+    const auto registered = objectTypes_.find(signature.name);
+    if (registered != objectTypes_.end()) {
+        metadata.templateType = registered->second->templateDefinition;
+        metadata.templateInstance = !registered->second->templateBase.empty() &&
+                                    !registered->second->templateDefinition;
+        metadata.templateBase = registered->second->templateBase;
+        metadata.templateParameters = registered->second->templateParameters;
+        metadata.templateSubTypes = registered->second->templateSubTypes;
+    }
     metadata.baseClass = signature.baseClass;
     metadata.interfaces = signature.interfaces;
     metadata.fields = signature.fields;
@@ -1810,6 +2010,8 @@ void ScriptEngine::ResolveRegisteredTypes(FunctionSignature& signature) const {
 bool ScriptEngine::HasRegisteredType(std::string_view name) const {
     const auto object = objectTypes_.find(std::string(name));
     if (object != objectTypes_.end() && object->second->active) return true;
+    for (const auto& type : templateTypes_)
+        if (type.name == name && type.definition && type.definition->active) return true;
     const auto active = [&](TypeId id) {
         const auto control = typeControls_.find(id.value);
         return control != typeControls_.end() && control->second.active;

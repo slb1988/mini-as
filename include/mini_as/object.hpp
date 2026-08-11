@@ -39,6 +39,10 @@ struct TypeInfo {
     bool script = false;
     bool host = false;
     bool valueType = false;
+    bool templateDefinition = false;
+    std::string templateBase;
+    std::vector<std::string> templateParameters;
+    std::vector<DataType> templateSubTypes;
     std::uint32_t accessMask = ~std::uint32_t{0};
     std::string configGroup;
     bool active = true;

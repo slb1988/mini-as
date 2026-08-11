@@ -268,3 +268,17 @@ TEST_CASE(registered_named_types_reject_duplicates_invalid_values_and_bad_callba
     CHECK(collision);
 }
 
+TEST_CASE(generic_declarations_parse_qualified_and_nested_template_types) {
+    mini_as::DiagnosticSink diagnostics;
+    const auto signature = mini_as::ParseFunctionDeclaration(
+        "Outer::Box<Inner::Pair<int,float>>@ Wrap(Outer::Box<int>@ value)",
+        diagnostics);
+    CHECK(signature.has_value());
+    CHECK(!diagnostics.HasErrors());
+    CHECK(signature->returnType ==
+          mini_as::DataType::Object("Outer::Box<Inner::Pair<int,float>>", true));
+    CHECK(signature->parameters.size() == 1);
+    CHECK(signature->parameters[0] ==
+          mini_as::DataType::Object("Outer::Box<int>", true));
+}
+

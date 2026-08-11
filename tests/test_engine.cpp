@@ -31,6 +31,101 @@ TEST_CASE(engine_forwards_build_diagnostics_and_honors_module_policy) {
     CHECK(messages[0].location.section == "broken");
 }
 
+TEST_CASE(registered_template_types_materialize_stable_closed_instances) {
+    auto engine = mini_as::CreateScriptEngine();
+    const auto* definition = engine->RegisterObjectType("HostBox<class T>");
+    CHECK(definition != nullptr);
+    CHECK(definition->templateDefinition);
+    CHECK(definition->templateParameters.size() == 1);
+    const auto* definitionMetadata = engine->GetTypeMetadataByName("HostBox<T>");
+    CHECK(definitionMetadata != nullptr);
+    CHECK(definitionMetadata->templateType);
+    CHECK(engine->RegisterGlobalFunction("int Inspect(HostBox<int>@ value)",
+        [](mini_as::GenericCall& call) {
+            call.SetReturnInt(call.GetArgObject(0) ? 0 : 42);
+        }));
+
+    auto* module = engine->GetModule("registered-templates");
+    module->AddScriptSection("registered-templates",
+        "int run() { HostBox<int>@ first; HostBox<float>@ second; "
+        "HostBox<int>@ repeated; return first is null && second is null && "
+        "repeated is null ? Inspect(first) : 0; }");
+    CHECK(module->Build());
+    const auto* integerBox = engine->GetTypeInfo("HostBox<int>");
+    const auto* repeatedIntegerBox = engine->GetTypeInfo("HostBox<int>");
+    CHECK(integerBox != nullptr);
+    CHECK(integerBox == repeatedIntegerBox);
+    CHECK(integerBox->templateBase == "HostBox");
+    CHECK(integerBox->templateSubTypes.size() == 1);
+    CHECK(integerBox->templateSubTypes[0] == mini_as::DataType::Int());
+    const auto* metadata = engine->GetTypeMetadataByName("HostBox<int>");
+    CHECK(metadata != nullptr);
+    CHECK(metadata->templateInstance);
+    CHECK(metadata->templateBase == "HostBox");
+    CHECK(metadata->templateSubTypes[0] == mini_as::DataType::Int());
+
+    const auto* function = module->GetFunctionByDecl("int run()");
+    CHECK(function != nullptr);
+    bool initializesNullHandle = false;
+    for (const auto& instruction : function->code)
+        initializesNullHandle = initializesNullHandle ||
+            instruction.opcode == mini_as::OpCode::PushConst;
+    CHECK(initializesNullHandle);
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(function));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+
+    const auto* dynamic = module->CompileFunction("dynamic-template",
+        "int dynamicTemplate() { HostBox<double>@ value; "
+        "return value is null ? 42 : 0; }");
+    CHECK(dynamic != nullptr);
+    CHECK(engine->GetTypeInfo("HostBox<double>") != nullptr);
+}
+
+TEST_CASE(registered_template_types_validate_declarations_and_instances) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    CHECK(engine->RegisterTemplateType("Broken<T>") == nullptr);
+    CHECK(engine->RegisterTemplateType("Pair<class T, class T>") == nullptr);
+    CHECK(engine->RegisterTemplateType("NumericBox<class T>",
+        [](const std::vector<mini_as::DataType>& subTypes, std::string& reason) {
+            if (subTypes.size() == 1 && subTypes[0].IsNumeric()) return true;
+            reason = "numeric subtype required";
+            return false;
+        }) != nullptr);
+    CHECK(engine->RegisterTemplateType("NumericBox<class U>") == nullptr);
+
+    auto* module = engine->GetModule("invalid-template-instance");
+    module->AddScriptSection("invalid-template-instance",
+        "int before() { return 0; }\n"
+        "NumericBox<string>@ rejected;\n");
+    CHECK(!module->Build());
+    bool classKeyword = false, duplicateParameter = false;
+    bool duplicateType = false, rejected = false, located = false;
+    for (const auto& diagnostic : diagnostics) {
+        classKeyword = classKeyword ||
+            diagnostic.message.find("requires the 'class' keyword") != std::string::npos;
+        duplicateParameter = duplicateParameter ||
+            diagnostic.message.find("duplicate template subtype parameter") != std::string::npos;
+        duplicateType = duplicateType ||
+            diagnostic.message.find("registered template type 'NumericBox'") != std::string::npos;
+        if (diagnostic.message.find("numeric subtype required") != std::string::npos) {
+            rejected = true;
+            located = diagnostic.location.section == "invalid-template-instance" &&
+                      diagnostic.location.row == 2;
+        }
+    }
+    CHECK(classKeyword);
+    CHECK(duplicateParameter);
+    CHECK(duplicateType);
+    CHECK(rejected);
+    CHECK(located);
+}
+
 TEST_CASE(two_pass_functions_support_forward_calls_and_recursion) {
     auto engine = mini_as::CreateScriptEngine();
     auto* module = engine->GetModule("functions");

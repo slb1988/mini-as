@@ -94,6 +94,8 @@ public:
     void EnumerateReferences(const std::function<void(RefObject*)>& visitor) const override;
     void ClearReferences() override;
     const ScriptFinalizerBinding& Finalizer() const;
+    bool BindFinalizer(ObjectFinalizerQueue* finalizerQueue,
+                       ScriptFinalizerBinding finalizer);
 
 private:
     ~ScriptObject() override = default;

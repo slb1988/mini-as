@@ -85,6 +85,8 @@ public:
     int RemoveFunction(const BytecodeFunction* function);
     int SaveByteCode(std::ostream& output) const;
     int LoadByteCode(std::istream& input);
+    int SaveState(std::ostream& output) const;
+    int LoadState(std::istream& input);
     std::uint32_t SetAccessMask(std::uint32_t accessMask);
     std::uint32_t GetAccessMask() const;
     int SetDefaultNamespace(const char* nameSpace);

@@ -177,6 +177,13 @@ bool ScriptObject::IsA(std::string_view typeName) const {
 }
 
 const ScriptFinalizerBinding& ScriptObject::Finalizer() const { return finalizer_; }
+bool ScriptObject::BindFinalizer(ObjectFinalizerQueue* finalizerQueue,
+                                 ScriptFinalizerBinding finalizer) {
+    if (finalizerQueued_ || finalizerQueue_ || !finalizer_.functions.empty()) return false;
+    finalizerQueue_ = finalizerQueue;
+    finalizer_ = std::move(finalizer);
+    return true;
+}
 
 void ScriptObject::OnZeroReferences() {
     if (finalizerQueue_ && !finalizer_.functions.empty() && finalizer_.module &&

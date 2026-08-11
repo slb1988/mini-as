@@ -88,6 +88,8 @@ public:
     bool RemoveFunction(const BytecodeFunction* function);
     bool SaveBytecode(std::ostream& output) const;
     bool LoadBytecode(std::istream& input);
+    bool SaveState(std::ostream& output) const;
+    bool LoadState(std::istream& input);
     const FunctionMetadata* GetFunctionMetadataByDecl(std::string_view declaration) const;
     std::size_t GetGlobalMetadataCount() const;
     const GlobalMetadata* GetGlobalMetadataByIndex(std::size_t index) const;

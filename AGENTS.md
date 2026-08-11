@@ -66,6 +66,8 @@ Important compiler abstractions:
   exception locations.
 - `include/mini_as/coroutine.hpp`, `src/coroutine.cpp`: cooperative scheduling,
   yield registration, cancellation, and completed-result retention.
+- `src/state_io.cpp`: versioned live module-state archives, object/capture graph
+  identity, schema validation, and transactional restore.
 - `include/mini_as/engine.hpp`, `src/engine.cpp`: public Engine/Module/Context
   lifecycle and module snapshots.
 - `include/mini_as/generic.hpp`, `src/generic.cpp`: portable host registration
@@ -151,9 +153,9 @@ Do not stage generated build directories or unrelated user changes. Inspect
 
 The completed stage notes are authoritative. The latest alignment stage is:
 
-- Stage 88 cooperative coroutines.
+- Stage 89 module-global and object-graph serialization.
 
-The next planned item is Stage 89, module-global and object-graph serialization.
+The next planned item is Stage 90, suspended-context serialization.
 Confirm the latest
 git history and `docs/stages/` before choosing the next stage number.
 
@@ -308,6 +310,15 @@ git history and `docs/stages/` before choosing the next stage number.
   next bytecode suspension cue returns control. Defer cancellation of the
   currently active coroutine until `Execute()` returns, then send every terminal
   context through `ReturnContext()` so configured pools remain authoritative.
+- Live state archives are separate from bytecode archives. Serialize only
+  non-host module globals, assign IDs to strongly reachable objects and captured
+  cells before writing payloads, and resolve function/type descriptors by stable
+  spelling on load. Build the entire candidate graph before swapping roots;
+  failed loads must clear candidate edges without touching published state.
+- Restored `ScriptObject`s are constructed without finalizers during validation,
+  then receive the current module image/state binding immediately before commit.
+  Registered host reference/value types require an explicit codec; never persist
+  raw pointers or opaque `std::any` payload bytes.
 - Preserve the last successful module image on parser, type-check, bytecode, or
   global-initializer failure.
 - Do not edit compatibility expectations merely to make mini and official

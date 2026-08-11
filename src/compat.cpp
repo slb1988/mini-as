@@ -86,6 +86,12 @@ int ScriptModule::SaveByteCode(std::ostream& output) const {
 int ScriptModule::LoadByteCode(std::istream& input) {
     return module_->LoadBytecode(input) ? asSUCCESS : asERROR;
 }
+int ScriptModule::SaveState(std::ostream& output) const {
+    return module_->SaveState(output) ? asSUCCESS : asERROR;
+}
+int ScriptModule::LoadState(std::istream& input) {
+    return module_->LoadState(input) ? asSUCCESS : asERROR;
+}
 std::uint32_t ScriptModule::SetAccessMask(std::uint32_t accessMask) {
     return module_->SetAccessMask(accessMask);
 }

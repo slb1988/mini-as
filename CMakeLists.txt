@@ -24,6 +24,7 @@ add_library(mini_angelscript
   src/script_any.cpp
   src/script_dictionary.cpp
   src/script_ref.cpp
+  src/state_io.cpp
   src/tokenizer.cpp
   src/type_checker.cpp
   src/vm.cpp
@@ -52,6 +53,7 @@ add_executable(mini_as_tests
   tests/test_engine.cpp
   tests/test_generic.cpp
   tests/test_objects.cpp
+  tests/test_serialization.cpp
   tests/test_addons.cpp
   tests/test_gc.cpp
   tests/test_tutorial.cpp

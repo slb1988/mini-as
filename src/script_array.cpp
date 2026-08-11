@@ -48,6 +48,8 @@ ScriptArray::ScriptArray(const TypeInfo* type, DataType elementType,
 }
 
 const DataType& ScriptArray::ElementType() const { return elementType_; }
+const Value& ScriptArray::DefaultElement() const { return defaultElement_; }
+void ScriptArray::SetDefaultElement(Value value) { defaultElement_ = std::move(value); }
 std::size_t ScriptArray::Size() const { return elements_.size(); }
 bool ScriptArray::Empty() const { return elements_.empty(); }
 void ScriptArray::Resize(std::size_t length) { elements_.resize(length, defaultElement_); }

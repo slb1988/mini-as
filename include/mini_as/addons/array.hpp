@@ -10,6 +10,8 @@ public:
                 std::size_t length = 0);
 
     const DataType& ElementType() const;
+    const Value& DefaultElement() const;
+    void SetDefaultElement(Value value);
     std::size_t Size() const;
     bool Empty() const;
     void Resize(std::size_t length);

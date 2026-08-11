@@ -206,11 +206,66 @@ bool ScriptModule::Build() {
     for (const auto& signature : hostEnums) checker.RegisterEnum(signature);
     for (const auto& signature : hostTypedefs) checker.RegisterTypedef(signature);
     for (const auto& signature : hostFuncdefs) checker.RegisterFuncdef(signature);
+    std::vector<AstNode*> declarations;
+    CollectDynamicDeclarations(tree.root, declarations);
+    std::vector<std::shared_ptr<const SyntaxTree>> externalDefinitions;
+    const auto retainDefinition = [&](const std::string& key) {
+        const auto found = engine_.sharedEntityDefinitions_.find(key);
+        if (found != engine_.sharedEntityDefinitions_.end() &&
+            std::find(externalDefinitions.begin(), externalDefinitions.end(), found->second) ==
+                externalDefinitions.end()) externalDefinitions.push_back(found->second);
+    };
+    for (const AstNode* declaration : declarations) {
+        if (!declaration->isExternal) continue;
+        const std::string key = SharedEntityKey(*declaration);
+        if (declaration->kind == NodeKind::ClassDecl ||
+            declaration->kind == NodeKind::InterfaceDecl) {
+            const auto found = engine_.sharedClasses_.find(declaration->token.lexeme);
+            if (found == engine_.sharedClasses_.end() ||
+                found->second.interfaceType != (declaration->kind == NodeKind::InterfaceDecl)) {
+                diagnostics.Report(declaration->token.location, Severity::Error,
+                    "external shared type '" + declaration->token.lexeme +
+                    "' has no prior shared definition");
+                continue;
+            }
+            ClassSignature signature = found->second;
+            for (auto& method : signature.methods) method.external = true;
+            checker.RegisterObjectType(std::move(signature));
+        } else if (declaration->kind == NodeKind::EnumDecl) {
+            const auto found = engine_.sharedEnums_.find(declaration->token.lexeme);
+            if (found == engine_.sharedEnums_.end()) {
+                diagnostics.Report(declaration->token.location, Severity::Error,
+                    "external shared enum '" + declaration->token.lexeme +
+                    "' has no prior shared definition");
+                continue;
+            }
+            checker.RegisterEnum(found->second);
+        } else if (declaration->kind == NodeKind::FuncdefDecl) {
+            const auto found = engine_.sharedFuncdefs_.find(declaration->token.lexeme);
+            if (found == engine_.sharedFuncdefs_.end()) {
+                diagnostics.Report(declaration->token.location, Severity::Error,
+                    "external shared funcdef '" + declaration->token.lexeme +
+                    "' has no prior shared definition");
+                continue;
+            }
+            checker.RegisterFuncdef(found->second);
+        } else if (declaration->kind == NodeKind::FunctionDecl) {
+            const auto found = engine_.sharedFunctions_.find(key);
+            if (found == engine_.sharedFunctions_.end()) {
+                diagnostics.Report(declaration->token.location, Severity::Error,
+                    "external shared function '" + declaration->token.lexeme +
+                    "' has no prior shared definition");
+                continue;
+            }
+            FunctionSignature signature = found->second;
+            signature.external = true;
+            checker.RegisterFunction(std::move(signature));
+        }
+        retainDefinition(key);
+    }
     const bool typed = !diagnostics.HasErrors() && checker.Check(tree.root);
     if (!typed) return false;
     std::vector<std::pair<std::string, std::string>> pendingSharedEntities;
-    std::vector<AstNode*> declarations;
-    CollectDynamicDeclarations(tree.root, declarations);
     for (const AstNode* declaration : declarations) {
         const bool typeEntity = declaration->kind == NodeKind::ClassDecl ||
             declaration->kind == NodeKind::InterfaceDecl ||
@@ -228,7 +283,7 @@ bool ScriptModule::Build() {
                                           : std::string("non-shared")) + " type");
             }
         }
-        if (!declaration->isShared) continue;
+        if (!declaration->isShared || declaration->isExternal) continue;
         std::string fingerprint;
         AppendAstFingerprint(declaration, fingerprint);
         const std::string key = SharedEntityKey(*declaration);
@@ -275,7 +330,12 @@ bool ScriptModule::Build() {
     for (auto& type : typedefs) type.id = engine_.GetOrCreateTypeId(type.name);
     auto funcdefs = checker.Funcdefs();
     for (auto& type : funcdefs) type.id = engine_.GetOrCreateTypeId(type.name);
-    BytecodeModule candidate = compiler.Compile(tree.root, functions, classes, globals, enums, funcdefs);
+    std::vector<AstNode*> externalDefinitionRoots;
+    externalDefinitionRoots.reserve(externalDefinitions.size());
+    for (const auto& definitions : externalDefinitions)
+        externalDefinitionRoots.push_back(definitions->root);
+    BytecodeModule candidate = compiler.Compile(tree.root, functions, classes, globals, enums,
+                                                funcdefs, externalDefinitionRoots);
     if (diagnostics.HasErrors()) return false;
     std::vector<const TypeInfo*> linkedTypes;
     for (const auto& type : classes) {
@@ -361,11 +421,35 @@ bool ScriptModule::Build() {
     nextImage->environment.enums = std::move(enums);
     nextImage->environment.typedefs = std::move(typedefs);
     nextImage->environment.funcdefs = std::move(funcdefs);
-    nextImage->definitionTrees.push_back(
-        std::make_shared<SyntaxTree>(std::move(tree)));
+    const auto definitionTree = std::make_shared<SyntaxTree>(std::move(tree));
+    nextImage->definitionTrees.push_back(definitionTree);
     engine_.RegisterModuleImage(nextImage);
-    for (auto& entity : pendingSharedEntities)
+    for (auto& entity : pendingSharedEntities) {
+        engine_.sharedEntityDefinitions_.emplace(entity.first, definitionTree);
         engine_.sharedEntityFingerprints_.emplace(std::move(entity));
+    }
+    for (const auto& type : nextImage->environment.classes)
+        if (type.shared && !type.host) engine_.sharedClasses_.emplace(type.name, type);
+    for (const auto& type : nextImage->environment.enums)
+        if (type.shared) engine_.sharedEnums_.emplace(type.name, type);
+    for (const auto& type : nextImage->environment.funcdefs)
+        if (type.shared) engine_.sharedFuncdefs_.emplace(type.name, type);
+    for (const AstNode* declaration : declarations) {
+        if (!declaration->isShared || declaration->isExternal ||
+            declaration->kind != NodeKind::FunctionDecl) continue;
+        const auto found = std::find_if(nextImage->environment.functions.begin(),
+            nextImage->environment.functions.end(), [&](const auto& signature) {
+                if (signature.name != declaration->token.lexeme ||
+                    signature.returnType != declaration->declaredType) return false;
+                std::vector<DataType> parameters;
+                for (const AstNode* parameter = declaration->firstChild;
+                     parameter && parameter->kind == NodeKind::Parameter;
+                     parameter = parameter->nextSibling) parameters.push_back(parameter->declaredType);
+                return signature.parameters == parameters;
+            });
+        if (found != nextImage->environment.functions.end())
+            engine_.sharedFunctions_.emplace(SharedEntityKey(*declaration), *found);
+    }
     image_ = std::move(nextImage);
     sections_.clear();
     return true;
@@ -780,7 +864,7 @@ bool ScriptModule::LoadBytecode(std::istream& input) {
                     return false;
                 }
             }
-            if (!declaration->isShared) continue;
+            if (!declaration->isShared || declaration->isExternal) continue;
             std::string fingerprint;
             AppendAstFingerprint(declaration, fingerprint);
             const std::string key = SharedEntityKey(*declaration);
@@ -1134,6 +1218,35 @@ bool ScriptModule::LoadBytecode(std::istream& input) {
     engine_.RegisterModuleImage(nextImage);
     for (auto& entity : pendingSharedEntities)
         engine_.sharedEntityFingerprints_.emplace(std::move(entity));
+    for (const auto& type : nextImage->environment.classes)
+        if (type.shared && !type.host) engine_.sharedClasses_.emplace(type.name, type);
+    for (const auto& type : nextImage->environment.enums)
+        if (type.shared) engine_.sharedEnums_.emplace(type.name, type);
+    for (const auto& type : nextImage->environment.funcdefs)
+        if (type.shared) engine_.sharedFuncdefs_.emplace(type.name, type);
+    for (const auto& definitions : nextImage->definitionTrees) {
+        std::vector<AstNode*> loadedDeclarations;
+        CollectDynamicDeclarations(definitions->root, loadedDeclarations);
+        for (const AstNode* declaration : loadedDeclarations) {
+            if (!declaration->isShared || declaration->isExternal) continue;
+            const std::string key = SharedEntityKey(*declaration);
+            engine_.sharedEntityDefinitions_.emplace(key, definitions);
+            if (declaration->kind != NodeKind::FunctionDecl) continue;
+            const auto found = std::find_if(nextImage->environment.functions.begin(),
+                nextImage->environment.functions.end(), [&](const auto& signature) {
+                    if (signature.name != declaration->token.lexeme ||
+                        signature.returnType != declaration->declaredType) return false;
+                    std::vector<DataType> parameters;
+                    for (const AstNode* parameter = declaration->firstChild;
+                         parameter && parameter->kind == NodeKind::Parameter;
+                         parameter = parameter->nextSibling)
+                        parameters.push_back(parameter->declaredType);
+                    return signature.parameters == parameters;
+                });
+            if (found != nextImage->environment.functions.end())
+                engine_.sharedFunctions_.emplace(key, *found);
+        }
+    }
     dynamicImages_.push_back(image_);
     image_ = std::move(nextImage);
     sections_.clear();
@@ -2381,20 +2494,29 @@ void ScriptEngine::DrainFinalizers() {
         for (const FunctionId functionId : binding.functions) {
             const BytecodeFunction* function = binding.module
                 ? binding.module->FindFunction(functionId) : nullptr;
+            std::optional<ResolvedScriptFunction> resolved;
+            if (!function) {
+                resolved = ResolveScriptFunction(functionId);
+                if (resolved) function = resolved->function;
+            }
             if (!function) {
                 ForwardDiagnostic({{"finalizer"}, Severity::Error,
                                    "script destructor target is unavailable"});
                 continue;
             }
             VirtualMachine finalizer;
-            finalizer.SetFinalizerContext(this, binding.module, binding.state,
+            const auto finalizerModule = resolved ? resolved->finalizerModule : binding.module;
+            const auto finalizerState = resolved ? resolved->finalizerState : binding.state;
+            const BytecodeModule* executionModule = resolved ? resolved->module : binding.module.get();
+            ModuleState* executionState = resolved ? resolved->state : state.get();
+            finalizer.SetFinalizerContext(this, finalizerModule, finalizerState,
                                           [this] { DrainFinalizers(); });
-            finalizer.SetModuleOwner(binding.module);
+            finalizer.SetModuleOwner(resolved ? resolved->owner : binding.module);
             finalizer.SetScriptFunctionResolver([this](FunctionId target) {
                 return ResolveScriptFunction(target);
             });
             const ExecutionResult result = finalizer.Execute(
-                *function, {Value(ObjectHandle(object))}, binding.module.get(), state.get());
+                *function, {Value(ObjectHandle(object))}, executionModule, executionState);
             if (result.state != ExecutionState::Finished) {
                 ForwardDiagnostic({result.location, Severity::Error,
                                    "script destructor '" + function->signature.name +

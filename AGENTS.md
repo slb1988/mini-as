@@ -149,9 +149,9 @@ Do not stage generated build directories or unrelated user changes. Inspect
 
 The completed stage notes are authoritative. The latest alignment stage is:
 
-- Stage 82 shared script entities and cross-module identity.
+- Stage 83 external shared script entities.
 
-The next planned item is Stage 83, external shared entities.
+The next planned item is Stage 84, mixin classes.
 Confirm the latest
 git history and `docs/stages/` before choosing the next stage number.
 
@@ -273,9 +273,14 @@ git history and `docs/stages/` before choosing the next stage number.
   definitions are structurally fingerprinted in the engine and published only
   after a successful build. Shared code may use host registrations and other
   shared entities, but never module globals or non-shared script entities.
-- Bytecode format version 4 persists shared flags and definition fingerprints
+- Bytecode format version 5 persists shared/external flags. Definition fingerprints
   can be reconstructed from archived syntax trees. Shared function/method IDs
   use engine-wide keys; ordinary script function IDs remain module-scoped.
+- External shared declarations reuse canonical signatures from an earlier
+  successful engine build. Keep their bytecode body-free and resolve direct,
+  virtual, and destructor targets by stable `FunctionId`; retain canonical ASTs
+  for field initializers and default arguments. Loading a defining module must
+  republish the canonical registry before an external consumer is built.
 - Preserve the last successful module image on parser, type-check, bytecode, or
   global-initializer failure.
 - Do not edit compatibility expectations merely to make mini and official

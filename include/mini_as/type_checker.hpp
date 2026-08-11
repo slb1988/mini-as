@@ -31,6 +31,7 @@ struct FunctionSignature {
     bool imported = false;
     std::string sourceModule;
     bool shared = false;
+    bool external = false;
 
     std::string Declaration() const;
 };

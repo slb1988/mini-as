@@ -269,7 +269,9 @@ int main(int argc, char** argv) {
         std::string(argv[1]).find("imported_functions") != std::string::npos;
     const bool sharedEntities =
         std::string(argv[1]).find("shared_entities") != std::string::npos;
-    if (importedFunctions || sharedEntities) {
+    const bool externalEntities =
+        std::string(argv[1]).find("external_entities") != std::string::npos;
+    if (importedFunctions || sharedEntities || externalEntities) {
         asIScriptModule* sourceModule = engine->GetModule(
             importedFunctions ? "math" : "shared-source", asGM_ALWAYS_CREATE);
         const char* sourceCode = importedFunctions

@@ -42,6 +42,7 @@ struct AstNode {
     bool propertyAccessor = false;
     bool isImported = false;
     bool isShared = false;
+    bool isExternal = false;
     std::string sourceModule;
     std::string operatorMethod;
     bool operatorReversed = false;
@@ -156,6 +157,7 @@ private:
     std::vector<TemplateTypeUse> templateTypeUses_;
     std::string currentNamespace_;
     std::string currentTypeName_;
+    bool pendingExternal_ = false;
 };
 
 } // namespace mini_as

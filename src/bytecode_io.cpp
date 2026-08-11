@@ -11,7 +11,7 @@ namespace mini_as::detail {
 namespace {
 
 constexpr char kMagic[] = {'M', 'A', 'S', 'B'};
-constexpr std::uint32_t kVersion = 4;
+constexpr std::uint32_t kVersion = 5;
 constexpr std::uint64_t kMaxItems = 1'000'000;
 constexpr std::uint64_t kMaxString = 16 * 1024 * 1024;
 
@@ -212,6 +212,7 @@ void WriteFunctionSignature(Writer& writer, const FunctionSignature& signature) 
     writer.Scalar<std::uint8_t>(signature.imported ? 1 : 0);
     writer.String(signature.sourceModule);
     writer.Scalar<std::uint8_t>(signature.shared ? 1 : 0);
+    writer.Scalar<std::uint8_t>(signature.external ? 1 : 0);
 }
 
 bool ReadBool(Reader& reader, bool& value) {
@@ -245,7 +246,8 @@ bool ReadFunctionSignature(Reader& reader, FunctionSignature& signature) {
         !ReadBool(reader, signature.readOnlyMethod) ||
         !ReadBool(reader, signature.imported) ||
         !reader.String(signature.sourceModule) ||
-        !ReadBool(reader, signature.shared)) return false;
+        !ReadBool(reader, signature.shared) ||
+        !ReadBool(reader, signature.external)) return false;
     signature.defaultArgumentCount = static_cast<std::size_t>(defaults);
     return signature.parameterNames.size() <= signature.parameters.size() &&
            signature.parameterModes.size() <= signature.parameters.size();
@@ -568,7 +570,7 @@ bool ReadModule(Reader& reader, BytecodeModule& module) {
         ReadFunction(reader, module.globalInitializer) &&
         reader.Vector(module.globals, [](Reader& in, GlobalBinding& global) { return ReadGlobal(in, global.signature); }) &&
         reader.Vector(module.callables, [](Reader& in, CallableRef& callable) {
-            return in.Scalar(callable.kind) && callable.kind <= CallableKind::ImportedFunction &&
+            return in.Scalar(callable.kind) && callable.kind <= CallableKind::ExternalFunction &&
                 ReadId(in, callable.function) && ReadId(in, callable.objectType) &&
                 in.Scalar(callable.virtualSlot) && in.Scalar(callable.parameterCount) &&
                 ReadId(in, callable.signatureType);
@@ -634,6 +636,7 @@ void WriteNode(Writer& writer, const AstNode* node) {
     writer.Scalar<std::uint8_t>(node->propertyAccessor ? 1 : 0);
     writer.Scalar<std::uint8_t>(node->isImported ? 1 : 0);
     writer.Scalar<std::uint8_t>(node->isShared ? 1 : 0);
+    writer.Scalar<std::uint8_t>(node->isExternal ? 1 : 0);
     writer.String(node->sourceModule);
     writer.String(node->operatorMethod);
     writer.Scalar<std::uint8_t>(node->operatorReversed ? 1 : 0);
@@ -671,6 +674,7 @@ bool ReadNode(Reader& reader, AstArena& arena, AstNode*& result,
         !ReadBool(reader, node->returnReferenceConst) ||
         !ReadBool(reader, node->propertyAccessor) ||
         !ReadBool(reader, node->isImported) || !ReadBool(reader, node->isShared) ||
+        !ReadBool(reader, node->isExternal) ||
         !reader.String(node->sourceModule) ||
         !reader.String(node->operatorMethod) ||
         !ReadBool(reader, node->operatorReversed) || !reader.String(node->propertyGetter) ||

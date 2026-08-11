@@ -67,7 +67,8 @@ enum class CallableKind {
     HostMethod,
     VirtualMethod,
     FunctionHandle,
-    ImportedFunction
+    ImportedFunction,
+    ExternalFunction
 };
 
 struct CallableRef {
@@ -132,6 +133,8 @@ struct BytecodeModule {
     std::optional<std::size_t> FindGlobalIndex(GlobalId id) const;
     const BytecodeFunction* ResolveVirtual(TypeId concreteType, TypeId interfaceType,
                                            std::uint32_t slot) const;
+    FunctionId ResolveVirtualFunctionId(TypeId concreteType, TypeId interfaceType,
+                                        std::uint32_t slot) const;
 };
 
 std::string_view OpCodeName(OpCode opcode);

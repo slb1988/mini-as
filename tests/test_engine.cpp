@@ -3233,3 +3233,88 @@ TEST_CASE(shared_function_runtime_errors_retain_the_shared_source_location) {
     CHECK(context->GetExceptionLocation().row == 2);
 }
 
+TEST_CASE(external_shared_entities_reuse_prior_definitions_without_binding) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::string buildDiagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        buildDiagnostics += diagnostic.message + "\n";
+    });
+    auto* source = engine->GetModule("external-source");
+    source->AddScriptSection("external-source",
+        "shared enum Bias { Base = 40 } "
+        "shared funcdef int Transform(int value); "
+        "shared interface ICounter { int read(); } "
+        "shared class Counter : ICounter { int value = 1; "
+        "Counter(int start = 40) { value = start; } "
+        "int read() { return value; } } "
+        "shared int Twice(int value) { return value * 2; }");
+    if (!source->Build()) throw std::runtime_error(buildDiagnostics);
+
+    auto* consumer = engine->GetModule("external-consumer");
+    consumer->AddScriptSection("external-consumer",
+        "external shared enum Bias; "
+        "external shared funcdef int Transform(int value); "
+        "external shared interface ICounter; "
+        "external shared class Counter; "
+        "external shared int Twice(int value); "
+        "int main() { Counter@ counter = Counter(); ICounter@ view = counter; "
+        "return view.read() + Twice(1); }");
+    if (!consumer->Build()) throw std::runtime_error(buildDiagnostics);
+    CHECK(consumer->GetFunctionByDecl("int Twice(int)") == nullptr);
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(consumer->GetFunctionByDecl("int main()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+
+    std::stringstream sourceArchive(std::ios::in | std::ios::out | std::ios::binary);
+    std::stringstream consumerArchive(std::ios::in | std::ios::out | std::ios::binary);
+    CHECK(source->SaveBytecode(sourceArchive));
+    CHECK(consumer->SaveBytecode(consumerArchive));
+    auto loadedEngine = mini_as::CreateScriptEngine();
+    sourceArchive.seekg(0);
+    consumerArchive.seekg(0);
+    auto* loadedSource = loadedEngine->GetModule("external-source");
+    auto* loadedConsumer = loadedEngine->GetModule("external-consumer");
+    CHECK(loadedSource->LoadBytecode(sourceArchive));
+    CHECK(loadedConsumer->LoadBytecode(consumerArchive));
+    auto loadedContext = loadedEngine->CreateContext();
+    CHECK(loadedContext->Prepare(loadedConsumer->GetFunctionByDecl("int main()")));
+    CHECK(loadedContext->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(loadedContext->GetReturnInt() == 42);
+}
+
+TEST_CASE(external_shared_entities_require_a_prior_matching_definition) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    auto* module = engine->GetModule("missing-external");
+    module->AddScriptSection("missing-external",
+        "external shared int Missing(int value); int main() { return Missing(1); }");
+    CHECK(!module->Build());
+    bool missing = false;
+    for (const auto& diagnostic : diagnostics)
+        missing = missing || diagnostic.message.find("no prior shared definition") !=
+            std::string::npos;
+    CHECK(missing);
+}
+
+TEST_CASE(external_shared_runtime_errors_point_to_the_defining_module) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* source = engine->GetModule("external-error-source");
+    source->AddScriptSection("external-error-source",
+        "shared int Divide(int value) {\n  return 1 / value;\n}");
+    CHECK(source->Build());
+    auto* consumer = engine->GetModule("external-error-consumer");
+    consumer->AddScriptSection("external-error-consumer",
+        "external shared int Divide(int value); int main() { return Divide(0); }");
+    CHECK(consumer->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(consumer->GetFunctionByDecl("int main()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Exception);
+    CHECK(context->GetExceptionString().find("division by zero") != std::string::npos);
+    CHECK(context->GetExceptionLocation().section == "external-error-source");
+    CHECK(context->GetExceptionLocation().row == 2);
+}
+

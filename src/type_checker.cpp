@@ -221,6 +221,24 @@ void TypeChecker::PredeclareFuncdefs(AstNode* root) {
     CollectFuncdefDeclarations(root, declarations);
     for (const auto& declaration : declarations) {
         AstNode* node = declaration.node;
+        if (node->isExternal) {
+            const auto existing = std::find_if(registeredFuncdefs_.begin(), registeredFuncdefs_.end(),
+                [&](const auto& value) { return value.name == node->token.lexeme; });
+            bool matches = existing != registeredFuncdefs_.end() &&
+                existing->signature.returnType == node->declaredType &&
+                existing->signature.returnsReference == node->returnsReference &&
+                existing->signature.parameters.size() == node->Children().size();
+            std::size_t index = 0;
+            for (AstNode* parameter = node->firstChild; matches && parameter;
+                 parameter = parameter->nextSibling, ++index) {
+                const ParameterMode existingMode = index < existing->signature.parameterModes.size()
+                    ? existing->signature.parameterModes[index] : ParameterMode::Value;
+                matches = existing->signature.parameters[index] == parameter->declaredType &&
+                    existingMode == parameter->parameterMode;
+            }
+            if (!matches) Error(node, "external shared funcdef does not match its existing definition");
+            continue;
+        }
         bool duplicate = false;
         for (const auto& existing : funcdefs_)
             duplicate = duplicate || existing.name == node->token.lexeme;
@@ -294,6 +312,13 @@ void TypeChecker::PredeclareEnums(AstNode* root) {
     if (!root) return;
     for (AstNode* node : TopLevelDeclarations(root)) {
         if (node->kind != NodeKind::EnumDecl) continue;
+        if (node->isExternal) {
+            const auto existing = std::find_if(registeredEnums_.begin(), registeredEnums_.end(),
+                [&](const auto& value) { return value.name == node->token.lexeme && value.shared; });
+            if (existing == registeredEnums_.end())
+                Error(node, "external shared enum has no existing definition");
+            continue;
+        }
         bool duplicateType = false;
         for (const auto& existing : enums_) {
             if (existing.name == node->token.lexeme) duplicateType = true;
@@ -367,6 +392,14 @@ void TypeChecker::Predeclare(AstNode* root) {
     if (!root) return;
     for (AstNode* node : TopLevelDeclarations(root)) {
         if (node->kind != NodeKind::ClassDecl && node->kind != NodeKind::InterfaceDecl) continue;
+        if (node->isExternal) {
+            const auto existing = std::find_if(registeredClasses_.begin(), registeredClasses_.end(),
+                [&](const auto& value) { return value.name == node->token.lexeme && value.shared; });
+            if (existing == registeredClasses_.end() ||
+                existing->interfaceType != (node->kind == NodeKind::InterfaceDecl))
+                Error(node, "external shared type does not match an existing definition");
+            continue;
+        }
         const auto duplicateType = std::find_if(classes_.begin(), classes_.end(), [&](const auto& type) {
             return type.name == node->token.lexeme;
         });
@@ -614,12 +647,27 @@ void TypeChecker::Predeclare(AstNode* root) {
         signature.imported = node->isImported;
         signature.sourceModule = node->sourceModule;
         signature.shared = node->isShared;
+        signature.external = node->isExternal;
         for (AstNode* child = node->firstChild; child && child->kind == NodeKind::Parameter;
              child = child->nextSibling) {
             signature.parameters.push_back(child->declaredType);
             signature.parameterNames.push_back(child->token.lexeme);
             signature.parameterModes.push_back(child->parameterMode);
             if (child->firstChild) ++signature.defaultArgumentCount;
+        }
+        if (node->isExternal) {
+            const auto existing = std::find_if(functions_.begin(), functions_.end(),
+                [&](const auto& value) {
+                    return value.shared && value.name == signature.name &&
+                        value.returnType == signature.returnType &&
+                        value.parameters == signature.parameters &&
+                        value.parameterModes == signature.parameterModes &&
+                        value.returnsReference == signature.returnsReference &&
+                        value.returnReferenceConst == signature.returnReferenceConst;
+                });
+            if (existing == functions_.end())
+                Error(node, "external shared function does not match an existing definition");
+            continue;
         }
         for (const auto& existing : functions_) {
             if (existing.factory) continue;
@@ -918,6 +966,7 @@ void TypeChecker::CheckNode(AstNode* node) {
         break;
     case NodeKind::ExprStmt: CheckExpression(node->firstChild); break;
     case NodeKind::ClassDecl: {
+        if (node->isExternal) break;
         const ClassSignature* previousClass = currentClass_;
         const std::string previousNamespace = currentNamespace_;
         const bool previousShared = currentShared_;

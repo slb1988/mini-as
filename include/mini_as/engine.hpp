@@ -276,6 +276,11 @@ private:
     std::unordered_map<std::string, TypeId> typeIds_;
     std::unordered_map<std::string, GlobalId> globalIds_;
     std::unordered_map<std::string, std::string> sharedEntityFingerprints_;
+    std::unordered_map<std::string, ClassSignature> sharedClasses_;
+    std::unordered_map<std::string, EnumSignature> sharedEnums_;
+    std::unordered_map<std::string, FuncdefSignature> sharedFuncdefs_;
+    std::unordered_map<std::string, FunctionSignature> sharedFunctions_;
+    std::unordered_map<std::string, std::shared_ptr<const SyntaxTree>> sharedEntityDefinitions_;
     std::uint32_t nextFunctionId_ = 0;
     std::uint32_t nextTypeId_ = 0;
     std::uint32_t nextGlobalId_ = 0;

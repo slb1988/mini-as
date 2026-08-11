@@ -520,7 +520,8 @@ bool VirtualMachine::Step() {
         const CallableRef* callable = module_->FindCallable(static_cast<std::size_t>(instruction.operand));
         if (!callable || (callable->kind != CallableKind::ScriptFunction &&
                           callable->kind != CallableKind::ScriptMethod &&
-                          callable->kind != CallableKind::ImportedFunction))
+                          callable->kind != CallableKind::ImportedFunction &&
+                          callable->kind != CallableKind::ExternalFunction))
             throw std::runtime_error("call descriptor kind does not match opcode");
         const BytecodeFunction* target = nullptr;
         std::optional<ResolvedScriptFunction> resolved;
@@ -557,9 +558,16 @@ bool VirtualMachine::Step() {
             if (!resolved || !resolved->function || !resolved->module || !resolved->state)
                 throw std::runtime_error("bound imported function is unavailable");
             target = resolved->function;
+        } else if (callable->kind == CallableKind::ExternalFunction) {
+            if (!scriptFunctionResolver_)
+                throw std::runtime_error("external shared function resolver is unavailable");
+            resolved = scriptFunctionResolver_(callable->function);
+            if (!resolved || !resolved->function || !resolved->module || !resolved->state)
+                throw std::runtime_error("external shared function is unavailable");
+            target = resolved->function;
         } else target = module_->FindFunction(callable->function);
         if (!target) throw std::runtime_error("call target is unavailable");
-        const std::size_t hiddenArguments = callable->kind == CallableKind::ScriptMethod ? 1 : 0;
+        const std::size_t hiddenArguments = target->signature.method ? 1 : 0;
         std::vector<Value> arguments(target->signature.parameters.size() + hiddenArguments);
         for (std::size_t i = arguments.size(); i > 0; --i) arguments[i - 1] = Pop();
         callStack_.push_back({function_, pc_, std::move(locals_), stackBase_, std::move(captures_),
@@ -647,9 +655,25 @@ bool VirtualMachine::Step() {
         if (!receiver || !receiver.Get()->GetTypeInfo()) throw std::runtime_error("null virtual method receiver");
         const BytecodeFunction* target = module_->ResolveVirtual(
             receiver.Get()->GetTypeInfo()->id, callable->objectType, callable->virtualSlot);
+        std::optional<ResolvedScriptFunction> resolved;
+        if (!target && scriptFunctionResolver_) {
+            const FunctionId targetId = module_->ResolveVirtualFunctionId(
+                receiver.Get()->GetTypeInfo()->id, callable->objectType, callable->virtualSlot);
+            if (targetId.IsValid()) {
+                resolved = scriptFunctionResolver_(targetId);
+                if (resolved) target = resolved->function;
+            }
+        }
         if (!target) throw std::runtime_error("virtual method implementation is unavailable");
         callStack_.push_back({function_, pc_, std::move(locals_), stackBase_, std::move(captures_),
                               module_, moduleState_, moduleOwner_, finalizerModule_, finalizerState_});
+        if (resolved) {
+            module_ = resolved->module;
+            moduleState_ = resolved->state;
+            moduleOwner_ = std::move(resolved->owner);
+            finalizerModule_ = std::move(resolved->finalizerModule);
+            finalizerState_ = std::move(resolved->finalizerState);
+        }
         function_ = target;
         pc_ = 0;
         stackBase_ = stack_.size();
@@ -702,6 +726,15 @@ bool VirtualMachine::Step() {
                 throw std::runtime_error("null delegate object");
             target = module_->ResolveVirtual(handle.object.Get()->GetTypeInfo()->id,
                                              handle.dispatchType, handle.virtualSlot);
+            if (!target && scriptFunctionResolver_) {
+                const FunctionId targetId = module_->ResolveVirtualFunctionId(
+                    handle.object.Get()->GetTypeInfo()->id, handle.dispatchType,
+                    handle.virtualSlot);
+                if (targetId.IsValid()) {
+                    resolved = scriptFunctionResolver_(targetId);
+                    if (resolved) target = resolved->function;
+                }
+            }
         } else {
             target = module_->FindFunction(handle.function);
             if (!target && scriptFunctionResolver_) {

@@ -183,16 +183,33 @@ SyntaxTree Parser::Parse() {
 }
 
 AstNode* Parser::ParseTopLevel() {
-    if (Check(TokenKind::Identifier) && Current().lexeme == "shared") {
-        Advance();
+    if (Check(TokenKind::Identifier) &&
+        (Current().lexeme == "shared" || Current().lexeme == "external")) {
+        bool shared = false;
+        bool external = false;
+        Token modifier = Current();
+        while (Check(TokenKind::Identifier) &&
+               (Current().lexeme == "shared" || Current().lexeme == "external")) {
+            shared = shared || Current().lexeme == "shared";
+            external = external || Current().lexeme == "external";
+            Advance();
+        }
+        const bool previousExternal = pendingExternal_;
+        pendingExternal_ = external;
         AstNode* declaration = ParseTopLevel();
+        pendingExternal_ = previousExternal;
         if (!declaration || (declaration->kind != NodeKind::ClassDecl &&
             declaration->kind != NodeKind::InterfaceDecl &&
             declaration->kind != NodeKind::EnumDecl &&
             declaration->kind != NodeKind::FuncdefDecl &&
             declaration->kind != NodeKind::FunctionDecl)) {
-            Error(Previous(), "shared can only qualify classes, interfaces, enums, funcdefs, and functions");
-        } else declaration->isShared = true;
+            Error(modifier, "shared and external can only qualify classes, interfaces, enums, funcdefs, and functions");
+        } else {
+            declaration->isShared = shared;
+            declaration->isExternal = external;
+            if (external && !shared)
+                Error(modifier, "external entity must also be shared");
+        }
         return declaration;
     }
     if (Match(TokenKind::KwImport)) {
@@ -258,6 +275,10 @@ AstNode* Parser::ParseEnum() {
     Token name = Consume(TokenKind::Identifier, "expected enum name");
     name.lexeme = QualifyDeclaration(name.lexeme);
     AstNode* declaration = arena_->Make(NodeKind::EnumDecl, name);
+    if (pendingExternal_) {
+        Consume(TokenKind::Semicolon, "expected ';' after external shared enum");
+        return declaration;
+    }
     Consume(TokenKind::LeftBrace, "expected '{' before enum body");
     if (!Check(TokenKind::RightBrace)) {
         do {
@@ -326,6 +347,10 @@ AstNode* Parser::ParseClass(bool isInterface) {
     const std::string simpleName = name.lexeme;
     name.lexeme = QualifyDeclaration(name.lexeme);
     AstNode* node = arena_->Make(isInterface ? NodeKind::InterfaceDecl : NodeKind::ClassDecl, name);
+    if (pendingExternal_) {
+        Consume(TokenKind::Semicolon, "expected ';' after external shared type");
+        return node;
+    }
     const std::string previousTypeName = currentTypeName_;
     currentTypeName_ = name.lexeme;
     if (Match(TokenKind::Colon)) {
@@ -478,6 +503,10 @@ AstNode* Parser::ParseFunction(DataType returnType, Token name, bool returnsRefe
         if (moduleName.lexeme.size() >= 2)
             function->sourceModule = moduleName.lexeme.substr(1, moduleName.lexeme.size() - 2);
         Consume(TokenKind::Semicolon, "expected ';' after imported function declaration");
+        return function;
+    }
+    if (pendingExternal_) {
+        Consume(TokenKind::Semicolon, "expected ';' after external shared function");
         return function;
     }
     while (Check(TokenKind::KwConst) ||

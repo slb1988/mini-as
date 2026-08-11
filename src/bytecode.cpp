@@ -221,6 +221,15 @@ const BytecodeFunction* BytecodeModule::ResolveVirtual(
     return nullptr;
 }
 
+FunctionId BytecodeModule::ResolveVirtualFunctionId(
+    TypeId concreteType, TypeId interfaceType, std::uint32_t slot) const {
+    for (const auto& entry : virtualDispatch) {
+        if (entry.concreteType == concreteType && entry.interfaceType == interfaceType &&
+            entry.slot == slot) return entry.implementation;
+    }
+    return {};
+}
+
 BytecodeCompiler::BytecodeCompiler(DiagnosticSink& diagnostics) : diagnostics_(diagnostics) {}
 
 BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<FunctionSignature>& signatures,
@@ -288,9 +297,10 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
     if (!root) return module_;
     const auto registerDefinitions = [this](AstNode* definitionRoot) {
         for (AstNode* node : TopLevelDeclarations(definitionRoot))
-            if (node->kind == NodeKind::ClassDecl) classNodes_[node->token.lexeme] = node;
+            if (node->kind == NodeKind::ClassDecl && !node->isExternal)
+                classNodes_[node->token.lexeme] = node;
         for (AstNode* node : TopLevelDeclarations(definitionRoot)) {
-            if (node->kind == NodeKind::FunctionDecl && !node->isDeleted) {
+            if (node->kind == NodeKind::FunctionDecl && !node->isDeleted && !node->isExternal) {
                 FunctionSignature signature{
                     node->token.lexeme, node->declaredType, {}, false, {}, {}, false,
                     false, 0, {}, {}, node->returnsReference,
@@ -339,6 +349,10 @@ BytecodeModule BytecodeCompiler::Compile(AstNode* root, const std::vector<Functi
         }
         if (signature.imported) {
             module_.imports.push_back({signature, signature.sourceModule});
+            functionIds_[FunctionKey(signature)] = signature.id;
+            continue;
+        }
+        if (signature.external) {
             functionIds_[FunctionKey(signature)] = signature.id;
             continue;
         }
@@ -1822,7 +1836,9 @@ void BytecodeCompiler::CompileImplicitBaseConstructor(std::string_view typeName,
     }
     const auto target = functionIds_.find(FunctionKey(*constructor));
     if (target == functionIds_.end()) { Error(source, "base constructor target is missing"); return; }
-    Emit(OpCode::Call, AddCallable({CallableKind::ScriptMethod, target->second, base->id, 0,
+    Emit(OpCode::Call, AddCallable({constructor->external ? CallableKind::ExternalFunction
+                                                         : CallableKind::ScriptMethod,
+                                    target->second, base->id, 0,
                                     static_cast<std::uint32_t>(constructor->parameters.size())}), source);
     Emit(OpCode::Pop, 0, source);
 }
@@ -1981,7 +1997,9 @@ void BytecodeCompiler::CompileCall(AstNode* node, bool dereferenceResult) {
         }
         const auto target = functionIds_.find(FunctionKey(*constructor));
         if (target == functionIds_.end()) { Error(node, "base constructor target is missing"); return; }
-        Emit(OpCode::Call, AddCallable({CallableKind::ScriptMethod, target->second, base->id, 0,
+        Emit(OpCode::Call, AddCallable({constructor->external ? CallableKind::ExternalFunction
+                                                             : CallableKind::ScriptMethod,
+                                        target->second, base->id, 0,
                                         static_cast<std::uint32_t>(constructor->parameters.size())}), node);
         CompileReferenceWritebacks(*constructor, *ordered, referenceReceivers, node);
         return;
@@ -2092,7 +2110,9 @@ void BytecodeCompiler::CompileCall(AstNode* node, bool dereferenceResult) {
             }
             const auto target = functionIds_.find(FunctionKey(*constructor));
             if (target == functionIds_.end()) { Error(node, "constructor target is missing"); return; }
-            Emit(OpCode::Call, AddCallable({CallableKind::ScriptMethod, target->second,
+            Emit(OpCode::Call, AddCallable({constructor->external ? CallableKind::ExternalFunction
+                                                                 : CallableKind::ScriptMethod,
+                                            target->second,
                                             classFound->second, 0,
                                             static_cast<std::uint32_t>(constructor->parameters.size())}), node);
             CompileReferenceWritebacks(*constructor, *ordered, referenceReceivers, node);
@@ -2257,7 +2277,8 @@ void BytecodeCompiler::CompileCall(AstNode* node, bool dereferenceResult) {
         if (target->method) {
             for (const auto& type : classes_) if (type.name == target->objectType) owner = type.id;
         }
-        Emit(OpCode::Call, AddCallable({target->imported ? CallableKind::ImportedFunction
+        Emit(OpCode::Call, AddCallable({target->external ? CallableKind::ExternalFunction
+                                                        : target->imported ? CallableKind::ImportedFunction
                                                         : target->method ? CallableKind::ScriptMethod
                                                                          : CallableKind::ScriptFunction,
                                        found->second, owner, 0,

@@ -586,3 +586,26 @@ TEST_CASE(parser_marks_all_supported_shared_entity_kinds) {
     CHECK(declarations[4]->kind == mini_as::NodeKind::FunctionDecl);
 }
 
+TEST_CASE(parser_accepts_external_shared_entities_in_either_modifier_order) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("external",
+        "external shared class C; shared external interface I; "
+        "external shared enum E; shared external funcdef int F(int value); "
+        "external shared int Twice(int value);",
+        diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    CHECK(!diagnostics.HasErrors());
+    const auto declarations = tree.root->Children();
+    CHECK(declarations.size() == 5);
+    for (const auto* declaration : declarations) {
+        CHECK(declaration->isShared);
+        CHECK(declaration->isExternal);
+    }
+    CHECK(declarations[0]->kind == mini_as::NodeKind::ClassDecl);
+    CHECK(declarations[1]->kind == mini_as::NodeKind::InterfaceDecl);
+    CHECK(declarations[2]->kind == mini_as::NodeKind::EnumDecl);
+    CHECK(declarations[3]->kind == mini_as::NodeKind::FuncdefDecl);
+    CHECK(declarations[4]->kind == mini_as::NodeKind::FunctionDecl);
+}
+

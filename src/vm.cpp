@@ -59,11 +59,23 @@ bool ValuesEqual(const Value& left, const Value& right) {
 }
 
 ParameterMode ParameterModeAt(const FunctionSignature& signature, std::size_t index) {
-    return index < signature.parameterModes.size()
-        ? signature.parameterModes[index] : ParameterMode::Value;
+    const std::size_t fixedCount = signature.variadic && !signature.parameters.empty()
+        ? signature.parameters.size() - 1 : signature.parameters.size();
+    const std::size_t prototype = signature.variadic && index >= fixedCount
+        ? signature.parameters.size() - 1 : index;
+    return prototype < signature.parameterModes.size()
+        ? signature.parameterModes[prototype] : ParameterMode::Value;
+}
+
+const DataType& ParameterTypeAt(const FunctionSignature& signature, std::size_t index) {
+    const std::size_t fixedCount = signature.variadic && !signature.parameters.empty()
+        ? signature.parameters.size() - 1 : signature.parameters.size();
+    if (signature.variadic && index >= fixedCount) return signature.parameters.back();
+    return signature.parameters.at(index);
 }
 
 bool MatchesDeclaredType(const Value& value, const DataType& expected) {
+    if (expected.kind == TypeKind::Var) return true;
     if (value.Type() == expected) return true;
     if (value.Type().kind != TypeKind::Object || expected.kind != TypeKind::Object) return false;
     const auto& handle = value.As<ObjectHandle>();
@@ -530,10 +542,14 @@ bool VirtualMachine::Step() {
             const FunctionId bound = moduleState_->FindImportedFunction(callable->function);
             if (!bound.IsValid()) throw std::runtime_error("imported function is not bound");
             if (const auto* hostTarget = module_->FindHostFunction(bound)) {
-                std::vector<Value> hostArguments(hostTarget->signature.parameters.size());
+                std::vector<Value> hostArguments(callable->parameterCount);
                 for (std::size_t i = hostArguments.size(); i > 0; --i)
                     hostArguments[i - 1] = Pop();
-                GenericCall call(hostArguments);
+                std::vector<DataType> hostArgumentTypes;
+                hostArgumentTypes.reserve(hostArguments.size());
+                for (const auto& argument : hostArguments)
+                    hostArgumentTypes.push_back(argument.Type());
+                GenericCall call(hostArguments, {}, callable->argumentTypes);
                 try { hostTarget->callback(call); }
                 catch (const std::exception& error) {
                     throw std::runtime_error(std::string("host exception: ") + error.what());
@@ -544,11 +560,19 @@ bool VirtualMachine::Step() {
                         call.ReturnValue().Type().Name() + " but declared " +
                         hostTarget->signature.returnType.Name());
                 Push(call.ReturnValue());
-                for (std::size_t index = 0;
-                     index < hostTarget->signature.parameters.size(); ++index) {
+                for (std::size_t index = 0; index < hostArguments.size(); ++index) {
                     const ParameterMode mode = ParameterModeAt(hostTarget->signature, index);
-                    if (mode == ParameterMode::Out || mode == ParameterMode::InOut)
+                    if (mode == ParameterMode::Out || mode == ParameterMode::InOut) {
+                        const DataType& declared = ParameterTypeAt(hostTarget->signature, index);
+                        const DataType& expected = declared.kind == TypeKind::Var &&
+                            index < callable->argumentTypes.size()
+                                ? callable->argumentTypes[index]
+                                : (declared.kind == TypeKind::Var
+                                    ? hostArgumentTypes[index] : declared);
+                        if (!MatchesDeclaredType(hostArguments[index], expected))
+                            throw std::runtime_error("host function wrote an incompatible output value");
                         Push(std::move(hostArguments[index]));
+                    }
                 }
                 break;
             }
@@ -595,8 +619,11 @@ bool VirtualMachine::Step() {
             throw std::runtime_error("call descriptor kind does not match opcode");
         const auto* target = module_->FindHostFunction(callable->function);
         if (!target) throw std::runtime_error("host call target is unavailable");
-        std::vector<Value> arguments(target->signature.parameters.size());
+        std::vector<Value> arguments(callable->parameterCount);
         for (std::size_t i = arguments.size(); i > 0; --i) arguments[i - 1] = Pop();
+        std::vector<DataType> argumentTypes;
+        argumentTypes.reserve(arguments.size());
+        for (const auto& argument : arguments) argumentTypes.push_back(argument.Type());
         Value receiverValue;
         if (callable->kind == CallableKind::HostMethod) {
             receiverValue = Pop();
@@ -613,7 +640,7 @@ bool VirtualMachine::Step() {
                     throw std::runtime_error("host method receiver type mismatch");
             }
         }
-        GenericCall call(arguments, std::move(receiverValue));
+        GenericCall call(arguments, std::move(receiverValue), callable->argumentTypes);
         try { target->callback(call); }
         catch (const std::exception& error) { throw std::runtime_error(std::string("host exception: ") + error.what()); }
         if (!call.Exception().empty()) throw std::runtime_error(call.Exception());
@@ -631,12 +658,17 @@ bool VirtualMachine::Step() {
                                      " but declared " + target->signature.returnType.Name());
         }
         Push(call.ReturnValue());
-        for (std::size_t index = 0; index < target->signature.parameters.size(); ++index) {
+        for (std::size_t index = 0; index < arguments.size(); ++index) {
             const ParameterMode mode = ParameterModeAt(target->signature, index);
             if (mode == ParameterMode::Out || mode == ParameterMode::InOut) {
-                if (!MatchesDeclaredType(arguments[index], target->signature.parameters[index]))
+                const DataType& declared = ParameterTypeAt(target->signature, index);
+                const DataType& expected = declared.kind == TypeKind::Var &&
+                    index < callable->argumentTypes.size()
+                        ? callable->argumentTypes[index]
+                        : (declared.kind == TypeKind::Var ? argumentTypes[index] : declared);
+                if (!MatchesDeclaredType(arguments[index], expected))
                     throw std::runtime_error("host function wrote " + arguments[index].Type().Name() +
-                                             " to " + target->signature.parameters[index].Name() +
+                                             " to " + expected.Name() +
                                              " output parameter");
                 Push(std::move(arguments[index]));
             }
@@ -697,7 +729,10 @@ bool VirtualMachine::Step() {
         if (handle.host) {
             const auto* target = module_->FindHostFunction(handle.function);
             if (!target) throw std::runtime_error("host function handle target is unavailable");
-            GenericCall call(arguments);
+            std::vector<DataType> argumentTypes;
+            argumentTypes.reserve(arguments.size());
+            for (const auto& argument : arguments) argumentTypes.push_back(argument.Type());
+            GenericCall call(arguments, {}, callable->argumentTypes);
             try { target->callback(call); }
             catch (const std::exception& error) {
                 throw std::runtime_error(std::string("host exception: ") + error.what());
@@ -708,10 +743,16 @@ bool VirtualMachine::Step() {
                                          " but declared " + target->signature.returnType.Name());
             }
             Push(call.ReturnValue());
-            for (std::size_t index = 0; index < target->signature.parameters.size(); ++index) {
+            for (std::size_t index = 0; index < arguments.size(); ++index) {
                 const ParameterMode mode = ParameterModeAt(target->signature, index);
                 if (mode == ParameterMode::Out || mode == ParameterMode::InOut) {
-                    if (!MatchesDeclaredType(arguments[index], target->signature.parameters[index]))
+                    const DataType& declared = ParameterTypeAt(target->signature, index);
+                    const DataType& expected = declared.kind == TypeKind::Var &&
+                        index < callable->argumentTypes.size()
+                            ? callable->argumentTypes[index]
+                            : (declared.kind == TypeKind::Var
+                                ? argumentTypes[index] : declared);
+                    if (!MatchesDeclaredType(arguments[index], expected))
                         throw std::runtime_error("host function handle wrote an incompatible output value");
                     Push(std::move(arguments[index]));
                 }

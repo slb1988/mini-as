@@ -11,7 +11,7 @@ namespace mini_as::detail {
 namespace {
 
 constexpr char kMagic[] = {'M', 'A', 'S', 'B'};
-constexpr std::uint32_t kVersion = 6;
+constexpr std::uint32_t kVersion = 7;
 constexpr std::uint64_t kMaxItems = 1'000'000;
 constexpr std::uint64_t kMaxString = 16 * 1024 * 1024;
 
@@ -213,6 +213,7 @@ void WriteFunctionSignature(Writer& writer, const FunctionSignature& signature) 
     writer.String(signature.sourceModule);
     writer.Scalar<std::uint8_t>(signature.shared ? 1 : 0);
     writer.Scalar<std::uint8_t>(signature.external ? 1 : 0);
+    writer.Scalar<std::uint8_t>(signature.variadic ? 1 : 0);
 }
 
 bool ReadBool(Reader& reader, bool& value) {
@@ -247,10 +248,13 @@ bool ReadFunctionSignature(Reader& reader, FunctionSignature& signature) {
         !ReadBool(reader, signature.imported) ||
         !reader.String(signature.sourceModule) ||
         !ReadBool(reader, signature.shared) ||
-        !ReadBool(reader, signature.external)) return false;
+        !ReadBool(reader, signature.external) ||
+        !ReadBool(reader, signature.variadic)) return false;
     signature.defaultArgumentCount = static_cast<std::size_t>(defaults);
     return signature.parameterNames.size() <= signature.parameters.size() &&
-           signature.parameterModes.size() <= signature.parameters.size();
+           signature.parameterModes.size() <= signature.parameters.size() &&
+           (!signature.variadic ||
+            (!signature.parameters.empty() && signature.defaultArgumentCount == 0));
 }
 
 void WriteValue(Writer& writer, const Value& value, bool& valid) {
@@ -550,6 +554,8 @@ void WriteModule(Writer& writer, const BytecodeModule& module, bool& valid) {
     writer.Vector(module.callables, [](Writer& out, const CallableRef& callable) {
         out.Scalar(callable.kind); WriteId(out, callable.function); WriteId(out, callable.objectType);
         out.Scalar(callable.virtualSlot); out.Scalar(callable.parameterCount); WriteId(out, callable.signatureType);
+        out.Vector(callable.argumentTypes,
+            [](Writer& nested, const DataType& type) { WriteType(nested, type); });
     });
     writer.Vector(module.virtualDispatch, [](Writer& out, const VirtualDispatchEntry& entry) {
         WriteId(out, entry.concreteType); WriteId(out, entry.interfaceType);
@@ -573,7 +579,11 @@ bool ReadModule(Reader& reader, BytecodeModule& module) {
             return in.Scalar(callable.kind) && callable.kind <= CallableKind::ExternalFunction &&
                 ReadId(in, callable.function) && ReadId(in, callable.objectType) &&
                 in.Scalar(callable.virtualSlot) && in.Scalar(callable.parameterCount) &&
-                ReadId(in, callable.signatureType);
+                ReadId(in, callable.signatureType) &&
+                in.Vector(callable.argumentTypes,
+                    [](Reader& nested, DataType& type) { return ReadType(nested, type); }) &&
+                (callable.argumentTypes.empty() ||
+                 callable.argumentTypes.size() == callable.parameterCount);
         }) &&
         reader.Vector(module.virtualDispatch, [](Reader& in, VirtualDispatchEntry& entry) {
             return ReadId(in, entry.concreteType) && ReadId(in, entry.interfaceType) &&

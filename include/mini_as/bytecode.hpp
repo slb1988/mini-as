@@ -74,9 +74,11 @@ enum class CallableKind {
 struct CallableRef {
     CallableRef(CallableKind kind = CallableKind::ScriptFunction, FunctionId function = {},
                 TypeId objectType = {}, std::uint32_t virtualSlot = 0,
-                std::uint32_t parameterCount = 0, TypeId signatureType = {})
+                std::uint32_t parameterCount = 0, TypeId signatureType = {},
+                std::vector<DataType> argumentTypes = {})
         : kind(kind), function(function), objectType(objectType), virtualSlot(virtualSlot),
-          parameterCount(parameterCount), signatureType(signatureType) {}
+          parameterCount(parameterCount), signatureType(signatureType),
+          argumentTypes(std::move(argumentTypes)) {}
 
     CallableKind kind = CallableKind::ScriptFunction;
     FunctionId function;
@@ -84,6 +86,7 @@ struct CallableRef {
     std::uint32_t virtualSlot = 0;
     std::uint32_t parameterCount = 0;
     TypeId signatureType;
+    std::vector<DataType> argumentTypes;
 };
 
 struct VirtualDispatchEntry {

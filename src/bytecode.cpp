@@ -75,34 +75,71 @@ AstNode* ArgumentExpression(AstNode* argument) {
 }
 
 ParameterMode ParameterModeAt(const FunctionSignature& signature, std::size_t index) {
-    return index < signature.parameterModes.size()
-        ? signature.parameterModes[index] : ParameterMode::Value;
+    const std::size_t fixedCount = signature.variadic && !signature.parameters.empty()
+        ? signature.parameters.size() - 1 : signature.parameters.size();
+    const std::size_t prototype = signature.variadic && index >= fixedCount
+        ? signature.parameters.size() - 1 : index;
+    return prototype < signature.parameterModes.size()
+        ? signature.parameterModes[prototype] : ParameterMode::Value;
+}
+
+const DataType& ParameterTypeAt(const FunctionSignature& signature, std::size_t index) {
+    const std::size_t fixedCount = signature.variadic && !signature.parameters.empty()
+        ? signature.parameters.size() - 1 : signature.parameters.size();
+    if (signature.variadic && index >= fixedCount) return signature.parameters.back();
+    return signature.parameters.at(index);
 }
 
 std::optional<std::vector<AstNode*>> OrderArguments(
     const FunctionSignature& signature, const std::vector<AstNode*>& arguments) {
-    if (arguments.size() > signature.parameters.size()) return std::nullopt;
-    std::vector<AstNode*> ordered(signature.parameters.size(), nullptr);
+    if (signature.variadic && signature.parameters.empty()) return std::nullopt;
+    const std::size_t fixedCount = signature.variadic
+        ? signature.parameters.size() - 1 : signature.parameters.size();
+    if (!signature.variadic && arguments.size() > fixedCount) return std::nullopt;
+    std::vector<AstNode*> ordered(fixedCount, nullptr);
+    std::vector<AstNode*> tail;
     std::size_t positional = 0;
     for (AstNode* argument : arguments) {
         std::size_t parameter = positional;
         if (argument->kind == NodeKind::NamedArgument) {
-            parameter = signature.parameterNames.size();
-            for (std::size_t index = 0; index < signature.parameterNames.size(); ++index) {
+            parameter = fixedCount;
+            for (std::size_t index = 0;
+                 index < signature.parameterNames.size() && index < fixedCount; ++index) {
                 if (signature.parameterNames[index] == argument->token.lexeme) { parameter = index; break; }
             }
-            if (parameter >= signature.parameters.size()) return std::nullopt;
+            if (parameter >= fixedCount) return std::nullopt;
         } else {
             while (parameter < ordered.size() && ordered[parameter]) ++parameter;
             positional = parameter + 1;
         }
-        if (parameter >= ordered.size() || ordered[parameter]) return std::nullopt;
-        ordered[parameter] = ArgumentExpression(argument);
+        if (parameter >= fixedCount) {
+            if (!signature.variadic || argument->kind == NodeKind::NamedArgument)
+                return std::nullopt;
+            tail.push_back(ArgumentExpression(argument));
+        } else {
+            if (ordered[parameter]) return std::nullopt;
+            ordered[parameter] = ArgumentExpression(argument);
+        }
     }
-    const std::size_t firstDefault = signature.parameters.size() - signature.defaultArgumentCount;
+    if (signature.variadic && tail.empty()) return std::nullopt;
+    if (signature.defaultArgumentCount > fixedCount) return std::nullopt;
+    const std::size_t firstDefault = fixedCount - signature.defaultArgumentCount;
     for (std::size_t index = 0; index < ordered.size(); ++index)
         if (!ordered[index] && index < firstDefault) return std::nullopt;
+    ordered.insert(ordered.end(), tail.begin(), tail.end());
     return ordered;
+}
+
+std::vector<DataType> CallArgumentTypes(const FunctionSignature& signature,
+                                        const std::vector<AstNode*>& arguments) {
+    std::vector<DataType> result;
+    result.reserve(arguments.size());
+    for (std::size_t index = 0; index < arguments.size(); ++index) {
+        const DataType& prototype = ParameterTypeAt(signature, index);
+        result.push_back(prototype.kind == TypeKind::Var && arguments[index]
+            ? arguments[index]->inferredType : prototype);
+    }
+    return result;
 }
 
 } // namespace
@@ -1941,7 +1978,8 @@ void BytecodeCompiler::CompileCall(AstNode* node, bool dereferenceResult) {
         }
         Emit(OpCode::CallHandle,
              AddCallable({CallableKind::FunctionHandle, {}, funcdef->id, 0,
-                          static_cast<std::uint32_t>(funcdef->signature.parameters.size())}), node);
+                          static_cast<std::uint32_t>(ordered->size()), {},
+                          CallArgumentTypes(funcdef->signature, *ordered)}), node);
         CompileReferenceWritebacks(funcdef->signature, *ordered, referenceReceivers, node);
         if (funcdef->signature.returnsReference && dereferenceResult)
             Emit(OpCode::LoadReference, 0, node);
@@ -1970,7 +2008,7 @@ void BytecodeCompiler::CompileCall(AstNode* node, bool dereferenceResult) {
             for (std::size_t index = 0; index < ordered->size(); ++index) {
                 if (!(*ordered)[index]) continue;
                 const auto conversion = ConversionCost(
-                    (*ordered)[index]->inferredType, candidate.parameters[index]);
+                    (*ordered)[index]->inferredType, ParameterTypeAt(candidate, index));
                 if (!conversion) { viable = false; break; }
                 cost += *conversion;
             }
@@ -2028,16 +2066,18 @@ void BytecodeCompiler::CompileCall(AstNode* node, bool dereferenceResult) {
                 if (!signature.factory || signature.objectType != resolvedClassName) continue;
                 const auto ordered = OrderArguments(signature, arguments);
                 if (!ordered) continue;
-                int cost = 0;
+                int cost = signature.variadic ? 10000 : 0;
                 bool viable = true;
                 for (std::size_t index = 0; index < ordered->size(); ++index) {
                     if (!(*ordered)[index]) continue;
                     const ParameterMode mode = ParameterModeAt(signature, index);
+                    const DataType& expected = ParameterTypeAt(signature, index);
                     const auto conversion = (mode == ParameterMode::Out || mode == ParameterMode::InOut)
-                        ? ((*ordered)[index]->inferredType == signature.parameters[index]
+                        ? (expected.kind == TypeKind::Var ||
+                           (*ordered)[index]->inferredType == expected
                                ? std::optional<int>{0} : std::nullopt)
-                        : ConversionCost((*ordered)[index]->inferredType,
-                                         signature.parameters[index]);
+                        : (expected.kind == TypeKind::Var ? std::optional<int>{0}
+                           : ConversionCost((*ordered)[index]->inferredType, expected));
                     if (!conversion) { viable = false; break; }
                     cost += *conversion;
                 }
@@ -2047,7 +2087,7 @@ void BytecodeCompiler::CompileCall(AstNode* node, bool dereferenceResult) {
             const auto ordered = OrderArguments(*factory, arguments);
             if (!ordered) { Error(node, "factory arguments cannot be ordered"); return; }
             ReferenceReceiverMap referenceReceivers;
-            for (std::size_t index = 0; index < factory->parameters.size(); ++index) {
+            for (std::size_t index = 0; index < ordered->size(); ++index) {
                 AstNode* expression = (*ordered)[index];
                 if (!expression) { Error(node, "factory argument is missing"); return; }
                 CompileCallArgument(*factory, index, expression, referenceReceivers);
@@ -2056,7 +2096,8 @@ void BytecodeCompiler::CompileCall(AstNode* node, bool dereferenceResult) {
             if (found == hostIds_.end()) { Error(node, "host object factory is not linked"); return; }
             Emit(OpCode::CallHost,
                  AddCallable({CallableKind::HostFunction, found->second, constructedType->id, 0,
-                              static_cast<std::uint32_t>(factory->parameters.size())}), node);
+                              static_cast<std::uint32_t>(ordered->size()), {},
+                              CallArgumentTypes(*factory, *ordered)}), node);
             CompileReferenceWritebacks(*factory, *ordered, referenceReceivers, node);
             return;
         }
@@ -2078,15 +2119,17 @@ void BytecodeCompiler::CompileCall(AstNode* node, bool dereferenceResult) {
             if (!signature.constructor || signature.objectType != resolvedClassName) continue;
             const auto ordered = OrderArguments(signature, arguments);
             if (!ordered) continue;
-            int cost = 0;
+            int cost = signature.variadic ? 10000 : 0;
             bool viable = true;
             for (std::size_t i = 0; i < ordered->size(); ++i) {
                 if (!(*ordered)[i]) continue;
                 const ParameterMode mode = ParameterModeAt(signature, i);
+                const DataType& expected = ParameterTypeAt(signature, i);
                 const auto conversion = (mode == ParameterMode::Out || mode == ParameterMode::InOut)
-                    ? ((*ordered)[i]->inferredType == signature.parameters[i]
+                    ? (expected.kind == TypeKind::Var || (*ordered)[i]->inferredType == expected
                            ? std::optional<int>{0} : std::nullopt)
-                    : ConversionCost((*ordered)[i]->inferredType, signature.parameters[i]);
+                    : (expected.kind == TypeKind::Var ? std::optional<int>{0}
+                       : ConversionCost((*ordered)[i]->inferredType, expected));
                 if (!conversion) { viable = false; break; }
                 cost += *conversion;
             }
@@ -2170,16 +2213,18 @@ void BytecodeCompiler::CompileCall(AstNode* node, bool dereferenceResult) {
         if (explicitMethod && !signature.method) continue;
         if (!explicitMethod && signature.method && currentObjectType_.empty()) continue;
         if (!explicitMethod && currentObjectType_.empty() && signature.method) continue;
-        int cost = *nameCost +
+        int cost = *nameCost + (signature.variadic ? 10000 : 0) +
             ((!explicitMethod && !currentObjectType_.empty() && !signature.method) ? 1000 : 0);
         bool viable = true;
         for (std::size_t i = 0; i < ordered->size(); ++i) {
             if (!(*ordered)[i]) continue;
             const ParameterMode mode = ParameterModeAt(signature, i);
+            const DataType& expected = ParameterTypeAt(signature, i);
             const auto conversion = (mode == ParameterMode::Out || mode == ParameterMode::InOut)
-                ? ((*ordered)[i]->inferredType == signature.parameters[i]
+                ? (expected.kind == TypeKind::Var || (*ordered)[i]->inferredType == expected
                        ? std::optional<int>{0} : std::nullopt)
-                : ConversionCost((*ordered)[i]->inferredType, signature.parameters[i]);
+                : (expected.kind == TypeKind::Var ? std::optional<int>{0}
+                   : ConversionCost((*ordered)[i]->inferredType, expected));
             if (!conversion) { viable = false; break; }
             cost += *conversion;
         }
@@ -2195,7 +2240,7 @@ void BytecodeCompiler::CompileCall(AstNode* node, bool dereferenceResult) {
     }
     const auto definition = functionNodes_.find(FunctionKey(*target));
     AstNode* parameter = definition == functionNodes_.end() ? nullptr : definition->second->firstChild;
-    for (std::size_t i = 0; i < target->parameters.size(); ++i) {
+    for (std::size_t i = 0; i < ordered->size(); ++i) {
         while (parameter && parameter->kind != NodeKind::Parameter) parameter = parameter->nextSibling;
         AstNode* expression = (*ordered)[i] ? (*ordered)[i]
             : (parameter ? parameter->firstChild : nullptr);
@@ -2270,7 +2315,8 @@ void BytecodeCompiler::CompileCall(AstNode* node, bool dereferenceResult) {
         Emit(OpCode::CallHost,
              AddCallable({target->method ? CallableKind::HostMethod : CallableKind::HostFunction,
                           found->second, owner, 0,
-                          static_cast<std::uint32_t>(target->parameters.size())}), node);
+                          static_cast<std::uint32_t>(ordered->size()), {},
+                          CallArgumentTypes(*target, *ordered)}), node);
     } else {
         const auto found = functionIds_.find(FunctionKey(*target));
         if (found == functionIds_.end()) { Error(node, "script call target is missing"); return; }
@@ -2309,11 +2355,14 @@ void BytecodeCompiler::CompileCallArgument(const FunctionSignature& signature, s
                                            AstNode* expression,
                                            ReferenceReceiverMap& receivers) {
     const ParameterMode mode = ParameterModeAt(signature, index);
+    const DataType& parameterType = ParameterTypeAt(signature, index);
+    const DataType storageType = parameterType.kind == TypeKind::Var
+        ? expression->inferredType : parameterType;
     const auto target = (mode == ParameterMode::Out || mode == ParameterMode::InOut)
         ? ResolveLValue(expression) : std::optional<LValueRef>{};
     if ((mode == ParameterMode::Out || mode == ParameterMode::InOut) && !target) {
         Error(expression, "reference argument cannot be compiled as an lvalue");
-        EmitDefaultValue(signature.parameters[index], expression);
+        EmitDefaultValue(storageType, expression);
         return;
     }
     if (target && target->kind == LValueRef::Kind::Field && target->receiver) {
@@ -2325,11 +2374,11 @@ void BytecodeCompiler::CompileCallArgument(const FunctionSignature& signature, s
         if (mode == ParameterMode::Out) Emit(OpCode::Pop, 0, expression);
         else Emit(OpCode::LoadField, static_cast<std::int32_t>(target->field), expression);
         if (mode == ParameterMode::Out)
-            EmitDefaultValue(signature.parameters[index], expression);
+            EmitDefaultValue(storageType, expression);
         return;
     }
     if (mode == ParameterMode::Out) {
-        EmitDefaultValue(signature.parameters[index], expression);
+        EmitDefaultValue(storageType, expression);
         return;
     }
     if (mode == ParameterMode::InOut) {
@@ -2337,13 +2386,14 @@ void BytecodeCompiler::CompileCallArgument(const FunctionSignature& signature, s
         return;
     }
     CompileExpression(expression);
-    EmitConversion(expression->inferredType, signature.parameters[index], expression);
+    if (parameterType.kind != TypeKind::Var)
+        EmitConversion(expression->inferredType, parameterType, expression);
 }
 
 void BytecodeCompiler::CompileReferenceWritebacks(
     const FunctionSignature& signature, const std::vector<AstNode*>& arguments,
     const ReferenceReceiverMap& receivers, const AstNode* source) {
-    for (std::size_t index = signature.parameters.size(); index > 0; --index) {
+    for (std::size_t index = arguments.size(); index > 0; --index) {
         const std::size_t parameter = index - 1;
         const ParameterMode mode = ParameterModeAt(signature, parameter);
         if (mode != ParameterMode::Out && mode != ParameterMode::InOut) continue;
@@ -2520,7 +2570,8 @@ std::int32_t BytecodeCompiler::AddCallable(CallableRef callable) {
         if (existing.kind == callable.kind && existing.function == callable.function &&
             existing.objectType == callable.objectType && existing.virtualSlot == callable.virtualSlot &&
             existing.parameterCount == callable.parameterCount &&
-            existing.signatureType == callable.signatureType)
+            existing.signatureType == callable.signatureType &&
+            existing.argumentTypes == callable.argumentTypes)
             return static_cast<std::int32_t>(i);
     }
     module_.callables.push_back(std::move(callable));

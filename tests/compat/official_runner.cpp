@@ -113,6 +113,15 @@ void Hidden(asIScriptGeneric* call) {
     call->SetReturnDWord(99);
 }
 
+void VariadicSum(asIScriptGeneric* call) {
+    int total = static_cast<int>(call->GetArgDWord(0));
+    for (asUINT index = 1; index < call->GetArgCount(); ++index) {
+        const auto* value = static_cast<const int*>(call->GetArgAddress(index));
+        if (value) total += *value;
+    }
+    call->SetReturnDWord(static_cast<asDWORD>(total));
+}
+
 struct DebugProbe {
     bool printed = false;
 };
@@ -196,6 +205,13 @@ int main(int argc, char** argv) {
             engine->ShutDownAndRelease(); return 3;
         }
         engine->SetDefaultAccessMask(~asDWORD(0));
+    }
+    if (std::string(argv[1]).find("variadic_arguments") != std::string::npos &&
+        engine->RegisterGlobalFunction(
+            "int VariadicSum(int seed, const int &in ...)",
+            asFUNCTION(VariadicSum), asCALL_GENERIC) < 0) {
+        engine->ShutDownAndRelease();
+        return 3;
     }
     engine->SetEngineProperty(asEP_ALLOW_UNSAFE_REFERENCES, true);
     engine->SetMessageCallback(asFUNCTION(MessageCallback), nullptr, asCALL_CDECL);

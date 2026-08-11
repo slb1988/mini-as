@@ -33,6 +33,7 @@ struct FunctionSignature {
     std::string sourceModule;
     bool shared = false;
     bool external = false;
+    bool variadic = false;
 
     std::string Declaration() const;
 };

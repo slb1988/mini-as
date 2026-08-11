@@ -55,6 +55,7 @@ DataType DataType::Function(std::string name, bool handle) {
 DataType DataType::WeakRef(std::string subtype, bool readOnly) {
     return {readOnly ? TypeKind::ConstWeakRef : TypeKind::WeakRef, std::move(subtype), false};
 }
+DataType DataType::Var() { return {TypeKind::Var, {}, false}; }
 DataType DataType::Invalid() { return {}; }
 
 std::string DataType::Name() const {
@@ -77,6 +78,7 @@ std::string DataType::Name() const {
     case TypeKind::Function: return objectName + (isHandle ? "@" : "");
     case TypeKind::WeakRef: return "weakref<" + objectName + ">";
     case TypeKind::ConstWeakRef: return "const_weakref<" + objectName + ">";
+    case TypeKind::Var: return "?";
     case TypeKind::Invalid: return "<invalid>";
     }
     return "<invalid>";

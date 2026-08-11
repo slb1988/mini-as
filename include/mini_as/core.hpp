@@ -76,7 +76,7 @@ enum class TypeKind {
     Void, Bool,
     Int8, Int16, Int, Int64,
     UInt8, UInt16, UInt, UInt64,
-    Float, Double, String, Enum, Object, Function, WeakRef, ConstWeakRef, Invalid
+    Float, Double, String, Enum, Object, Function, WeakRef, ConstWeakRef, Var, Invalid
 };
 
 struct DataType {
@@ -103,6 +103,7 @@ struct DataType {
     static DataType Object(std::string name, bool handle = false);
     static DataType Function(std::string name, bool handle = true);
     static DataType WeakRef(std::string subtype, bool readOnly = false);
+    static DataType Var();
     static DataType Invalid();
 
     std::string Name() const;

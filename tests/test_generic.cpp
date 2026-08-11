@@ -1,6 +1,8 @@
 #include "test.hpp"
 #include "mini_as/engine.hpp"
 
+#include <sstream>
+
 TEST_CASE(generic_host_bridge_moves_typed_arguments_and_return) {
     auto engine = mini_as::CreateScriptEngine();
     CHECK(engine->RegisterGlobalFunction("float Scale(float value)", [](mini_as::GenericCall& call) {
@@ -266,6 +268,201 @@ TEST_CASE(registered_named_types_reject_duplicates_invalid_values_and_bad_callba
     }
     CHECK(mismatch);
     CHECK(collision);
+}
+
+TEST_CASE(generic_declaration_parser_accepts_only_trailing_reference_variadics) {
+    mini_as::DiagnosticSink diagnostics;
+    const auto fixed = mini_as::ParseFunctionDeclaration(
+        "int Sum(int seed, const int &in ...)", diagnostics);
+    CHECK(fixed.has_value());
+    CHECK(fixed->variadic);
+    CHECK(fixed->parameters.size() == 2);
+    CHECK(fixed->parameters.back() == mini_as::DataType::Int());
+    CHECK(fixed->parameterModes.back() == mini_as::ParameterMode::In);
+    CHECK(fixed->Declaration() == "int Sum(int, int &in ...)");
+
+    mini_as::DiagnosticSink wildcardDiagnostics;
+    const auto wildcard = mini_as::ParseFunctionDeclaration(
+        "void Fill(? &out ...)", wildcardDiagnostics);
+    CHECK(wildcard.has_value());
+    CHECK(wildcard->parameters.back() == mini_as::DataType::Var());
+    CHECK(wildcard->Declaration() == "void Fill(? &out ...)");
+
+    mini_as::DiagnosticSink nonReferenceDiagnostics;
+    const auto typedValue = mini_as::ParseFunctionDeclaration(
+        "void Values(int ...)", nonReferenceDiagnostics);
+    CHECK(typedValue.has_value());
+    CHECK(typedValue->variadic);
+    mini_as::DiagnosticSink inoutDiagnostics;
+    CHECK(!mini_as::ParseFunctionDeclaration(
+        "void Bad(? &inout ...)", inoutDiagnostics).has_value());
+    mini_as::DiagnosticSink nonTrailingDiagnostics;
+    CHECK(!mini_as::ParseFunctionDeclaration(
+        "void Bad(int &in ..., int value)", nonTrailingDiagnostics).has_value());
+    mini_as::DiagnosticSink bareWildcardDiagnostics;
+    CHECK(!mini_as::ParseFunctionDeclaration(
+        "void Bad(? &in)", bareWildcardDiagnostics).has_value());
+}
+
+TEST_CASE(generic_variadic_functions_support_zero_many_wildcard_and_exact_overloads) {
+    auto engine = mini_as::CreateScriptEngine();
+    CHECK(engine->RegisterGlobalFunction(
+        "int Sum(int seed, const int &in ...)", [](mini_as::GenericCall& call) {
+            int total = call.GetArgInt(0);
+            for (std::size_t index = 1; index < call.GetArgCount(); ++index)
+                total += call.GetArgInt(index);
+            call.SetReturnInt(total);
+        }));
+    CHECK(engine->RegisterGlobalFunction(
+        "int Kinds(const ? &in ...)", [](mini_as::GenericCall& call) {
+            CHECK(call.GetArgCount() == 3);
+            CHECK(call.GetArgType(0) == mini_as::DataType::Int());
+            CHECK(call.GetArgType(1) == mini_as::DataType::String());
+            CHECK(call.GetArgType(2) == mini_as::DataType::Bool());
+            call.SetReturnInt(2);
+        }));
+    CHECK(engine->RegisterGlobalFunction(
+        "int Pick(int value)", [](mini_as::GenericCall& call) {
+            CHECK(call.GetArgCount() == 1);
+            call.SetReturnInt(40);
+        }));
+    CHECK(engine->RegisterGlobalFunction(
+        "int Pick(const int &in ...)", [](mini_as::GenericCall& call) {
+            call.SetReturnInt(call.GetArgCount() == 2 ? 2 : -100);
+        }));
+
+    auto* module = engine->GetModule("host-variadic");
+    module->AddScriptSection("host-variadic.as",
+        "int run() { return Sum(0, 20, 22) + "
+        "Kinds(1, \"two\", true) + Pick(1) + Pick(1, 2) - 44; }");
+    CHECK(module->Build());
+    const auto* function = module->GetFunctionByDecl("int run()");
+    CHECK(function != nullptr);
+    bool sawTwoArguments = false, sawMany = false;
+    for (const auto& instruction : function->code) {
+        if (instruction.opcode != mini_as::OpCode::CallHost || instruction.operand < 0) continue;
+        const auto& callable = module->Bytecode().callables.at(
+            static_cast<std::size_t>(instruction.operand));
+        sawTwoArguments = sawTwoArguments || callable.parameterCount == 2;
+        sawMany = sawMany || callable.parameterCount == 3;
+    }
+    CHECK(sawTwoArguments);
+    CHECK(sawMany);
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(function));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+
+    auto* invalid = engine->GetModule("missing-variadic-tail");
+    invalid->AddScriptSection("missing-variadic-tail.as", "int run() { return Sum(0); }");
+    CHECK(!invalid->Build());
+}
+
+TEST_CASE(generic_wildcard_out_variadics_preserve_actual_lvalue_types) {
+    auto engine = mini_as::CreateScriptEngine();
+    CHECK(engine->RegisterGlobalFunction(
+        "void Fill(? &out ...)", [](mini_as::GenericCall& call) {
+            CHECK(call.GetArgType(0) == mini_as::DataType::Int());
+            CHECK(call.GetArgType(1) == mini_as::DataType::String());
+            call.SetArgInt(0, 40);
+            call.SetArgString(1, "ok");
+        }));
+    auto* module = engine->GetModule("wildcard-out");
+    module->AddScriptSection("wildcard-out.as",
+        "int run() { int number; string text; Fill(number, text); "
+        "return number + (text == \"ok\" ? 2 : 0); }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+}
+
+TEST_CASE(generic_variadic_out_requires_lvalues_and_reports_bad_host_write_location) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    CHECK(engine->RegisterGlobalFunction(
+        "void Fill(? &out ...)", [](mini_as::GenericCall& call) {
+            call.SetArgString(0, "wrong");
+        }));
+    auto* invalid = engine->GetModule("bad-variadic-out");
+    invalid->AddScriptSection("bad-variadic-out.as", "void run() { Fill(1); }");
+    CHECK(!invalid->Build());
+    bool lvalueDiagnostic = false;
+    for (const auto& diagnostic : diagnostics)
+        lvalueDiagnostic = lvalueDiagnostic ||
+            diagnostic.message.find("assignable lvalues") != std::string::npos;
+    CHECK(lvalueDiagnostic);
+
+    auto* runtime = engine->GetModule("bad-variadic-write");
+    runtime->AddScriptSection("bad-variadic-write.as",
+        "int run() {\n  int value; Fill(value);\n  return value;\n}");
+    CHECK(runtime->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(runtime->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Exception);
+    CHECK(context->GetExceptionString().find("wrote string to int") != std::string::npos);
+    CHECK(context->GetExceptionLocation().section == "bad-variadic-write.as");
+    CHECK(context->GetExceptionLocation().row == 2);
+}
+
+TEST_CASE(generic_variadic_signatures_round_trip_through_bytecode_archives) {
+    auto registerSum = [](mini_as::ScriptEngine& engine) {
+        return engine.RegisterGlobalFunction(
+            "int Sum(int seed, int ...)", [](mini_as::GenericCall& call) {
+                int total = 0;
+                for (std::size_t index = 0; index < call.GetArgCount(); ++index)
+                    total += call.GetArgInt(index);
+                call.SetReturnInt(total);
+            });
+    };
+    auto sourceEngine = mini_as::CreateScriptEngine();
+    CHECK(registerSum(*sourceEngine));
+    auto* source = sourceEngine->GetModule("variadic-bytecode-source");
+    source->AddScriptSection("variadic-bytecode.as",
+        "int run() { return Sum(2, 20, 20); }");
+    CHECK(source->Build());
+    std::stringstream archive(std::ios::in | std::ios::out | std::ios::binary);
+    CHECK(source->SaveBytecode(archive));
+
+    auto targetEngine = mini_as::CreateScriptEngine();
+    CHECK(registerSum(*targetEngine));
+    auto* target = targetEngine->GetModule("variadic-bytecode-loaded");
+    archive.seekg(0);
+    CHECK(target->LoadBytecode(archive));
+    bool foundVariadic = false;
+    for (const auto& host : target->Bytecode().hostFunctions) {
+        const auto* function = target->Bytecode().FindHostFunction(host.first);
+        foundVariadic = foundVariadic || (function && function->signature.variadic);
+    }
+    CHECK(foundVariadic);
+    auto context = targetEngine->CreateContext();
+    CHECK(context->Prepare(target->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+}
+
+TEST_CASE(registered_variadic_funcdefs_dispatch_host_function_handles) {
+    auto engine = mini_as::CreateScriptEngine();
+    CHECK(engine->RegisterFuncdef("int Collector(int ...)"));
+    CHECK(engine->RegisterGlobalFunction(
+        "int Collect(int ...)", [](mini_as::GenericCall& call) {
+            int total = 0;
+            for (std::size_t index = 0; index < call.GetArgCount(); ++index)
+                total += call.GetArgInt(index);
+            call.SetReturnInt(total);
+        }));
+    auto* module = engine->GetModule("variadic-funcdef");
+    module->AddScriptSection("variadic-funcdef.as",
+        "Collector@ collector = @Collect; int run() { return collector(20, 22); }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
 }
 
 TEST_CASE(generic_declarations_parse_qualified_and_nested_template_types) {

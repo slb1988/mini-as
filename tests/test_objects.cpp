@@ -316,6 +316,61 @@ TEST_CASE(registered_object_methods_receive_this_and_support_reference_writeback
     CHECK(context->GetReturnInt() == 42);
 }
 
+TEST_CASE(registered_object_factories_and_methods_accept_variadic_arguments) {
+    auto engine = mini_as::CreateScriptEngine();
+    const auto* type = engine->RegisterObjectType("Thing");
+    CHECK(type != nullptr);
+    int destroyed = 0;
+    CHECK(engine->RegisterObjectFactory(
+        "Thing", "Thing@ f(const int &in ...)",
+        [type, &destroyed](mini_as::GenericCall& call) {
+            int value = 0;
+            for (std::size_t index = 0; index < call.GetArgCount(); ++index)
+                value += call.GetArgInt(index);
+            call.SetReturnObject(mini_as::ObjectHandle(new HostThing(type, value, destroyed)));
+        }));
+    CHECK(engine->RegisterObjectMethod(
+        "Thing", "int add(const int &in ...) const",
+        [](mini_as::GenericCall& call) {
+            auto* thing = dynamic_cast<HostThing*>(call.GetObject().Get());
+            CHECK(thing != nullptr);
+            for (std::size_t index = 0; index < call.GetArgCount(); ++index)
+                thing->value += call.GetArgInt(index);
+            call.SetReturnInt(thing->value);
+        }));
+    auto* module = engine->GetModule("object-variadics");
+    module->AddScriptSection("object-variadics.as",
+        "int run() { Thing@ value = Thing(20, 20); return value.add(1, 1); }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+    CHECK(destroyed == 1);
+}
+
+TEST_CASE(wildcard_variadic_out_retains_static_object_handle_type) {
+    auto engine = mini_as::CreateScriptEngine();
+    const auto* type = engine->RegisterObjectType("Thing");
+    CHECK(type != nullptr);
+    int destroyed = 0;
+    CHECK(engine->RegisterGlobalFunction(
+        "void Make(? &out ...)", [type, &destroyed](mini_as::GenericCall& call) {
+            CHECK(call.GetArgCount() == 1);
+            CHECK(call.GetArgType(0) == mini_as::DataType::Object("Thing", true));
+            call.SetArgObject(0, mini_as::ObjectHandle(new HostThing(type, 42, destroyed)));
+        }));
+    auto* module = engine->GetModule("wildcard-object-out");
+    module->AddScriptSection("wildcard-object-out.as",
+        "int run() { Thing@ value; Make(value); return value is null ? 0 : 42; }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int run()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+    CHECK(destroyed == 1);
+}
+
 TEST_CASE(object_method_registration_rejects_invalid_owners_callbacks_and_duplicates) {
     auto engine = mini_as::CreateScriptEngine();
     std::vector<mini_as::Diagnostic> diagnostics;

@@ -325,6 +325,13 @@ git history and `docs/stages/` before choosing the next stage number.
   plus the next opcode/source cue before installing a saved PC. Rebuild module
   owners, finalizer state, and safe-point callbacks from target images; callbacks
   and pool ownership are host configuration and are never archived.
+- Registered variadics are generic-call only. The final signature parameter is
+  a repeated prototype, at least one tail argument is required, named arguments
+  target only the fixed prefix, and a viable fixed-arity overload always wins.
+  `?` is registration-only and must be `?&in ...` or `?&out ...`; preserve each
+  wildcard output lvalue's concrete type through callback validation. Every
+  call site stores its actual argument count in `CallableRef`. Bytecode format
+  version 7 persists `FunctionSignature::variadic`.
 - Preserve the last successful module image on parser, type-check, bytecode, or
   global-initializer failure.
 - Do not edit compatibility expectations merely to make mini and official

@@ -84,6 +84,15 @@ int main(int argc, char** argv) {
             !engine->SetDefaultNamespace("")) return 3;
         engine->SetDefaultAccessMask(~std::uint32_t{0});
     }
+    if (std::string(argv[1]).find("variadic_arguments") != std::string::npos &&
+        !engine->RegisterGlobalFunction(
+            "int VariadicSum(int seed, const int &in ...)",
+            [](mini_as::GenericCall& call) {
+                int total = 0;
+                for (std::size_t index = 0; index < call.GetArgCount(); ++index)
+                    total += call.GetArgInt(index);
+                call.SetReturnInt(total);
+            })) return 3;
     mini_as::Value hostCounter(std::int32_t{40});
     engine->SetMessageCallback([](const mini_as::Diagnostic& diagnostic) {
         std::cerr << diagnostic.location.row << ':' << diagnostic.location.column

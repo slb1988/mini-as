@@ -1563,7 +1563,8 @@ bool ScriptEngine::RegisterGlobalFunction(std::string declaration, GenericFuncti
         if (!existing.active) continue;
         if (existing.signature.factory || existing.signature.method) continue;
         if (existing.signature.name == signature->name &&
-            existing.signature.parameters == signature->parameters) {
+            existing.signature.parameters == signature->parameters &&
+            existing.signature.variadic == signature->variadic) {
             diagnostics.Report({"registration"}, Severity::Error,
                                "duplicate global function '" + signature->Declaration() + "'");
             return false;
@@ -1805,7 +1806,8 @@ bool ScriptEngine::RegisterObjectFactory(std::string typeName, std::string decla
     for (const auto& existing : hostFunctions_) {
         if (!existing.active) continue;
         if (!existing.signature.factory || existing.signature.objectType != typeName ||
-            existing.signature.parameters != signature->parameters) continue;
+            existing.signature.parameters != signature->parameters ||
+            existing.signature.variadic != signature->variadic) continue;
         diagnostics.Report({"registration"}, Severity::Error,
                            "duplicate object factory '" + declaration + "'");
         return false;
@@ -1854,7 +1856,8 @@ bool ScriptEngine::RegisterObjectMethod(std::string typeName, std::string declar
         if (!existing.active) continue;
         if (!existing.signature.method || existing.signature.objectType != typeName ||
             existing.signature.name != signature->name ||
-            existing.signature.parameters != signature->parameters) continue;
+            existing.signature.parameters != signature->parameters ||
+            existing.signature.variadic != signature->variadic) continue;
         diagnostics.Report({"registration"}, Severity::Error,
                            "duplicate object method '" + typeName + "::" + declaration + "'");
         return false;

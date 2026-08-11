@@ -94,12 +94,17 @@ DataType ReadType(const std::vector<Token>& tokens, std::size_t& index,
 
 } // namespace
 
-GenericCall::GenericCall(std::vector<Value>& arguments, Value object)
-    : arguments_(arguments), object_(std::move(object)) {}
+GenericCall::GenericCall(std::vector<Value>& arguments, Value object,
+                         std::vector<DataType> argumentTypes)
+    : arguments_(arguments), object_(std::move(object)),
+      argumentTypes_(std::move(argumentTypes)) {}
 std::size_t GenericCall::GetArgCount() const { return arguments_.size(); }
 const ObjectHandle& GenericCall::GetObject() const { return object_.As<ObjectHandle>(); }
 const Value& GenericCall::GetObjectValue() const { return object_; }
 const Value& GenericCall::GetArg(std::size_t index) const { return arguments_.at(index); }
+DataType GenericCall::GetArgType(std::size_t index) const {
+    return index < argumentTypes_.size() ? argumentTypes_[index] : GetArg(index).Type();
+}
 std::int32_t GenericCall::GetArgInt(std::size_t index) const { return GetArg(index).As<std::int32_t>(); }
 float GenericCall::GetArgFloat(std::size_t index) const { return GetArg(index).As<float>(); }
 double GenericCall::GetArgDouble(std::size_t index) const { return GetArg(index).As<double>(); }
@@ -157,7 +162,15 @@ std::optional<FunctionSignature> ParseFunctionDeclaration(
         return std::nullopt;
     }
     while (index < tokens.size() && tokens[index].kind != TokenKind::RightParen) {
-        DataType parameter = ReadType(tokens, index, pendingClosers);
+        const bool parameterConst = index < tokens.size() && tokens[index].kind == TokenKind::KwConst;
+        if (parameterConst) ++index;
+        DataType parameter;
+        if (index < tokens.size() && tokens[index].kind == TokenKind::Question) {
+            parameter = DataType::Var();
+            ++index;
+        } else {
+            parameter = ReadType(tokens, index, pendingClosers);
+        }
         if (!parameter.IsValid() || parameter == DataType::Void()) {
             diagnostics.Report(tokens[std::min(index, tokens.size() - 1)].location, Severity::Error,
                                "invalid parameter type");
@@ -182,8 +195,41 @@ std::optional<FunctionSignature> ParseFunctionDeclaration(
         if (index < tokens.size() && tokens[index].kind == TokenKind::Identifier)
             signature.parameterNames.push_back(tokens[index].lexeme);
         else signature.parameterNames.emplace_back();
-        while (index < tokens.size() && tokens[index].kind != TokenKind::Comma &&
-               tokens[index].kind != TokenKind::RightParen) ++index;
+        if (index < tokens.size() && tokens[index].kind == TokenKind::Identifier) ++index;
+        const bool ellipsis = index + 2 < tokens.size() &&
+            tokens[index].kind == TokenKind::Dot &&
+            tokens[index + 1].kind == TokenKind::Dot &&
+            tokens[index + 2].kind == TokenKind::Dot;
+        if (ellipsis) {
+            index += 3;
+            signature.variadic = true;
+            if ((parameter.kind == TypeKind::Var &&
+                 (mode == ParameterMode::Value || mode == ParameterMode::InOut)) ||
+                (parameterConst && mode != ParameterMode::In)) {
+                diagnostics.Report(tokens[index - 1].location, Severity::Error,
+                                   "variable variadic parameter must use &in or &out");
+                return std::nullopt;
+            }
+            if (index >= tokens.size() || tokens[index].kind != TokenKind::RightParen) {
+                diagnostics.Report(tokens[std::min(index, tokens.size() - 1)].location,
+                                   Severity::Error, "variadic parameter must be last");
+                return std::nullopt;
+            }
+        } else if (parameter.kind == TypeKind::Var) {
+            diagnostics.Report(tokens[std::min(index, tokens.size() - 1)].location,
+                               Severity::Error, "variable type is only valid for a variadic parameter");
+            return std::nullopt;
+        } else if (parameterConst && mode != ParameterMode::In) {
+            diagnostics.Report(tokens[std::min(index, tokens.size() - 1)].location,
+                               Severity::Error, "const parameter must use &in");
+            return std::nullopt;
+        }
+        if (index < tokens.size() && tokens[index].kind != TokenKind::Comma &&
+            tokens[index].kind != TokenKind::RightParen) {
+            diagnostics.Report(tokens[index].location, Severity::Error,
+                               "unexpected token in parameter declaration");
+            return std::nullopt;
+        }
         if (index < tokens.size() && tokens[index].kind == TokenKind::Comma) ++index;
     }
     if (index >= tokens.size() || tokens[index].kind != TokenKind::RightParen) {

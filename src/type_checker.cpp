@@ -25,6 +25,7 @@ bool SameCallableSignature(const FunctionSignature& function,
     return function.returnType == funcdef.returnType &&
            function.parameters == funcdef.parameters &&
            function.parameterModes == funcdef.parameterModes &&
+           function.variadic == funcdef.variadic &&
            function.returnsReference == funcdef.returnsReference &&
            function.returnReferenceConst == funcdef.returnReferenceConst;
 }
@@ -146,6 +147,7 @@ std::string FunctionSignature::Declaration() const {
         if (mode == ParameterMode::In) out << " &in";
         else if (mode == ParameterMode::Out) out << " &out";
         else if (mode == ParameterMode::InOut) out << " &inout";
+        if (variadic && i + 1 == parameters.size()) out << " ...";
     }
     out << ')';
     if (readOnlyMethod) out << " const";
@@ -690,7 +692,8 @@ void TypeChecker::Predeclare(AstNode* root) {
         }
         for (const auto& existing : functions_) {
             if (existing.factory) continue;
-            if (existing.name == signature.name && existing.parameters == signature.parameters) {
+            if (existing.name == signature.name && existing.parameters == signature.parameters &&
+                existing.variadic == signature.variadic) {
                 Error(node, "duplicate function '" + signature.Declaration() + "'");
             }
         }
@@ -1484,6 +1487,24 @@ DataType TypeChecker::CheckMember(AstNode* node, bool writing, bool compound) {
     return getter ? getter->returnType : setter->parameters[0];
 }
 
+std::size_t FixedParameterCount(const FunctionSignature& signature) {
+    return signature.variadic && !signature.parameters.empty()
+        ? signature.parameters.size() - 1 : signature.parameters.size();
+}
+
+const DataType& ParameterTypeAt(const FunctionSignature& signature, std::size_t index) {
+    if (signature.variadic && index >= FixedParameterCount(signature))
+        return signature.parameters.back();
+    return signature.parameters.at(index);
+}
+
+ParameterMode ParameterModeAt(const FunctionSignature& signature, std::size_t index) {
+    const std::size_t prototype = signature.variadic && index >= FixedParameterCount(signature)
+        ? signature.parameters.size() - 1 : index;
+    return prototype < signature.parameterModes.size()
+        ? signature.parameterModes[prototype] : ParameterMode::Value;
+}
+
 DataType TypeChecker::CheckIndex(AstNode* node, bool writing) {
     const auto children = node ? node->Children() : std::vector<AstNode*>{};
     if (children.size() != 2) return DataType::Invalid();
@@ -2178,35 +2199,46 @@ const FunctionSignature* TypeChecker::FindOperatorMethod(
 std::optional<int> TypeChecker::MatchArguments(
     const FunctionSignature& signature, const std::vector<DataType>& arguments,
     const std::vector<std::string>& argumentNames) const {
-    if (arguments.size() != argumentNames.size() || arguments.size() > signature.parameters.size())
+    if (arguments.size() != argumentNames.size() ||
+        (signature.variadic && signature.parameters.empty()))
         return std::nullopt;
-    std::vector<bool> assigned(signature.parameters.size(), false);
-    int cost = 0;
+    const std::size_t fixedCount = FixedParameterCount(signature);
+    if (!signature.variadic && arguments.size() > fixedCount) return std::nullopt;
+    std::vector<bool> assigned(fixedCount, false);
+    int cost = signature.variadic ? 10000 : 0;
+    std::size_t tailCount = 0;
     std::size_t positional = 0;
     for (std::size_t argument = 0; argument < arguments.size(); ++argument) {
         std::size_t parameter = positional;
         if (!argumentNames[argument].empty()) {
-            parameter = signature.parameterNames.size();
-            for (std::size_t index = 0; index < signature.parameterNames.size(); ++index) {
+            parameter = fixedCount;
+            for (std::size_t index = 0;
+                 index < signature.parameterNames.size() && index < fixedCount; ++index) {
                 if (signature.parameterNames[index] == argumentNames[argument]) { parameter = index; break; }
             }
-            if (parameter >= signature.parameters.size()) return std::nullopt;
+            if (parameter >= fixedCount) return std::nullopt;
         } else {
             while (parameter < assigned.size() && assigned[parameter]) ++parameter;
             positional = parameter + 1;
         }
-        if (parameter >= assigned.size() || assigned[parameter]) return std::nullopt;
-        const ParameterMode mode = parameter < signature.parameterModes.size()
-            ? signature.parameterModes[parameter] : ParameterMode::Value;
+        const bool tail = signature.variadic && parameter >= fixedCount;
+        if ((!tail && parameter >= assigned.size()) || (!tail && assigned[parameter]))
+            return std::nullopt;
+        const ParameterMode mode = ParameterModeAt(signature, parameter);
+        const DataType& expected = ParameterTypeAt(signature, parameter);
         const auto conversion = (mode == ParameterMode::Out || mode == ParameterMode::InOut)
-            ? (arguments[argument] == signature.parameters[parameter]
+            ? (expected.kind == TypeKind::Var || arguments[argument] == expected
                    ? std::optional<int>{0} : std::nullopt)
-            : ConversionCost(arguments[argument], signature.parameters[parameter]);
+            : (expected.kind == TypeKind::Var
+                   ? std::optional<int>{0} : ConversionCost(arguments[argument], expected));
         if (!conversion) return std::nullopt;
-        assigned[parameter] = true;
+        if (!tail) assigned[parameter] = true;
+        else ++tailCount;
         cost += *conversion;
     }
-    const std::size_t firstDefault = signature.parameters.size() - signature.defaultArgumentCount;
+    if (signature.variadic && tailCount == 0) return std::nullopt;
+    if (signature.defaultArgumentCount > fixedCount) return std::nullopt;
+    const std::size_t firstDefault = fixedCount - signature.defaultArgumentCount;
     for (std::size_t index = 0; index < assigned.size(); ++index)
         if (!assigned[index] && index < firstDefault) return std::nullopt;
     return cost;
@@ -2215,40 +2247,40 @@ std::optional<int> TypeChecker::MatchArguments(
 bool TypeChecker::ValidateReferenceArguments(
     const FunctionSignature& signature, const std::vector<AstNode*>& arguments,
     const std::vector<std::string>& argumentNames) {
-    std::vector<AstNode*> ordered(signature.parameters.size(), nullptr);
+    const std::size_t fixedCount = FixedParameterCount(signature);
+    std::vector<bool> assigned(fixedCount, false);
     std::size_t positional = 0;
+    bool valid = true;
     for (std::size_t argument = 0; argument < arguments.size(); ++argument) {
         std::size_t parameter = positional;
         if (!argumentNames[argument].empty()) {
-            parameter = signature.parameterNames.size();
-            for (std::size_t index = 0; index < signature.parameterNames.size(); ++index) {
+            parameter = fixedCount;
+            for (std::size_t index = 0;
+                 index < signature.parameterNames.size() && index < fixedCount; ++index) {
                 if (signature.parameterNames[index] == argumentNames[argument]) {
                     parameter = index;
                     break;
                 }
             }
         } else {
-            while (parameter < ordered.size() && ordered[parameter]) ++parameter;
+            while (parameter < assigned.size() && assigned[parameter]) ++parameter;
             positional = parameter + 1;
         }
-        if (parameter < ordered.size()) ordered[parameter] = arguments[argument];
-    }
-    bool valid = true;
-    for (std::size_t parameter = 0; parameter < ordered.size(); ++parameter) {
-        const ParameterMode mode = parameter < signature.parameterModes.size()
-            ? signature.parameterModes[parameter] : ParameterMode::Value;
+        const bool tail = signature.variadic && parameter >= fixedCount;
+        if (!tail && parameter < assigned.size()) assigned[parameter] = true;
+        const ParameterMode mode = ParameterModeAt(signature, parameter);
         if (mode != ParameterMode::Out && mode != ParameterMode::InOut) continue;
-        AstNode* argument = ordered[parameter];
-        if (!argument) continue;
-        if (argument->kind == NodeKind::Member &&
-            (!argument->propertyGetter.empty() || !argument->propertySetter.empty())) {
-            Error(argument, "property accessors cannot be passed to out or inout parameters");
+        AstNode* argumentNode = arguments[argument];
+        if (argumentNode->kind == NodeKind::Member &&
+            (!argumentNode->propertyGetter.empty() || !argumentNode->propertySetter.empty())) {
+            Error(argumentNode, "property accessors cannot be passed to out or inout parameters");
             valid = false;
-        } else if (argument->kind != NodeKind::Identifier && argument->kind != NodeKind::Member) {
-            Error(argument, "out and inout arguments must be assignable lvalues");
+        } else if (argumentNode->kind != NodeKind::Identifier &&
+                   argumentNode->kind != NodeKind::Member) {
+            Error(argumentNode, "out and inout arguments must be assignable lvalues");
             valid = false;
-        } else if (IsReadOnlyLValue(argument)) {
-            Error(argument, "const value cannot be passed to out or inout parameter");
+        } else if (IsReadOnlyLValue(argumentNode)) {
+            Error(argumentNode, "const value cannot be passed to out or inout parameter");
             valid = false;
         }
     }

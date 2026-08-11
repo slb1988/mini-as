@@ -1,5 +1,6 @@
 #include "mini_as/compat.hpp"
 
+#include <algorithm>
 #include <cstring>
 #include <limits>
 #include <utility>
@@ -256,6 +257,37 @@ int ScriptEngine::RegisterTypedef(const char* name, DataType underlyingType) {
 int ScriptEngine::RegisterFuncdef(const char* declaration) {
     if (!declaration || !*declaration) return asINVALID_DECLARATION;
     return engine_->RegisterFuncdef(declaration) ? asSUCCESS : asINVALID_DECLARATION;
+}
+int ScriptEngine::GarbageCollect(std::uint32_t flags, std::uint32_t numIterations) {
+    const std::uint32_t known = asGC_FULL_CYCLE | asGC_ONE_STEP |
+        asGC_DESTROY_GARBAGE | asGC_DETECT_GARBAGE;
+    if (flags == 0 || (flags & ~known) != 0) return asINVALID_ARG;
+    if ((flags & asGC_ONE_STEP) != 0) {
+        for (std::uint32_t iteration = 0; iteration < numIterations; ++iteration)
+            engine_->CollectGarbageStep(1);
+    } else {
+        engine_->CollectGarbage();
+    }
+    return asSUCCESS;
+}
+void ScriptEngine::GetGCStatistics(std::uint32_t* currentSize,
+                                   std::uint32_t* totalDestroyed,
+                                   std::uint32_t* totalDetected,
+                                   std::uint32_t* newObjects,
+                                   std::uint32_t* totalNewDestroyed) const {
+    const auto statistics = engine_->GetGarbageCollectionStatistics();
+    const auto narrow = [](std::size_t value) {
+        return static_cast<std::uint32_t>(std::min<std::size_t>(
+            value, std::numeric_limits<std::uint32_t>::max()));
+    };
+    if (currentSize) *currentSize = narrow(statistics.currentSize);
+    if (totalDestroyed) *totalDestroyed = narrow(statistics.totalDestroyed);
+    if (totalDetected) *totalDetected = narrow(statistics.totalDetected);
+    if (newObjects) *newObjects = narrow(statistics.newObjects);
+    if (totalNewDestroyed) *totalNewDestroyed = narrow(statistics.totalNewDestroyed);
+}
+void ScriptEngine::SetCircularRefDetectedCallback(CircularReferenceCallback callback) {
+    engine_->SetCircularReferenceDetectedCallback(std::move(callback));
 }
 ScriptModule* ScriptEngine::GetModule(const char* name, int flag) {
     if (!name) return nullptr;

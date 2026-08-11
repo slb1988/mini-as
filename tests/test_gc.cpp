@@ -210,3 +210,50 @@ TEST_CASE(gc_incremental_cycle_restarts_when_reference_counts_change) {
     CHECK(collected == 2);
     CHECK(engine->GetTrackedObjectCount() == 0);
 }
+
+TEST_CASE(gc_exposes_lifetime_statistics_and_detected_cycle_objects) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("gc-statistics");
+    module->AddScriptSection("gc-statistics",
+        "class Node { Node@ next; } "
+        "void makeTransient() { Node@ value = Node(); } "
+        "Node@ makeCycle() { Node@ a = Node(); Node@ b = Node(); "
+        "a.next = b; b.next = a; return a; }");
+    CHECK(module->Build());
+    auto initial = engine->GetGarbageCollectionStatistics();
+    CHECK(initial.currentSize == 0);
+    CHECK(initial.totalDestroyed == 0);
+
+    auto transient = engine->CreateContext();
+    CHECK(transient->Prepare(module->GetFunctionByDecl("void makeTransient()")));
+    CHECK(transient->Execute() == mini_as::ExecutionState::Finished);
+    transient.reset();
+    auto afterTransient = engine->GetGarbageCollectionStatistics();
+    CHECK(afterTransient.currentSize == 0);
+    CHECK(afterTransient.totalDestroyed == 1);
+    CHECK(afterTransient.totalNewDestroyed == 1);
+
+    auto root = BuildCycle(*engine, *module);
+    auto beforeCycle = engine->GetGarbageCollectionStatistics();
+    CHECK(beforeCycle.currentSize == 2);
+    CHECK(beforeCycle.newObjects == 2);
+    root = {};
+    std::size_t callbacks = 0;
+    engine->SetCircularReferenceDetectedCallback(
+        [&](const mini_as::TypeInfo* type, const mini_as::RefObject* object) {
+            CHECK(type != nullptr);
+            CHECK(type->name == "Node");
+            const auto* script = dynamic_cast<const mini_as::ScriptObject*>(object);
+            CHECK(script != nullptr);
+            CHECK(script->FieldCount() == 1);
+            ++callbacks;
+        });
+    CHECK(engine->CollectGarbage() == 2);
+    CHECK(callbacks == 2);
+    const auto afterCycle = engine->GetGarbageCollectionStatistics();
+    CHECK(afterCycle.currentSize == 0);
+    CHECK(afterCycle.totalDestroyed == 3);
+    CHECK(afterCycle.totalDetected == 2);
+    CHECK(afterCycle.newObjects == 0);
+    CHECK(afterCycle.totalNewDestroyed == 1);
+}

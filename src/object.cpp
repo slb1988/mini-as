@@ -190,12 +190,17 @@ void ScriptObject::OnZeroReferences() {
 }
 
 void GarbageCollector::Register(RefObject* object) {
-    if (object && candidates_.insert(object).second && !suppressNotifications_)
-        ++mutationGeneration_;
+    if (object && candidates_.insert(object).second) {
+        newCandidates_.insert(object);
+        if (!suppressNotifications_) ++mutationGeneration_;
+    }
 }
 void GarbageCollector::Unregister(RefObject* object) {
-    if (candidates_.erase(object) != 0 && !suppressNotifications_)
-        ++mutationGeneration_;
+    if (candidates_.erase(object) != 0) {
+        ++totalDestroyed_;
+        if (newCandidates_.erase(object) != 0) ++totalNewDestroyed_;
+        if (!suppressNotifications_) ++mutationGeneration_;
+    }
 }
 void GarbageCollector::NotifyReferenceChange() {
     if (!suppressNotifications_) ++mutationGeneration_;
@@ -209,6 +214,7 @@ void GarbageCollector::BeginCycle() {
     work_.clear();
     garbage_.clear();
     for (auto* object : snapshot_) internalIncoming_[object] = 0;
+    newCandidates_.clear();
     cursor_ = 0;
     cycleGeneration_ = mutationGeneration_;
     phase_ = snapshot_.empty() ? Phase::Idle : Phase::CountIncoming;
@@ -225,6 +231,11 @@ void GarbageCollector::ResetCycle() {
 }
 
 std::size_t GarbageCollector::DestroyGarbage() {
+    totalDetected_ += garbage_.size();
+    if (circularReferenceCallback_) {
+        for (auto* object : garbage_)
+            circularReferenceCallback_(object->GetTypeInfo(), object);
+    }
     suppressNotifications_ = true;
     for (auto* object : garbage_) object->AddRef();
     for (auto* object : garbage_) object->ClearReferences();
@@ -279,6 +290,16 @@ std::size_t GarbageCollector::CollectStep(std::size_t workBudget) {
 }
 
 bool GarbageCollector::CycleInProgress() const { return phase_ != Phase::Idle; }
+
+GarbageCollector::Statistics GarbageCollector::GetStatistics() const {
+    return {candidates_.size(), totalDestroyed_, totalDetected_, newCandidates_.size(),
+            totalNewDestroyed_};
+}
+
+void GarbageCollector::SetCircularReferenceDetectedCallback(
+    CircularReferenceCallback callback) {
+    circularReferenceCallback_ = std::move(callback);
+}
 
 std::size_t GarbageCollector::Collect() {
     std::size_t collected = 0;

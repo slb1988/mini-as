@@ -149,9 +149,9 @@ Do not stage generated build directories or unrelated user changes. Inspect
 
 The completed stage notes are authoritative. The latest alignment stage is:
 
-- Stage 85 incremental cycle detection.
+- Stage 86 GC statistics and circular-reference callbacks.
 
-The next planned item is Stage 86, GC statistics and circular-reference callbacks.
+The next planned item is Stage 87, context pooling.
 Confirm the latest
 git history and `docs/stages/` before choosing the next stage number.
 
@@ -291,6 +291,11 @@ git history and `docs/stages/` before choosing the next stage number.
   graph classification; collector-owned temporary holds suppress those
   notifications. Keep garbage destruction atomic after the four budgeted
   detection phases so clearing one cycle edge cannot invalidate raw candidates.
+- GC statistics distinguish newly registered objects, ordinary reference-count
+  destruction, and objects detected in cycles. Invoke circular-reference
+  callbacks after classification but before acquiring collector holds or
+  clearing references; callbacks are inspection-only and must receive stable,
+  read-only object and type pointers.
 - Preserve the last successful module image on parser, type-check, bytecode, or
   global-initializer failure.
 - Do not edit compatibility expectations merely to make mini and official

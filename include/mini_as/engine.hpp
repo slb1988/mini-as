@@ -164,6 +164,8 @@ private:
 class ScriptEngine : private ObjectFinalizerQueue {
 public:
     using MessageCallback = std::function<void(const Diagnostic&)>;
+    using GarbageCollectionStatistics = GarbageCollector::Statistics;
+    using CircularReferenceCallback = GarbageCollector::CircularReferenceCallback;
     using TemplateValidator =
         std::function<bool(const std::vector<DataType>&, std::string&)>;
     using TemplateInstanceCallback =
@@ -210,6 +212,8 @@ public:
     std::size_t CollectGarbageStep(std::size_t workBudget = 1);
     bool IsGarbageCollectionInProgress() const;
     std::size_t GetTrackedObjectCount() const;
+    GarbageCollectionStatistics GetGarbageCollectionStatistics() const;
+    void SetCircularReferenceDetectedCallback(CircularReferenceCallback callback);
     ScriptModule* GetModule(std::string name = {},
                             ModulePolicy policy = ModulePolicy::CreateIfMissing);
     std::unique_ptr<ScriptContext> CreateContext();

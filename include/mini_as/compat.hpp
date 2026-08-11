@@ -57,6 +57,10 @@ inline constexpr int asGM_ONLY_IF_EXISTS = 0;
 inline constexpr int asGM_CREATE_IF_NOT_EXISTS = 1;
 inline constexpr int asGM_ALWAYS_CREATE = 2;
 inline constexpr std::uint32_t asCOMP_ADD_TO_MODULE = 1;
+inline constexpr std::uint32_t asGC_FULL_CYCLE = 1;
+inline constexpr std::uint32_t asGC_ONE_STEP = 2;
+inline constexpr std::uint32_t asGC_DESTROY_GARBAGE = 4;
+inline constexpr std::uint32_t asGC_DETECT_GARBAGE = 8;
 
 class ScriptEngine;
 
@@ -141,6 +145,7 @@ private:
 class ScriptEngine {
 public:
     using MessageCallback = mini_as::ScriptEngine::MessageCallback;
+    using CircularReferenceCallback = mini_as::ScriptEngine::CircularReferenceCallback;
 
     int SetMessageCallback(MessageCallback callback);
     std::uint32_t SetDefaultAccessMask(std::uint32_t accessMask);
@@ -155,6 +160,14 @@ public:
     int RegisterEnumValue(const char* enumName, const char* valueName, std::int32_t value);
     int RegisterTypedef(const char* name, DataType underlyingType);
     int RegisterFuncdef(const char* declaration);
+    int GarbageCollect(std::uint32_t flags = asGC_FULL_CYCLE,
+                       std::uint32_t numIterations = 1);
+    void GetGCStatistics(std::uint32_t* currentSize,
+                         std::uint32_t* totalDestroyed = nullptr,
+                         std::uint32_t* totalDetected = nullptr,
+                         std::uint32_t* newObjects = nullptr,
+                         std::uint32_t* totalNewDestroyed = nullptr) const;
+    void SetCircularRefDetectedCallback(CircularReferenceCallback callback);
     ScriptModule* GetModule(const char* name = "",
                             int flag = asGM_CREATE_IF_NOT_EXISTS);
     std::unique_ptr<ScriptContext> CreateContext();

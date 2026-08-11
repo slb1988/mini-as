@@ -106,6 +106,16 @@ private:
 
 class GarbageCollector {
 public:
+    struct Statistics {
+        std::size_t currentSize = 0;
+        std::size_t totalDestroyed = 0;
+        std::size_t totalDetected = 0;
+        std::size_t newObjects = 0;
+        std::size_t totalNewDestroyed = 0;
+    };
+    using CircularReferenceCallback =
+        std::function<void(const TypeInfo*, const RefObject*)>;
+
     void Register(RefObject* object);
     void Unregister(RefObject* object);
     void NotifyReferenceChange();
@@ -113,6 +123,8 @@ public:
     std::size_t CollectStep(std::size_t workBudget = 1);
     bool CycleInProgress() const;
     std::size_t TrackedCount() const;
+    Statistics GetStatistics() const;
+    void SetCircularReferenceDetectedCallback(CircularReferenceCallback callback);
 
 private:
     enum class Phase { Idle, CountIncoming, SeedRoots, MarkReachable, SelectGarbage };
@@ -120,6 +132,7 @@ private:
     void ResetCycle();
     std::size_t DestroyGarbage();
     std::unordered_set<RefObject*> candidates_;
+    std::unordered_set<RefObject*> newCandidates_;
     Phase phase_ = Phase::Idle;
     std::vector<RefObject*> snapshot_;
     std::unordered_map<RefObject*, std::size_t> internalIncoming_;
@@ -130,6 +143,10 @@ private:
     std::uint64_t mutationGeneration_ = 0;
     std::uint64_t cycleGeneration_ = 0;
     bool suppressNotifications_ = false;
+    std::size_t totalDestroyed_ = 0;
+    std::size_t totalDetected_ = 0;
+    std::size_t totalNewDestroyed_ = 0;
+    CircularReferenceCallback circularReferenceCallback_;
 };
 
 template <typename T, typename... Args>

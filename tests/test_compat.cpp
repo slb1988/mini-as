@@ -168,6 +168,40 @@ TEST_CASE(host_namespaces_access_masks_and_configuration_groups_control_modules)
     CHECK(removed->Build() == asERROR);
 }
 
+TEST_CASE(compat_facade_exposes_official_style_gc_controls_and_statistics) {
+    auto engine = mini_as::compat::CreateScriptEngine();
+    auto* module = engine->GetModule("gc", mini_as::compat::asGM_ALWAYS_CREATE);
+    CHECK(module != nullptr);
+    const char* source =
+        "class Node { Node@ next; } "
+        "Node@ makeCycle() { Node@ value = Node(); value.next = value; return value; }";
+    CHECK(module->AddScriptSection("gc", source) == mini_as::compat::asSUCCESS);
+    CHECK(module->Build() == mini_as::compat::asSUCCESS);
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("Node@ makeCycle()")) ==
+          mini_as::compat::asSUCCESS);
+    CHECK(context->Execute() == mini_as::compat::asEXECUTION_FINISHED);
+    mini_as::ObjectHandle root = context->GetReturnValue().As<mini_as::ObjectHandle>();
+    context.reset();
+    root = {};
+
+    std::size_t detected = 0;
+    engine->SetCircularRefDetectedCallback(
+        [&](const mini_as::TypeInfo*, const mini_as::RefObject*) { ++detected; });
+    CHECK(engine->GarbageCollect(0) == mini_as::compat::asINVALID_ARG);
+    CHECK(engine->GarbageCollect(mini_as::compat::asGC_ONE_STEP, 1) ==
+          mini_as::compat::asSUCCESS);
+    CHECK(engine->GarbageCollect(mini_as::compat::asGC_FULL_CYCLE) ==
+          mini_as::compat::asSUCCESS);
+    std::uint32_t current = 99, destroyed = 0, cycles = 0, fresh = 99, freshDestroyed = 0;
+    engine->GetGCStatistics(&current, &destroyed, &cycles, &fresh, &freshDestroyed);
+    CHECK(current == 0);
+    CHECK(destroyed == 1);
+    CHECK(cycles == 1);
+    CHECK(fresh == 0);
+    CHECK(detected == 1);
+}
+
 TEST_CASE(official_style_facade_exposes_import_binding_controls) {
     using namespace mini_as::compat;
     auto engine = CreateScriptEngine();

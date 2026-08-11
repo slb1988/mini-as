@@ -2165,6 +2165,16 @@ bool ScriptEngine::IsGarbageCollectionInProgress() const {
     return garbageCollector_.CycleInProgress();
 }
 
+ScriptEngine::GarbageCollectionStatistics
+ScriptEngine::GetGarbageCollectionStatistics() const {
+    return garbageCollector_.GetStatistics();
+}
+
+void ScriptEngine::SetCircularReferenceDetectedCallback(
+    CircularReferenceCallback callback) {
+    garbageCollector_.SetCircularReferenceDetectedCallback(std::move(callback));
+}
+
 std::vector<std::pair<std::string, std::size_t>> ScriptEngine::HostTemplateTypes(
     std::uint32_t accessMask) const {
     std::vector<std::pair<std::string, std::size_t>> result;

@@ -149,9 +149,9 @@ Do not stage generated build directories or unrelated user changes. Inspect
 
 The completed stage notes are authoritative. The latest alignment stage is:
 
-- Stage 83 external shared script entities.
+- Stage 84 mixin classes.
 
-The next planned item is Stage 84, mixin classes.
+The next planned item is Stage 85, incremental cycle detection.
 Confirm the latest
 git history and `docs/stages/` before choosing the next stage number.
 
@@ -273,7 +273,7 @@ git history and `docs/stages/` before choosing the next stage number.
   definitions are structurally fingerprinted in the engine and published only
   after a successful build. Shared code may use host registrations and other
   shared entities, but never module globals or non-shared script entities.
-- Bytecode format version 5 persists shared/external flags. Definition fingerprints
+- Bytecode format version 6 persists shared/external flags and mixin AST metadata. Definition fingerprints
   can be reconstructed from archived syntax trees. Shared function/method IDs
   use engine-wide keys; ordinary script function IDs remain module-scoped.
 - External shared declarations reuse canonical signatures from an earlier
@@ -281,6 +281,11 @@ git history and `docs/stages/` before choosing the next stage number.
   virtual, and destructor targets by stable `FunctionId`; retain canonical ASTs
   for field initializers and default arguments. Loading a defining module must
   republish the canonical registry before an external consumer is built.
+- Mixin declarations are non-types. Expand their fields, methods, and interface
+  requirements into each including class after parsing, retain original source
+  locations, and compile copied methods in the target class context. Explicit
+  class members win; mixin methods override base methods; conflicting inherited
+  fields and their initializers are omitted.
 - Preserve the last successful module image on parser, type-check, bytecode, or
   global-initializer failure.
 - Do not edit compatibility expectations merely to make mini and official

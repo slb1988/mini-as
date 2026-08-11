@@ -1774,7 +1774,8 @@ void BytecodeCompiler::CompileFieldInitializers(std::string_view typeName, const
     if (found == classNodes_.end()) return;
     bool hasInitializers = false;
     for (AstNode* member = found->second->firstChild; member; member = member->nextSibling)
-        hasInitializers = hasInitializers || (member->kind == NodeKind::FieldDecl && member->firstChild);
+        hasInitializers = hasInitializers ||
+            (member->kind == NodeKind::FieldDecl && !member->isDeleted && member->firstChild);
     if (!hasInitializers) return;
 
     Token temporary{TokenKind::Identifier, "$fieldinit", source ? source->token.location : SourceLocation{}};
@@ -1789,7 +1790,7 @@ void BytecodeCompiler::CompileFieldInitializers(std::string_view typeName, const
     implicitThisSlot_ = receiver.value;
     std::uint32_t fieldIndex = type ? static_cast<std::uint32_t>(type->inheritedFieldCount) : 0;
     for (AstNode* member = found->second->firstChild; member; member = member->nextSibling) {
-        if (member->kind != NodeKind::FieldDecl) continue;
+        if (member->kind != NodeKind::FieldDecl || member->isDeleted) continue;
         if (member->firstChild) {
             Emit(OpCode::LoadLocal, static_cast<std::int32_t>(receiver.value), member);
             CompileExpression(member->firstChild);

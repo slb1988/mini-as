@@ -54,10 +54,22 @@ AstNode* AstArena::Make(NodeKind kind, const Token& token) {
     return result;
 }
 
+AstNode* AstArena::Clone(const AstNode* source) {
+    if (!source) return nullptr;
+    AstNode* copy = Make(source->kind, source->token);
+    *copy = *source;
+    copy->firstChild = nullptr;
+    copy->nextSibling = nullptr;
+    for (const AstNode* child = source->firstChild; child; child = child->nextSibling)
+        copy->AppendChild(Clone(child));
+    return copy;
+}
+
 Parser::Parser(std::vector<Token> tokens, DiagnosticSink& diagnostics)
     : tokens_(std::move(tokens)), diagnostics_(diagnostics) {
     struct NamespaceFrame { std::string name; int depth = 0; };
     std::vector<NamespaceFrame> namespaces;
+    std::unordered_set<std::size_t> mixinClassIndices;
     int braceDepth = 0;
     for (std::size_t index = 0; index < tokens_.size(); ++index) {
         if (tokens_[index].kind == TokenKind::RightBrace) {
@@ -87,9 +99,22 @@ Parser::Parser(std::vector<Token> tokens, DiagnosticSink& diagnostics)
         }
         const bool declarationLevel = braceDepth == (namespaces.empty() ? 0 : namespaces.back().depth);
         if (!declarationLevel) continue;
+        if (tokens_[index].kind == TokenKind::KwMixin) {
+            std::size_t classToken = index + 1;
+            while (classToken < tokens_.size() && tokens_[classToken].kind == TokenKind::Identifier &&
+                   (tokens_[classToken].lexeme == "shared" ||
+                    tokens_[classToken].lexeme == "external")) ++classToken;
+            if (classToken + 1 < tokens_.size() &&
+                tokens_[classToken].kind == TokenKind::KwClass &&
+                tokens_[classToken + 1].kind == TokenKind::Identifier) {
+                mixinTypes_.insert(JoinName(active, tokens_[classToken + 1].lexeme));
+                mixinClassIndices.insert(classToken);
+            }
+        }
         if ((tokens_[index].kind == TokenKind::KwClass ||
              tokens_[index].kind == TokenKind::KwInterface) && index + 1 < tokens_.size() &&
-            tokens_[index + 1].kind == TokenKind::Identifier) {
+            tokens_[index + 1].kind == TokenKind::Identifier &&
+            mixinClassIndices.find(index) == mixinClassIndices.end()) {
             const std::string owner = JoinName(active, tokens_[index + 1].lexeme);
             objectTypes_.insert(owner);
             std::size_t body = index + 2;
@@ -178,8 +203,123 @@ SyntaxTree Parser::Parse() {
         tree.root->AppendChild(ParseTopLevel());
         if (current_ == before) { Error(Current(), "parser made no progress"); Advance(); }
     }
+    ExpandMixins(tree.root);
     arena_ = nullptr;
     return tree;
+}
+
+void Parser::ExpandMixins(AstNode* root) {
+    if (!root) return;
+    std::unordered_map<std::string, AstNode*> mixins;
+    std::unordered_map<std::string, NodeKind> concreteTypes;
+    std::vector<AstNode*> classes;
+    std::function<void(AstNode*)> collect = [&](AstNode* owner) {
+        for (AstNode* node = owner ? owner->firstChild : nullptr; node;
+             node = node->nextSibling) {
+            if (node->kind == NodeKind::NamespaceDecl) {
+                collect(node);
+            } else if (node->kind == NodeKind::MixinDecl) {
+                if (!mixins.emplace(node->token.lexeme, node).second)
+                    Error(node->token, "duplicate mixin class '" + node->token.lexeme + "'");
+            } else if (node->kind == NodeKind::ClassDecl ||
+                       node->kind == NodeKind::InterfaceDecl) {
+                concreteTypes.emplace(node->token.lexeme, node->kind);
+                if (node->kind == NodeKind::ClassDecl) classes.push_back(node);
+            }
+        }
+    };
+    collect(root);
+
+    for (const auto& entry : mixins) {
+        if (concreteTypes.find(entry.first) != concreteTypes.end())
+            Error(entry.second->token, "mixin class name conflicts with type '" + entry.first + "'");
+        for (AstNode* member = entry.second->firstChild; member;
+             member = member->nextSibling) {
+            if (member->kind == NodeKind::FuncdefDecl)
+                Error(member->token, "mixin classes cannot declare child funcdefs");
+            if (member->kind == NodeKind::FunctionDecl &&
+                (member->isConstructor || member->isDestructor))
+                Error(member->token,
+                      "mixin classes cannot have constructors or destructors");
+            if (member->kind != NodeKind::Identifier) continue;
+            const auto concrete = concreteTypes.find(member->token.lexeme);
+            if (mixins.find(member->token.lexeme) != mixins.end() ||
+                (concrete != concreteTypes.end() && concrete->second == NodeKind::ClassDecl))
+                Error(member->token, "mixin class cannot inherit from classes");
+        }
+    }
+
+    const auto methodKey = [](const AstNode* method) {
+        std::string key = method->token.lexeme + ":" +
+            (method->isConstructor ? "c" : method->isDestructor ? "d" : "m") + "(";
+        for (const AstNode* parameter = method->firstChild;
+             parameter && parameter->kind == NodeKind::Parameter;
+             parameter = parameter->nextSibling) {
+            key += parameter->declaredType.Name() + ":" +
+                std::to_string(static_cast<int>(parameter->parameterMode)) + ",";
+        }
+        key += ")";
+        if (method->token.lexeme == "opConv" || method->token.lexeme == "opImplConv" ||
+            method->token.lexeme == "opCast" || method->token.lexeme == "opImplCast")
+            key += method->declaredType.Name();
+        return key;
+    };
+
+    for (AstNode* type : classes) {
+        std::vector<AstNode*> original = type->Children();
+        for (AstNode* child : original) child->nextSibling = nullptr;
+        std::vector<AstNode*> inheritance;
+        std::vector<AstNode*> explicitMembers;
+        std::vector<AstNode*> includedMembers;
+        std::vector<AstNode*> includedMixins;
+        std::unordered_set<std::string> inheritedNames;
+        std::unordered_set<std::string> fieldNames;
+        std::unordered_set<std::string> methodNames;
+
+        for (AstNode* child : original) {
+            if (child->kind == NodeKind::Identifier) {
+                const auto mixin = mixins.find(child->token.lexeme);
+                if (mixin != mixins.end()) includedMixins.push_back(mixin->second);
+                else if (inheritedNames.insert(child->token.lexeme).second)
+                    inheritance.push_back(child);
+                continue;
+            }
+            explicitMembers.push_back(child);
+            if (child->kind == NodeKind::FieldDecl) fieldNames.insert(child->token.lexeme);
+            else if (child->kind == NodeKind::FunctionDecl)
+                methodNames.insert(methodKey(child));
+        }
+
+        for (AstNode* mixin : includedMixins) {
+            for (AstNode* member = mixin->firstChild; member; member = member->nextSibling) {
+                if (member->kind == NodeKind::Identifier) {
+                    const auto concrete = concreteTypes.find(member->token.lexeme);
+                    if (mixins.find(member->token.lexeme) != mixins.end() ||
+                        (concrete != concreteTypes.end() &&
+                         concrete->second == NodeKind::ClassDecl)) continue;
+                    if (inheritedNames.insert(member->token.lexeme).second)
+                        inheritance.push_back(arena_->Clone(member));
+                    continue;
+                }
+                if (member->kind == NodeKind::FieldDecl) {
+                    if (!fieldNames.insert(member->token.lexeme).second) continue;
+                } else if (member->kind == NodeKind::FunctionDecl) {
+                    if (member->isConstructor || member->isDestructor ||
+                        !methodNames.insert(methodKey(member)).second) continue;
+                } else {
+                    continue;
+                }
+                AstNode* copy = arena_->Clone(member);
+                copy->isMixinMember = true;
+                includedMembers.push_back(copy);
+            }
+        }
+
+        type->firstChild = nullptr;
+        for (AstNode* child : inheritance) type->AppendChild(child);
+        for (AstNode* child : explicitMembers) type->AppendChild(child);
+        for (AstNode* child : includedMembers) type->AppendChild(child);
+    }
 }
 
 AstNode* Parser::ParseTopLevel() {
@@ -219,6 +359,25 @@ AstNode* Parser::ParseTopLevel() {
         Token name = Consume(TokenKind::Identifier, "expected imported function name");
         name.lexeme = QualifyDeclaration(name.lexeme);
         return ParseFunction(type, std::move(name), returnsReference, returnConst, true);
+    }
+    if (Match(TokenKind::KwMixin)) {
+        const Token mixinToken = Previous();
+        bool shared = false;
+        bool external = false;
+        while (Check(TokenKind::Identifier) &&
+               (Current().lexeme == "shared" || Current().lexeme == "external")) {
+            shared = shared || Current().lexeme == "shared";
+            external = external || Current().lexeme == "external";
+            Advance();
+        }
+        Consume(TokenKind::KwClass, "expected 'class' after 'mixin'");
+        AstNode* declaration = ParseClass(false);
+        declaration->kind = NodeKind::MixinDecl;
+        declaration->isShared = shared;
+        declaration->isExternal = external;
+        if (shared) Error(mixinToken, "mixin class cannot be declared as shared");
+        if (external) Error(mixinToken, "mixin class cannot be declared as external");
+        return declaration;
     }
     if (Match(TokenKind::KwNamespace)) return ParseNamespace();
     if (Match(TokenKind::KwClass)) return ParseClass(false);
@@ -1055,6 +1214,7 @@ std::string Parser::ResolveTypeName(std::string_view name) const {
     const auto knownType = [this](const std::string& candidate) {
         return enumTypes_.find(candidate) != enumTypes_.end() ||
                objectTypes_.find(candidate) != objectTypes_.end() ||
+               mixinTypes_.find(candidate) != mixinTypes_.end() ||
                funcdefTypes_.find(candidate) != funcdefTypes_.end() ||
                typedefTypes_.find(candidate) != typedefTypes_.end() ||
                templateTypes_.find(candidate) != templateTypes_.end();
@@ -1169,6 +1329,7 @@ void Parser::Synchronize() {
         case TokenKind::KwDefault: case TokenKind::KwReturn: case TokenKind::KwBreak:
         case TokenKind::KwContinue:
         case TokenKind::KwClass: case TokenKind::KwInterface: case TokenKind::KwEnum:
+        case TokenKind::KwMixin:
         case TokenKind::KwTypedef: case TokenKind::KwNamespace: return;
         default: Advance();
         }

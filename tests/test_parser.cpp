@@ -609,3 +609,29 @@ TEST_CASE(parser_accepts_external_shared_entities_in_either_modifier_order) {
     CHECK(declarations[4]->kind == mini_as::NodeKind::FunctionDecl);
 }
 
+TEST_CASE(parser_expands_mixin_members_into_the_including_class) {
+    mini_as::DiagnosticSink diagnostics;
+    mini_as::Tokenizer tokenizer("mixin",
+        "interface I { int read(); } "
+        "mixin class Reusable : I { int value = 40; int read() { return value; } } "
+        "class Concrete : Reusable { int own = 2; }",
+        diagnostics);
+    mini_as::Parser parser(tokenizer.ScanAll(), diagnostics);
+    auto tree = parser.Parse();
+    CHECK(!diagnostics.HasErrors());
+    const auto declarations = tree.root->Children();
+    CHECK(declarations.size() == 3);
+    CHECK(declarations[1]->kind == mini_as::NodeKind::MixinDecl);
+    CHECK(declarations[2]->kind == mini_as::NodeKind::ClassDecl);
+    const auto members = declarations[2]->Children();
+    CHECK(members.size() == 4);
+    CHECK(members[0]->kind == mini_as::NodeKind::Identifier);
+    CHECK(members[0]->token.lexeme == "I");
+    CHECK(members[1]->kind == mini_as::NodeKind::FieldDecl);
+    CHECK(!members[1]->isMixinMember);
+    CHECK(members[2]->kind == mini_as::NodeKind::FieldDecl);
+    CHECK(members[2]->isMixinMember);
+    CHECK(members[3]->kind == mini_as::NodeKind::FunctionDecl);
+    CHECK(members[3]->isMixinMember);
+}
+

@@ -186,6 +186,10 @@ bool TypeChecker::Check(AstNode* root) {
     scopes_.clear();
     activeLambdas_.clear();
     scopes_.emplace_back();
+    mixinTypes_.clear();
+    for (AstNode* declaration : TopLevelDeclarations(root))
+        if (declaration->kind == NodeKind::MixinDecl)
+            mixinTypes_.insert(declaration->token.lexeme);
     PredeclareTypedefs(root);
     PredeclareEnums(root);
     PredeclareFuncdefs(root);
@@ -390,6 +394,8 @@ void TypeChecker::PredeclareEnums(AstNode* root) {
 void TypeChecker::Predeclare(AstNode* root) {
     classes_ = registeredClasses_;
     if (!root) return;
+    std::unordered_set<std::string> mixinFields;
+    std::unordered_map<std::string, AstNode*> mixinFieldNodes;
     for (AstNode* node : TopLevelDeclarations(root)) {
         if (node->kind != NodeKind::ClassDecl && node->kind != NodeKind::InterfaceDecl) continue;
         if (node->isExternal) {
@@ -425,10 +431,17 @@ void TypeChecker::Predeclare(AstNode* root) {
         }
         for (; child; child = child->nextSibling) {
             if (child->kind == NodeKind::FieldDecl) {
+                if (IsMixinType(child->declaredType))
+                    Error(child, "mixin class '" + child->declaredType.objectName +
+                                 "' cannot be used as a field type");
                 if (child->declaredType.kind == TypeKind::Function && !child->declaredType.isHandle)
                     Error(child, "funcdef fields must be declared as handles");
                 type.fields.push_back({child->token.lexeme, child->declaredType,
                                        type.name, child->memberAccess});
+                if (child->isMixinMember) {
+                    mixinFields.insert(type.name + "\n" + child->token.lexeme);
+                    mixinFieldNodes[type.name + "\n" + child->token.lexeme] = child;
+                }
             }
             else if (child->kind == NodeKind::FunctionDecl) {
                 FunctionSignature method{child->token.lexeme, child->declaredType, {}, false, {},
@@ -560,6 +573,12 @@ void TypeChecker::Predeclare(AstNode* root) {
                 const auto duplicate = std::find_if(fields.begin(), fields.end(), [&](const auto& existing) {
                     return existing.name == field.name;
                 });
+                if (duplicate != fields.end() &&
+                    mixinFields.find(type.name + "\n" + field.name) != mixinFields.end()) {
+                    const auto node = mixinFieldNodes.find(type.name + "\n" + field.name);
+                    if (node != mixinFieldNodes.end()) node->second->isDeleted = true;
+                    continue;
+                }
                 if (duplicate != fields.end())
                     Error(root, "field '" + field.name + "' conflicts with an inherited field");
                 fields.push_back(field);
@@ -754,6 +773,9 @@ void TypeChecker::CheckNode(AstNode* node) {
         if (!node->isAuto && node->declaredType.kind == TypeKind::Function &&
             !node->declaredType.isHandle)
             Error(node, "funcdef variables must be declared as handles");
+        if (!node->isAuto && IsMixinType(node->declaredType))
+            Error(node, "mixin class '" + node->declaredType.objectName +
+                        "' cannot be instantiated");
         if (!node->isAuto && IsWeakRef(node->declaredType) &&
             !FindClass(node->declaredType.objectName))
             Error(node, "weakref subtype must name a script class");
@@ -983,6 +1005,7 @@ void TypeChecker::CheckNode(AstNode* node) {
         }
         bool hasConstructor = currentClass_ && currentClass_->defaultConstructorDeleted;
         for (AstNode* member = node->firstChild; member; member = member->nextSibling) {
+            if (member->kind == NodeKind::FieldDecl && member->isDeleted) continue;
             if (currentClass_ && currentClass_->shared &&
                 member->kind == NodeKind::FieldDecl &&
                 !IsSharedType(member->declaredType))
@@ -1029,7 +1052,8 @@ void TypeChecker::CheckNode(AstNode* node) {
         currentNamespace_ = previousNamespace;
         break;
     }
-    case NodeKind::InterfaceDecl: case NodeKind::EnumDecl: case NodeKind::EnumValue:
+    case NodeKind::InterfaceDecl: case NodeKind::MixinDecl:
+    case NodeKind::EnumDecl: case NodeKind::EnumValue:
     case NodeKind::TypedefDecl: case NodeKind::FuncdefDecl: case NodeKind::NamespaceDecl:
     case NodeKind::EmptyStmt:
     case NodeKind::CaseClause: case NodeKind::DefaultClause: break;
@@ -1049,6 +1073,9 @@ void TypeChecker::CheckFunction(AstNode* node) {
     currentReturn_ = node->declaredType;
     if (IsWeakRef(currentReturn_) && !FindClass(currentReturn_.objectName))
         Error(node, "weakref subtype must name a script class");
+    if (IsMixinType(currentReturn_))
+        Error(node, "mixin class '" + currentReturn_.objectName +
+                    "' cannot be used as a function return type");
     currentReturnsReference_ = node->returnsReference;
     currentConstructor_ = node->isConstructor;
     currentShared_ = node->isShared || (currentClass_ && currentClass_->shared);
@@ -1066,6 +1093,9 @@ void TypeChecker::CheckFunction(AstNode* node) {
             Error(child, "funcdef parameters must be declared as handles");
         if (IsWeakRef(child->declaredType) && !FindClass(child->declaredType.objectName))
             Error(child, "weakref subtype must name a script class");
+        if (IsMixinType(child->declaredType))
+            Error(child, "mixin class '" + child->declaredType.objectName +
+                         "' cannot be used as a parameter type");
         if (child->firstChild) {
             if (child->parameterMode == ParameterMode::Out ||
                 child->parameterMode == ParameterMode::InOut) {
@@ -2389,6 +2419,11 @@ bool TypeChecker::IsSharedType(const DataType& type) const {
         if (funcdef->shared) return true;
     }
     return false;
+}
+
+bool TypeChecker::IsMixinType(const DataType& type) const {
+    return type.kind == TypeKind::Object &&
+        mixinTypes_.find(type.objectName) != mixinTypes_.end();
 }
 
 bool TypeChecker::CanConvert(const DataType& from, const DataType& to) const {

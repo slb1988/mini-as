@@ -6,6 +6,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace mini_as {
 
@@ -176,6 +177,7 @@ private:
                  bool returnableReference = false, bool moduleGlobal = false);
     bool CanReturnReference(const AstNode* node) const;
     bool IsSharedType(const DataType& type) const;
+    bool IsMixinType(const DataType& type) const;
     bool CanConvert(const DataType& from, const DataType& to) const;
     std::optional<int> ConversionCost(const DataType& from, const DataType& to) const;
     void Error(const AstNode* node, std::string message);
@@ -187,6 +189,7 @@ private:
     std::vector<EnumSignature> registeredEnums_;
     std::vector<TypedefSignature> registeredTypedefs_;
     std::vector<FuncdefSignature> registeredFuncdefs_;
+    std::unordered_set<std::string> mixinTypes_;
     std::vector<ClassSignature> classes_;
     std::vector<GlobalSignature> globals_;
     std::vector<EnumSignature> enums_;

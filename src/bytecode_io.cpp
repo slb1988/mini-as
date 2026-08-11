@@ -11,7 +11,7 @@ namespace mini_as::detail {
 namespace {
 
 constexpr char kMagic[] = {'M', 'A', 'S', 'B'};
-constexpr std::uint32_t kVersion = 5;
+constexpr std::uint32_t kVersion = 6;
 constexpr std::uint64_t kMaxItems = 1'000'000;
 constexpr std::uint64_t kMaxString = 16 * 1024 * 1024;
 
@@ -637,6 +637,7 @@ void WriteNode(Writer& writer, const AstNode* node) {
     writer.Scalar<std::uint8_t>(node->isImported ? 1 : 0);
     writer.Scalar<std::uint8_t>(node->isShared ? 1 : 0);
     writer.Scalar<std::uint8_t>(node->isExternal ? 1 : 0);
+    writer.Scalar<std::uint8_t>(node->isMixinMember ? 1 : 0);
     writer.String(node->sourceModule);
     writer.String(node->operatorMethod);
     writer.Scalar<std::uint8_t>(node->operatorReversed ? 1 : 0);
@@ -660,8 +661,8 @@ bool ReadNode(Reader& reader, AstArena& arena, AstNode*& result,
     if (depth > 1024 || ++nodes > kMaxItems) return false;
     NodeKind kind{};
     Token token;
-    if (!reader.Scalar(kind) || kind > NodeKind::ForeachStmt ||
-        !reader.Scalar(token.kind) || token.kind > TokenKind::KwImport ||
+    if (!reader.Scalar(kind) || kind > NodeKind::MixinDecl ||
+        !reader.Scalar(token.kind) || token.kind > TokenKind::KwMixin ||
         !reader.String(token.lexeme) || !ReadLocation(reader, token.location)) return false;
     AstNode* node = arena.Make(kind, token);
     if (!ReadType(reader, node->declaredType) || !ReadType(reader, node->inferredType) ||
@@ -675,6 +676,7 @@ bool ReadNode(Reader& reader, AstArena& arena, AstNode*& result,
         !ReadBool(reader, node->propertyAccessor) ||
         !ReadBool(reader, node->isImported) || !ReadBool(reader, node->isShared) ||
         !ReadBool(reader, node->isExternal) ||
+        !ReadBool(reader, node->isMixinMember) ||
         !reader.String(node->sourceModule) ||
         !reader.String(node->operatorMethod) ||
         !ReadBool(reader, node->operatorReversed) || !reader.String(node->propertyGetter) ||

@@ -19,7 +19,8 @@ enum class NodeKind {
     SwitchStmt, CaseClause, DefaultClause, ReturnStmt, BreakStmt, ContinueStmt, TryStmt,
     ExprStmt, EmptyStmt,
     Assign, Conditional, Binary, Unary, Increment, Cast, ValueCast, Call, NamedArgument,
-    AnonymousFunction, Member, Literal, Identifier, InitList, Index, ForeachStmt
+    AnonymousFunction, Member, Literal, Identifier, InitList, Index, ForeachStmt,
+    MixinDecl
 };
 
 struct AstNode {
@@ -43,6 +44,7 @@ struct AstNode {
     bool isImported = false;
     bool isShared = false;
     bool isExternal = false;
+    bool isMixinMember = false;
     std::string sourceModule;
     std::string operatorMethod;
     bool operatorReversed = false;
@@ -62,6 +64,7 @@ struct AstNode {
 class AstArena {
 public:
     AstNode* Make(NodeKind kind, const Token& token = {});
+    AstNode* Clone(const AstNode* source);
 
 private:
     std::vector<std::unique_ptr<AstNode>> nodes_;
@@ -91,6 +94,7 @@ public:
 
 private:
     AstNode* ParseTopLevel();
+    void ExpandMixins(AstNode* root);
     AstNode* ParseNamespace();
     AstNode* ParseClass(bool isInterface);
     AstNode* ParseEnum();
@@ -150,6 +154,7 @@ private:
     AstArena* arena_ = nullptr;
     std::unordered_set<std::string> enumTypes_;
     std::unordered_set<std::string> objectTypes_;
+    std::unordered_set<std::string> mixinTypes_;
     std::unordered_set<std::string> funcdefTypes_;
     std::unordered_map<std::string, std::vector<std::string>> objectBases_;
     std::unordered_map<std::string, DataType> typedefTypes_;

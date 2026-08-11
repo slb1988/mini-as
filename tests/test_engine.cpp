@@ -3318,3 +3318,99 @@ TEST_CASE(external_shared_runtime_errors_point_to_the_defining_module) {
     CHECK(context->GetExceptionLocation().row == 2);
 }
 
+TEST_CASE(mixin_classes_copy_members_compile_in_target_context_and_honor_precedence) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::string buildDiagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        buildDiagnostics += diagnostic.message + "\n";
+    });
+    auto* module = engine->GetModule("mixins");
+    module->AddScriptSection("mixins",
+        "interface IReadable { int read(); } "
+        "class Base { int inherited = 3; int selected() { return 4; } } "
+        "mixin class Common : IReadable { "
+        "int inherited = 99; int local = 1; "
+        "int read() { return inherited + local; } "
+        "int selected() { return 40; } "
+        "int fromClass() { return explicitValue; } } "
+        "class First : Base, Common { int explicitValue = 1; } "
+        "class Second : Common { int inherited = 39; int explicitValue = 2; "
+        "int selected() { return 1; } } "
+        "int main() { First@ first = First(); Second@ second = Second(); IReadable@ view = first; "
+        "return view.read() == 4 && first.selected() == 40 && first.fromClass() == 1 && "
+        "second.read() == 40 && second.selected() == 1 && second.fromClass() == 2 ? 42 : 0; }");
+    if (!module->Build()) throw std::runtime_error(buildDiagnostics);
+    CHECK(engine->GetTypeInfo("Common") == nullptr);
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int main()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(context->GetReturnInt() == 42);
+
+    std::stringstream archive(std::ios::in | std::ios::out | std::ios::binary);
+    CHECK(module->SaveBytecode(archive));
+    archive.seekg(0);
+    auto loadedEngine = mini_as::CreateScriptEngine();
+    auto* loaded = loadedEngine->GetModule("mixins");
+    CHECK(loaded->LoadBytecode(archive));
+    auto loadedContext = loadedEngine->CreateContext();
+    CHECK(loadedContext->Prepare(loaded->GetFunctionByDecl("int main()")));
+    CHECK(loadedContext->Execute() == mini_as::ExecutionState::Finished);
+    CHECK(loadedContext->GetReturnInt() == 42);
+}
+
+TEST_CASE(mixin_classes_reject_instantiation_construction_inheritance_and_shared_modifiers) {
+    auto engine = mini_as::CreateScriptEngine();
+    std::vector<mini_as::Diagnostic> diagnostics;
+    engine->SetMessageCallback([&](const mini_as::Diagnostic& diagnostic) {
+        diagnostics.push_back(diagnostic);
+    });
+    auto* module = engine->GetModule("bad-mixins");
+    module->AddScriptSection("bad-mixins",
+        "class Base {} "
+        "mixin class Constructed { Constructed() {} } "
+        "mixin class Derived : Base {} "
+        "mixin shared class SharedMix {}");
+    CHECK(!module->Build());
+    bool constructor = false, inheritance = false, shared = false;
+    for (const auto& diagnostic : diagnostics) {
+        constructor = constructor || diagnostic.message.find("constructors or destructors") !=
+            std::string::npos;
+        inheritance = inheritance || diagnostic.message.find("cannot inherit from classes") !=
+            std::string::npos;
+        shared = shared || diagnostic.message.find("cannot be declared as shared") !=
+            std::string::npos;
+    }
+    CHECK(constructor);
+    CHECK(inheritance);
+    CHECK(shared);
+
+    diagnostics.clear();
+    auto* instantiationModule = engine->GetModule("mixin-instantiation");
+    instantiationModule->AddScriptSection("mixin-instantiation",
+        "mixin class Template { int value; } "
+        "int main() { Template value; return 0; }");
+    CHECK(!instantiationModule->Build());
+    bool instantiation = false;
+    for (const auto& diagnostic : diagnostics)
+        instantiation = instantiation || diagnostic.message.find("cannot be instantiated") !=
+            std::string::npos;
+    CHECK(instantiation);
+}
+
+TEST_CASE(mixin_method_runtime_errors_retain_the_mixin_source_location) {
+    auto engine = mini_as::CreateScriptEngine();
+    auto* module = engine->GetModule("mixin-error");
+    module->AddScriptSection("mixin-definition",
+        "mixin class Dangerous {\n int divide(int value) { return 1 / value; }\n}\n");
+    module->AddScriptSection("mixin-consumer",
+        "class Concrete : Dangerous {} int main() { Concrete@ value = Concrete(); return value.divide(0); }");
+    CHECK(module->Build());
+    auto context = engine->CreateContext();
+    CHECK(context->Prepare(module->GetFunctionByDecl("int main()")));
+    CHECK(context->Execute() == mini_as::ExecutionState::Exception);
+    if (context->GetExceptionString().find("division by zero") == std::string::npos)
+        throw std::runtime_error(context->GetExceptionString());
+    CHECK(context->GetExceptionLocation().section == "mixin-definition");
+    CHECK(context->GetExceptionLocation().row == 2);
+}
+

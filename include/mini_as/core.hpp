@@ -1,15 +1,28 @@
 #pragma once
 
+#include "mini_as/symbols.hpp"
+
+#include <any>
 #include <cstdint>
 #include <functional>
+#include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <variant>
 #include <vector>
 
 namespace mini_as {
 
 class RefObject;
+using ReferenceVisitor = std::function<void(RefObject*)>;
+struct WeakRefState {
+    std::mutex mutex;
+    bool alive = true;
+};
+struct CapturedCell;
+using CapturedCellHandle = std::shared_ptr<CapturedCell>;
 
 class ObjectHandle {
 public:
@@ -59,7 +72,12 @@ private:
     std::vector<Diagnostic> diagnostics_;
 };
 
-enum class TypeKind { Void, Bool, Int, Float, String, Object, Invalid };
+enum class TypeKind {
+    Void, Bool,
+    Int8, Int16, Int, Int64,
+    UInt8, UInt16, UInt, UInt64,
+    Float, Double, String, Enum, Object, Function, WeakRef, ConstWeakRef, Var, Invalid
+};
 
 struct DataType {
     TypeKind kind = TypeKind::Invalid;
@@ -68,35 +86,177 @@ struct DataType {
 
     static DataType Void();
     static DataType Bool();
+    static DataType Int8();
+    static DataType Int16();
     static DataType Int();
+    static DataType Int32();
+    static DataType Int64();
+    static DataType UInt8();
+    static DataType UInt16();
+    static DataType UInt();
+    static DataType UInt32();
+    static DataType UInt64();
     static DataType Float();
+    static DataType Double();
     static DataType String();
+    static DataType Enum(std::string name);
     static DataType Object(std::string name, bool handle = false);
+    static DataType Function(std::string name, bool handle = true);
+    static DataType WeakRef(std::string subtype, bool readOnly = false);
+    static DataType Var();
     static DataType Invalid();
 
     std::string Name() const;
     bool IsNumeric() const;
+    bool IsInteger() const;
+    bool IsSignedInteger() const;
+    bool IsUnsignedInteger() const;
+    unsigned IntegerBits() const;
     bool IsValid() const;
 };
 
 bool operator==(const DataType& left, const DataType& right);
 bool operator!=(const DataType& left, const DataType& right);
 
+DataType CommonNumericType(const DataType& left, const DataType& right);
+
+enum class ReferenceKind { Global, Field };
+
+struct ReferenceStorage {
+    ReferenceKind kind = ReferenceKind::Global;
+    DataType type = DataType::Invalid();
+    std::uint32_t slot = 0;
+    ObjectHandle object;
+};
+
+bool operator==(const ReferenceStorage& left, const ReferenceStorage& right);
+
+struct IntegerStorage {
+    TypeKind kind = TypeKind::Int;
+    std::uint64_t bits = 0;
+    std::string typeName;
+};
+
+bool operator==(const IntegerStorage& left, const IntegerStorage& right);
+
+struct HostValueStorage {
+    std::string typeName;
+    std::any value;
+    std::function<void(const std::any&, const ReferenceVisitor&)> enumerateReferences;
+    std::function<void(std::any&)> clearReferences;
+};
+
+bool operator==(const HostValueStorage& left, const HostValueStorage& right);
+
+class WeakObjectHandle {
+public:
+    WeakObjectHandle() = default;
+    explicit WeakObjectHandle(std::string typeName, bool readOnly = false);
+    WeakObjectHandle(const ObjectHandle& object, std::string typeName, bool readOnly = false);
+
+    ObjectHandle Lock() const;
+    bool Expired() const;
+    WeakObjectHandle AsReadOnly() const;
+    bool Equals(const ObjectHandle& object) const;
+    bool SameTarget(const WeakObjectHandle& other) const;
+    const std::string& TypeName() const;
+    bool IsReadOnly() const;
+
+private:
+    RefObject* object_ = nullptr;
+    std::shared_ptr<WeakRefState> state_;
+    std::string typeName_;
+    bool readOnly_ = false;
+
+    friend bool operator==(const WeakObjectHandle&, const WeakObjectHandle&);
+};
+
+bool operator==(const WeakObjectHandle& left, const WeakObjectHandle& right);
+
+struct FunctionHandle {
+    FunctionHandle(FunctionId function = {}, TypeId signature = {}, std::string typeName = {},
+                   bool host = false, ObjectHandle object = {}, TypeId dispatchType = {},
+                   std::uint32_t virtualSlot = 0, bool virtualMethod = false,
+                   std::vector<CapturedCellHandle> captures = {})
+        : function(function), signature(signature), typeName(std::move(typeName)), host(host),
+          object(std::move(object)), dispatchType(dispatchType), virtualSlot(virtualSlot),
+          virtualMethod(virtualMethod), captures(std::move(captures)) {}
+
+    FunctionId function;
+    TypeId signature;
+    std::string typeName;
+    bool host = false;
+    ObjectHandle object;
+    TypeId dispatchType;
+    std::uint32_t virtualSlot = 0;
+    bool virtualMethod = false;
+    std::vector<CapturedCellHandle> captures;
+
+    explicit operator bool() const { return function.IsValid() || (virtualMethod && object); }
+};
+
+bool operator==(const FunctionHandle& left, const FunctionHandle& right);
+
 class Value {
 public:
-    using Storage = std::variant<std::monostate, bool, std::int32_t, float, std::string, ObjectHandle>;
+    using Storage = std::variant<std::monostate, bool, std::int32_t, IntegerStorage,
+                                 float, double, std::string, ObjectHandle, FunctionHandle,
+                                 WeakObjectHandle, CapturedCellHandle, HostValueStorage,
+                                 ReferenceStorage>;
 
     Value() = default;
     explicit Value(bool value);
     explicit Value(std::int32_t value);
     explicit Value(float value);
+    explicit Value(double value);
     explicit Value(std::string value);
     explicit Value(const char* value);
     explicit Value(ObjectHandle value);
+    explicit Value(FunctionHandle value);
+    explicit Value(WeakObjectHandle value);
+    explicit Value(CapturedCellHandle value);
+    explicit Value(ReferenceStorage value);
+
+    static Value Integer(const DataType& type, std::uint64_t bits);
+
+    template <typename T>
+    static Value HostValue(std::string typeName, T value) {
+        Value result;
+        result.storage_ = HostValueStorage{
+            std::move(typeName), std::any(std::move(value)), {}, {}};
+        return result;
+    }
+
+    template <typename T>
+    static Value ManagedHostValue(
+        std::string typeName, T value,
+        std::function<void(const T&, const ReferenceVisitor&)> enumerateReferences,
+        std::function<void(T&)> clearReferences) {
+        Value result;
+        HostValueStorage storage;
+        storage.typeName = std::move(typeName);
+        storage.value = std::any(std::move(value));
+        storage.enumerateReferences =
+            [enumerateReferences = std::move(enumerateReferences)](
+                const std::any& stored, const ReferenceVisitor& visitor) {
+                enumerateReferences(std::any_cast<const T&>(stored), visitor);
+            };
+        storage.clearReferences =
+            [clearReferences = std::move(clearReferences)](std::any& stored) {
+                clearReferences(std::any_cast<T&>(stored));
+            };
+        result.storage_ = std::move(storage);
+        return result;
+    }
 
     DataType Type() const;
     bool IsVoid() const;
+    bool IsReference() const;
+    std::int64_t SignedInteger() const;
+    std::uint64_t UnsignedInteger() const;
     const Storage& Raw() const;
+    void EnumerateReferences(const ReferenceVisitor& visitor) const;
+    void ClearReferences();
 
     template <typename T>
     const T& As() const {
@@ -106,11 +266,27 @@ public:
         throw std::runtime_error("value has unexpected type");
     }
 
+    template <typename T>
+    T& AsHostValue() {
+        return std::any_cast<T&>(std::get<HostValueStorage>(storage_).value);
+    }
+
+    template <typename T>
+    const T& AsHostValue() const {
+        return std::any_cast<const T&>(std::get<HostValueStorage>(storage_).value);
+    }
+
     std::string ToString() const;
 
 private:
     Storage storage_;
 };
+
+struct CapturedCell {
+    Value value;
+};
+
+Value ConvertInteger(const Value& value, const DataType& target);
 
 bool operator==(const Value& left, const Value& right);
 

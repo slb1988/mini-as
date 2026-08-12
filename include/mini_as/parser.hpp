@@ -3,14 +3,24 @@
 #include "mini_as/tokenizer.hpp"
 
 #include <memory>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace mini_as {
 
+enum class ParameterMode { Value, In, Out, InOut };
+enum class MemberAccess { Public, Protected, Private };
+
 enum class NodeKind {
-    Program, FunctionDecl, Parameter, ClassDecl, InterfaceDecl, FieldDecl,
-    Block, VarDecl, IfStmt, WhileStmt, ReturnStmt, ExprStmt,
-    Assign, Binary, Unary, Call, Member, Literal, Identifier
+    Program, NamespaceDecl, FunctionDecl, Parameter, ClassDecl, InterfaceDecl,
+    EnumDecl, EnumValue, TypedefDecl, FuncdefDecl, FieldDecl,
+    Block, DeclList, VarDecl, IfStmt, WhileStmt, DoWhileStmt, ForStmt,
+    SwitchStmt, CaseClause, DefaultClause, ReturnStmt, BreakStmt, ContinueStmt, TryStmt,
+    ExprStmt, EmptyStmt,
+    Assign, Conditional, Binary, Unary, Increment, Cast, ValueCast, Call, NamedArgument,
+    AnonymousFunction, Member, Literal, Identifier, InitList, Index, ForeachStmt,
+    MixinDecl
 };
 
 struct AstNode {
@@ -18,6 +28,33 @@ struct AstNode {
     Token token;
     DataType declaredType = DataType::Invalid();
     DataType inferredType = DataType::Invalid();
+    bool isConst = false;
+    bool isAuto = false;
+    bool isGlobal = false;
+    bool isPostfix = false;
+    bool implicitThis = false;
+    bool isConstructor = false;
+    bool isDestructor = false;
+    bool isDeleted = false;
+    bool hasExplicitSuper = false;
+    bool nonVirtualCall = false;
+    bool returnsReference = false;
+    bool returnReferenceConst = false;
+    bool propertyAccessor = false;
+    bool isImported = false;
+    bool isShared = false;
+    bool isExternal = false;
+    bool isMixinMember = false;
+    std::string sourceModule;
+    std::string operatorMethod;
+    bool operatorReversed = false;
+    std::string propertyGetter;
+    std::string propertySetter;
+    std::string delegateObjectType;
+    std::vector<std::string> captureNames;
+    std::vector<DataType> templateArguments;
+    MemberAccess memberAccess = MemberAccess::Public;
+    ParameterMode parameterMode = ParameterMode::Value;
     AstNode* firstChild = nullptr;
     AstNode* nextSibling = nullptr;
 
@@ -28,6 +65,7 @@ struct AstNode {
 class AstArena {
 public:
     AstNode* Make(NodeKind kind, const Token& token = {});
+    AstNode* Clone(const AstNode* source);
 
 private:
     std::vector<std::unique_ptr<AstNode>> nodes_;
@@ -38,35 +76,79 @@ struct SyntaxTree {
     AstNode* root = nullptr;
 };
 
+struct TemplateTypeUse {
+    std::string templateName;
+    std::vector<DataType> subTypes;
+    DataType instanceType = DataType::Invalid();
+    SourceLocation location;
+};
+
+struct TemplateFunctionUse {
+    std::string functionName;
+    std::vector<DataType> subTypes;
+    SourceLocation location;
+};
+
 class Parser {
 public:
     Parser(std::vector<Token> tokens, DiagnosticSink& diagnostics);
+    void RegisterEnumType(std::string name);
+    void RegisterTypedefType(std::string name, DataType underlyingType);
+    void RegisterFuncdefType(std::string name);
+    void RegisterTemplateType(std::string name, std::size_t subtypeCount);
+    void RegisterTemplateFunction(std::string name, std::size_t subtypeCount);
+    const std::vector<TemplateTypeUse>& TemplateTypeUses() const;
+    const std::vector<TemplateFunctionUse>& TemplateFunctionUses() const;
     SyntaxTree Parse();
 
 private:
     AstNode* ParseTopLevel();
+    void ExpandMixins(AstNode* root);
+    AstNode* ParseNamespace();
     AstNode* ParseClass(bool isInterface);
-    AstNode* ParseFunction(DataType returnType, Token name);
+    AstNode* ParseEnum();
+    AstNode* ParseTypedef();
+    AstNode* ParseFuncdef(std::string_view parentType = {});
+    AstNode* ParseFunction(DataType returnType, Token name, bool returnsReference = false,
+                           bool returnReferenceConst = false, bool imported = false);
     AstNode* ParseBlock();
     AstNode* ParseStatement();
     AstNode* ParseVariableDeclaration();
     AstNode* ParseIf();
     AstNode* ParseWhile();
+    AstNode* ParseDoWhile();
+    AstNode* ParseFor();
+    AstNode* ParseForeach();
+    AstNode* ParseSwitch();
     AstNode* ParseReturn();
     AstNode* ParseExpression();
     AstNode* ParseAssignment();
+    AstNode* ParseConditional();
     AstNode* ParseOr();
     AstNode* ParseAnd();
+    AstNode* ParseBitOr();
+    AstNode* ParseBitXor();
+    AstNode* ParseBitAnd();
     AstNode* ParseEquality();
     AstNode* ParseComparison();
+    AstNode* ParseShift();
     AstNode* ParseTerm();
     AstNode* ParseFactor();
+    AstNode* ParsePower();
     AstNode* ParseUnary();
     AstNode* ParseCall();
+    void ParseTemplateFunctionArguments(AstNode* function, std::string resolvedName);
     AstNode* ParsePrimary();
+    AstNode* ParseAnonymousFunction();
     DataType ParseType(bool allowVoid = false);
+    bool ConsumeTemplateClose();
+    Token ParseQualifiedIdentifier(const char* message);
+    std::string QualifyDeclaration(std::string_view name) const;
+    std::string ResolveTypeName(std::string_view name) const;
+    std::string ResolveTemplateFunctionName(std::string_view name) const;
 
     bool IsTypeStart(bool allowIdentifier = true) const;
+    bool IsVariableDeclarationStart() const;
     bool Match(TokenKind kind);
     bool MatchAny(std::initializer_list<TokenKind> kinds);
     bool Check(TokenKind kind) const;
@@ -81,6 +163,19 @@ private:
     DiagnosticSink& diagnostics_;
     std::size_t current_ = 0;
     AstArena* arena_ = nullptr;
+    std::unordered_set<std::string> enumTypes_;
+    std::unordered_set<std::string> objectTypes_;
+    std::unordered_set<std::string> mixinTypes_;
+    std::unordered_set<std::string> funcdefTypes_;
+    std::unordered_map<std::string, std::vector<std::string>> objectBases_;
+    std::unordered_map<std::string, DataType> typedefTypes_;
+    std::unordered_map<std::string, std::size_t> templateTypes_;
+    std::vector<TemplateTypeUse> templateTypeUses_;
+    std::unordered_map<std::string, std::unordered_set<std::size_t>> templateFunctions_;
+    std::vector<TemplateFunctionUse> templateFunctionUses_;
+    std::string currentNamespace_;
+    std::string currentTypeName_;
+    bool pendingExternal_ = false;
 };
 
 } // namespace mini_as

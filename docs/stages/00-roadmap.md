@@ -8,3 +8,7 @@ Every stage is kept as a buildable Git commit. The source uses the standard
 library where the production AngelScript engine uses custom containers so the
 engine algorithms remain visible without portability scaffolding dominating
 the lesson.
+
+Stages 16 through 92 implement the completed v0.2-v0.6 AngelScript 2.38.0
+alignment roadmap. See `docs/compatibility-v0.6.md` for the resulting support
+matrix, verification totals, and intentionally unsupported SDK capabilities.

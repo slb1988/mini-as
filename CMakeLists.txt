@@ -1,18 +1,30 @@
 cmake_minimum_required(VERSION 3.16)
 project(mini_angelscript VERSION 0.1.0 LANGUAGES CXX)
 
+option(MINI_AS_BUILD_COMPAT_TESTS
+  "Build differential tests against AngelScript 2.38.0" OFF)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(mini_angelscript
   src/bytecode.cpp
+  src/bytecode_io.cpp
+  src/compat.cpp
+  src/constant_evaluator.cpp
+  src/coroutine.cpp
   src/core.cpp
   src/engine.cpp
   src/generic.cpp
   src/interpreter.cpp
   src/object.cpp
   src/parser.cpp
+  src/script_array.cpp
+  src/script_any.cpp
+  src/script_dictionary.cpp
+  src/script_ref.cpp
+  src/state_io.cpp
   src/tokenizer.cpp
   src/type_checker.cpp
   src/vm.cpp
@@ -23,6 +35,9 @@ if(MSVC)
   target_compile_options(mini_angelscript PRIVATE /W4 /permissive-)
 else()
   target_compile_options(mini_angelscript PRIVATE -Wall -Wextra -Wpedantic)
+  if(MINGW AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(mini_angelscript PRIVATE -Wa,-mbig-obj)
+  endif()
 endif()
 
 enable_testing()
@@ -34,10 +49,15 @@ add_executable(mini_as_tests
   tests/test_interpreter.cpp
   tests/test_types.cpp
   tests/test_bytecode.cpp
+  tests/test_constant_evaluator.cpp
+  tests/test_coroutine.cpp
+  tests/test_compat.cpp
   tests/test_vm.cpp
   tests/test_engine.cpp
   tests/test_generic.cpp
   tests/test_objects.cpp
+  tests/test_serialization.cpp
+  tests/test_addons.cpp
   tests/test_gc.cpp
   tests/test_tutorial.cpp
 )
@@ -51,3 +71,503 @@ add_executable(tutorial_clone examples/tutorial/main.cpp)
 target_link_libraries(tutorial_clone PRIVATE mini_angelscript)
 add_test(NAME tutorial_clone
   COMMAND tutorial_clone ${CMAKE_CURRENT_SOURCE_DIR}/examples/tutorial/script.as)
+
+if(MINI_AS_BUILD_COMPAT_TESTS)
+  include(FetchContent)
+  FetchContent_Declare(angelscript_238
+    URL https://www.angelcode.com/angelscript/sdk/files/angelscript_2.38.0.zip
+    URL_HASH SHA256=b33b5dbcda10317ef67d628353d83246984ce6fcac102d4dc2aed121eba52e6f
+    SOURCE_SUBDIR angelscript/projects/cmake
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+  set(AS_DISABLE_INSTALL ON CACHE BOOL "" FORCE)
+  FetchContent_MakeAvailable(angelscript_238)
+
+  add_executable(mini_as_compat_runner tests/compat/mini_runner.cpp)
+  target_link_libraries(mini_as_compat_runner PRIVATE mini_angelscript)
+
+  add_executable(angelscript_compat_runner
+    tests/compat/official_runner.cpp
+    ${angelscript_238_SOURCE_DIR}/add_on/scriptany/scriptany.cpp
+    ${angelscript_238_SOURCE_DIR}/add_on/scriptarray/scriptarray.cpp
+    ${angelscript_238_SOURCE_DIR}/add_on/scriptdictionary/scriptdictionary.cpp
+    ${angelscript_238_SOURCE_DIR}/add_on/scripthandle/scripthandle.cpp
+    ${angelscript_238_SOURCE_DIR}/add_on/scriptstdstring/scriptstdstring.cpp
+    ${angelscript_238_SOURCE_DIR}/add_on/weakref/weakref.cpp)
+  target_include_directories(angelscript_compat_runner PRIVATE
+    ${angelscript_238_SOURCE_DIR}/add_on/scriptany
+    ${angelscript_238_SOURCE_DIR}/add_on/scriptarray
+    ${angelscript_238_SOURCE_DIR}/add_on/scriptdictionary
+    ${angelscript_238_SOURCE_DIR}/add_on/scripthandle
+    ${angelscript_238_SOURCE_DIR}/add_on/scriptstdstring
+    ${angelscript_238_SOURCE_DIR}/add_on/weakref)
+  target_link_libraries(angelscript_compat_runner PRIVATE angelscript)
+
+  add_test(NAME compat_arithmetic
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/arithmetic.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_multiple_declarations
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/multiple_declarations.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_const_variables
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/const_variables.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_auto_declarations
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/auto_declarations.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_module_globals
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/module_globals.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_for_loops
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/for_loops.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_do_while_loops
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/do_while_loops.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_switch_fallthrough
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/switch_fallthrough.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_break_statements
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/break_statements.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_continue_statements
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/continue_statements.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_compound_assignments
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/compound_assignments.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_increment_expressions
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/increment_expressions.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_conditional_expressions
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/conditional_expressions.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_instance_methods
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/instance_methods.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_overloaded_constructors
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/overloaded_constructors.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_field_initializers
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/field_initializers.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_virtual_interface_dispatch
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/virtual_interface_dispatch.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_v02_acceptance
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/v02_acceptance.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_integer_family
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/integer_family.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_double_precision
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/double_precision.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_numeric_literals
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/numeric_literals.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_bitwise_shifts
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/bitwise_shifts.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_exponent_operators
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/exponent_operators.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_enums
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/enums.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_typedefs
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/typedefs.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_namespaces
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/namespaces.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_default_arguments
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/default_arguments.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_named_arguments
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/named_arguments.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_reference_parameters
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/reference_parameters.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_return_references
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/return_references.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_script_destructors
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/script_destructors.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_single_inheritance
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/single_inheritance.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_member_access
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/member_access.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_reference_casts
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/reference_casts.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_operator_overloads
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/operator_overloads.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_property_accessors
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/property_accessors.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_try_catch
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/try_catch.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_funcdefs
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/funcdefs.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_function_handles
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/function_handles.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_delegates
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/delegates.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_anonymous_functions
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/anonymous_functions.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_child_funcdefs
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/child_funcdefs.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_weak_references
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/weak_references.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_generated_copy_constructors
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/generated_copy_constructors.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_deleted_default_operations
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/deleted_default_operations.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_registered_global_properties
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/registered_global_properties.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_reference_type_factories
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/reference_type_factories.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_registered_object_methods
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/registered_object_methods.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_registered_object_properties
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/registered_object_properties.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_registered_value_types
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/registered_value_types.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_registered_named_types
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/registered_named_types.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_debug_introspection
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/debug_introspection.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_official_style_facade
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/compat_facade.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_host_controls
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/host_controls.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_registered_template_types
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/registered_template_types.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_array_template_object
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/array_template_object.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_initialization_lists
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/initialization_lists.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_indexing_expressions
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/indexing_expressions.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_foreach_operator_protocol
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/foreach_operator_protocol.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_dictionary_object
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/dictionary_object.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_any_ref_objects
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/any_ref_objects.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_imported_functions
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/imported_functions.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_shared_entities
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/shared_entities.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_external_shared_entities
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/external_entities.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_mixin_classes
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/mixin_classes.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_variadic_arguments
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/variadic_arguments.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+
+  add_test(NAME compat_template_functions
+    COMMAND ${CMAKE_COMMAND}
+      -DMINI_RUNNER=$<TARGET_FILE:mini_as_compat_runner>
+      -DOFFICIAL_RUNNER=$<TARGET_FILE:angelscript_compat_runner>
+      -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/cases/template_functions.as
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compat/compare.cmake)
+endif()

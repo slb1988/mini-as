@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="1350" viewBox="0 0 1100 1350">
+  <defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#5b6573"/></marker><style>text{font-family:'Microsoft YaHei','Noto Sans CJK SC',sans-serif;fill:#243447}.n{font-size:15px}.small{font-size:13px}.line{fill:none;stroke:#5b6573;stroke-width:2;marker-end:url(#a)}.box{stroke-width:2}</style></defs><rect width="1100" height="1200" fill="#fff"/>
+  <g text-anchor="middle" class="n"><ellipse class="box" cx="550" cy="55" rx="100" ry="38" fill="#d5e8d4" stroke="#82b366"/><text x="550" y="61">Collect()</text>
+  <rect class="box" x="400" y="130" width="300" height="75" fill="#dae8fc" stroke="#6c8ebf"/><text x="550" y="160"><tspan x="550">① 快照候选集合</tspan><tspan x="550" dy="22">ScriptObject 创建时已注册</tspan></text>
+  <rect class="box" x="400" y="260" width="300" height="75" fill="#dae8fc" stroke="#6c8ebf"/><text x="550" y="290"><tspan x="550">② 统计候选集合内部入边</tspan><tspan x="550" dy="22">internalIncoming[obj]</tspan></text>
+  <rect class="box" x="400" y="390" width="300" height="75" fill="#e1d5e7" stroke="#9673a6"/><text x="550" y="420"><tspan x="550">③ 找外部根</tspan><tspan x="550" dy="22">RefCount &gt; internalIncoming</tspan></text>
+  <rect class="box" x="400" y="520" width="300" height="75" fill="#e1d5e7" stroke="#9673a6"/><text x="550" y="550"><tspan x="550">④ 从根做图遍历</tspan><tspan x="550" dy="22">标记所有可达候选对象</tspan></text>
+  <polygon class="box" points="550,650 690,725 550,800 410,725" fill="#fff2cc" stroke="#d6b656"/><text x="550" y="731">存在未标记对象？</text>
+  <rect class="box" x="400" y="855" width="300" height="75" fill="#ffe6cc" stroke="#d79b00"/><text x="550" y="885"><tspan x="550">⑤ 临时 AddRef</tspan><tspan x="550" dy="22">先给垃圾对象系上安全绳</tspan></text>
+  <rect class="box" x="400" y="985" width="300" height="75" fill="#f8cecc" stroke="#b85450"/><text x="550" y="1015"><tspan x="550">⑥ ClearReferences</tspan><tspan x="550" dy="22">清空字段，主动剪断环</tspan></text>
+  <rect class="box" x="400" y="1110" width="300" height="75" fill="#ffe6cc" stroke="#d79b00"/><text x="550" y="1140"><tspan x="550">⑦ Release 临时引用</tspan><tspan x="550" dy="22">普通引用计数完成析构</tspan></text>
+  <ellipse class="box" cx="885" cy="725" rx="95" ry="40" fill="#d5e8d4" stroke="#82b366"/><text x="885" y="719"><tspan x="885">返回 0</tspan><tspan x="885" dy="20">所有对象仍可达</tspan></text>
+  <ellipse class="box" cx="550" cy="1290" rx="110" ry="38" fill="#d5e8d4" stroke="#82b366"/><text x="550" y="1296">返回回收数量 n</text></g>
+  <g class="small"><rect x="30" y="390" width="290" height="200" rx="12" fill="#f5f5f5" stroke="#666" stroke-width="2"/><text x="55" y="425" font-weight="700">关键理解</text><text x="55" y="465"><tspan x="55">GC 不直接 delete 对象。</tspan><tspan x="55" dy="28">它只证明“这个环没有外部根”，</tspan><tspan x="55" dy="28">再剪断对象之间的引用；真正的销毁</tspan><tspan x="55" dy="28">仍由 ObjectHandle → Release 完成。</tspan></text></g>
+  <path class="line" d="M550 93V130M550 205V260M550 335V390M550 465V520M550 595V650M550 800V855M550 930V985M550 1060V1110M550 1185V1252"/><path class="line" d="M690 725H790"/><text x="720" y="710" class="small">否</text><text x="565" y="830" class="small">是</text>
+</svg>

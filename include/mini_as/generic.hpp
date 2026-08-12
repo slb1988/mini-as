@@ -9,17 +9,33 @@ namespace mini_as {
 
 class GenericCall {
 public:
-    explicit GenericCall(const std::vector<Value>& arguments);
+    explicit GenericCall(std::vector<Value>& arguments, Value object = {},
+                         std::vector<DataType> argumentTypes = {},
+                         std::vector<DataType> templateArguments = {});
     std::size_t GetArgCount() const;
+    const ObjectHandle& GetObject() const;
+    const Value& GetObjectValue() const;
     const Value& GetArg(std::size_t index) const;
+    DataType GetArgType(std::size_t index) const;
+    std::size_t GetTemplateArgCount() const;
+    DataType GetTemplateArgType(std::size_t index) const;
     std::int32_t GetArgInt(std::size_t index) const;
     float GetArgFloat(std::size_t index) const;
+    double GetArgDouble(std::size_t index) const;
     bool GetArgBool(std::size_t index) const;
     const std::string& GetArgString(std::size_t index) const;
     const ObjectHandle& GetArgObject(std::size_t index) const;
+    void SetArg(std::size_t index, Value value);
+    void SetArgInt(std::size_t index, std::int32_t value);
+    void SetArgFloat(std::size_t index, float value);
+    void SetArgDouble(std::size_t index, double value);
+    void SetArgBool(std::size_t index, bool value);
+    void SetArgString(std::size_t index, std::string value);
+    void SetArgObject(std::size_t index, ObjectHandle value);
     void SetReturn(Value value);
     void SetReturnInt(std::int32_t value);
     void SetReturnFloat(float value);
+    void SetReturnDouble(double value);
     void SetReturnBool(bool value);
     void SetReturnString(std::string value);
     void SetReturnObject(ObjectHandle value);
@@ -28,19 +44,46 @@ public:
     const std::string& Exception() const;
 
 private:
-    const std::vector<Value>& arguments_;
+    std::vector<Value>& arguments_;
+    Value object_;
+    std::vector<DataType> argumentTypes_;
+    std::vector<DataType> templateArguments_;
     Value returnValue_;
     std::string exception_;
 };
 
 using GenericFunction = std::function<void(GenericCall&)>;
+using GenericPropertyGetter = std::function<Value(const ObjectHandle&)>;
+using GenericPropertySetter = std::function<void(const ObjectHandle&, Value)>;
 
 struct RegisteredHostFunction {
     FunctionSignature signature;
     GenericFunction callback;
+    std::uint32_t accessMask = ~std::uint32_t{0};
+    std::string configGroup;
+    bool active = true;
+};
+
+struct RegisteredHostProperty {
+    GlobalSignature signature;
+    Value* storage = nullptr;
+    std::uint32_t accessMask = ~std::uint32_t{0};
+    std::string configGroup;
+    bool active = true;
+};
+
+struct RegisteredHostObjectProperty {
+    FieldSignature signature;
+    GenericPropertyGetter getter;
+    GenericPropertySetter setter;
+    std::uint32_t accessMask = ~std::uint32_t{0};
+    std::string configGroup;
+    bool active = true;
 };
 
 std::optional<FunctionSignature> ParseFunctionDeclaration(
+    std::string_view declaration, DiagnosticSink& diagnostics);
+std::optional<GlobalSignature> ParseGlobalPropertyDeclaration(
     std::string_view declaration, DiagnosticSink& diagnostics);
 
 } // namespace mini_as

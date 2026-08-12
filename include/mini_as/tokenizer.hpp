@@ -9,15 +9,27 @@
 namespace mini_as {
 
 enum class TokenKind {
-    End, Identifier, Integer, Float, String,
-    KwVoid, KwBool, KwInt, KwFloat, KwString, KwTrue, KwFalse,
-    KwIf, KwElse, KwWhile, KwReturn, KwClass, KwInterface, KwIs, KwNull,
+    End, Identifier, Integer, Bits, Float, Double, String,
+    KwVoid, KwBool, KwInt8, KwInt16, KwInt, KwInt64,
+    KwUInt8, KwUInt16, KwUInt, KwUInt64,
+    KwFloat, KwDouble, KwString, KwTrue, KwFalse, KwConst, KwAuto,
+    KwIf, KwElse, KwWhile, KwDo, KwFor, KwSwitch, KwCase, KwDefault,
+    KwReturn, KwBreak, KwContinue, KwTry, KwCatch,
+    KwClass, KwInterface, KwEnum, KwTypedef, KwFuncdef, KwFunction, KwNamespace,
+    KwPrivate, KwProtected, KwCast,
+    KwIn, KwOut, KwInOut, KwIs, KwNull,
     LeftParen, RightParen, LeftBrace, RightBrace,
-    Comma, Dot, Semicolon, Colon, At,
-    Plus, Minus, Star, Slash, Percent,
+    Comma, Dot, Semicolon, Colon, Scope, Question, At,
+    Plus, Minus, Star, StarStar, Slash, Percent,
+    PlusPlus, MinusMinus,
+    PlusEqual, MinusEqual, StarEqual, StarStarEqual, SlashEqual, PercentEqual,
+    Amp, Pipe, Caret, Tilde, ShiftLeft, ShiftRight, ShiftRightArithmetic,
+    AmpEqual, PipeEqual, CaretEqual, ShiftLeftEqual, ShiftRightEqual, ShiftRightArithmeticEqual,
     Bang, BangEqual, Equal, EqualEqual,
     Less, LessEqual, Greater, GreaterEqual,
-    AndAnd, OrOr
+    AndAnd, OrOr,
+    LeftBracket, RightBracket,
+    KwForeach, KwImport, KwMixin
 };
 
 struct Token {
